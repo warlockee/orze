@@ -1,0 +1,5 @@
+results/
+data/
+__pycache__/
+*.pyc
+*.pt
