@@ -1,0 +1,13 @@
+training:
+  epochs: 10
+  batch_size: 128
+  lr: 0.001
+  mixed_precision: true
+
+data:
+  dataset: cifar10
+  data_dir: ./data
+  num_workers: 2
+
+checkpointing:
+  save_best: true
