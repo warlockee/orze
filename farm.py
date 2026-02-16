@@ -608,7 +608,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                     tp.process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     tp.process.kill()
-                    tp.process.wait()
+                    tp.process.wait(timeout=5)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id, "Timed out")
                 _record_failure(failure_counts, tp.idea_id)
@@ -624,7 +624,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                     tp.process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     tp.process.kill()
-                    tp.process.wait()
+                    tp.process.wait(timeout=5)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id,
                                f"Stalled (no output for {stall_minutes}m)")
@@ -641,7 +641,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                     tp.process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     tp.process.kill()
-                    tp.process.wait()
+                    tp.process.wait(timeout=5)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id, "CUDA out of memory")
                 _record_failure(failure_counts, tp.idea_id)
@@ -1561,7 +1561,7 @@ class Orze:
             except subprocess.TimeoutExpired:
                 logger.warning("Force killing %s", tp.idea_id)
                 tp.process.kill()
-                tp.process.wait()
+                tp.process.wait(timeout=5)
             tp.close_log()
         for gpu, ep in self.active_evals.items():
             remaining = max(1, deadline - time.time())
@@ -1840,21 +1840,6 @@ class Orze:
                                 template_vars))
 
         return cmd
-
-    @staticmethod
-    def _count_new_ideas(log_path: Path) -> int:
-        """Parse research log to count how many new ideas were generated."""
-        try:
-            log_text = log_path.read_text(encoding="utf-8")
-            for line in log_text.split("\n"):
-                if "ideas" in line.lower():
-                    nums = re.findall(
-                        r"(\d+)\s+(?:new\s+)?ideas?", line, re.I)
-                    if nums:
-                        return int(nums[-1])
-        except Exception:
-            pass
-        return 0
 
     def run(self):
         cfg = self.cfg

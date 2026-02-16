@@ -1,5 +1,35 @@
+# Experiment outputs
 results/
 data/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+src/
+
+# Config (may contain secrets)
+orze.yaml
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual environments
+venv/
+.venv/
+
+# Misc
+*.tmp
+*.log
 *.pt
