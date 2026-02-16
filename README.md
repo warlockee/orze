@@ -2,7 +2,7 @@
 
 Auto-research on autopilot. One script, one config, all GPUs.
 
-Orze runs the full research loop: **generate ideas → train → evaluate → learn → repeat**. It coordinates GPUs via filesystem locks (`mkdir`), works across machines, and can use Claude as the research agent. No databases, no message queues — just files.
+Orze runs the full research loop: **generate ideas → train → evaluate → learn → repeat**. It coordinates GPUs via filesystem locks (`mkdir`), works across machines, and supports any LLM as the research agent — Claude, GPT, Gemini, local models, or your own script. No databases, no message queues — just files.
 
 **Website:** [orze.ai](https://orze.ai)
 
@@ -28,7 +28,7 @@ Claude will explore your codebase, create the config, write seed ideas, and laun
 │                                                   │
 │   ┌─────────┐     ┌─────────┐     ┌──────────┐  │
 │   │ Research │────>│  Train  │────>│ Evaluate │  │
-│   │ (Claude) │     │ (GPUs)  │     │          │  │
+│   │ (any LLM)│     │ (GPUs)  │     │          │  │
 │   └────▲────┘     └─────────┘     └──────────┘  │
 │        │                                │         │
 │        └────────── results/ ◄───────────┘         │
@@ -38,7 +38,7 @@ Claude will explore your codebase, create the config, write seed ideas, and laun
 ```
 
 The loop:
-1. **Research** — Claude (or any LLM) reads results, generates new experiment ideas
+1. **Research** — any LLM (Claude, GPT, Gemini, local) reads results, generates new experiment ideas
 2. **Parse** `ideas.md` for experiment definitions
 3. **Claim** unclaimed ideas via atomic `mkdir`
 4. **Launch** training as subprocesses across free GPUs
@@ -68,7 +68,7 @@ python orze/farm.py -c orze.yaml
 ## Key Features
 
 - **Agent roles** — multiple agents (research, documenter, analyzer) run alongside training, each with their own cooldown and state
-- **Research agent** — Claude CLI or any script generates ideas automatically
+- **LLM-agnostic** — built-in Claude Code support (`mode: claude`), or bring any LLM via `mode: script` (GPT, Gemini, local models, custom pipelines)
 - **Multi-GPU** — claims and trains across all GPUs in parallel
 - **Parallel eval** — eval scripts launch non-blocking so GPUs stay busy
 - **Health monitoring** — stall detection, OOM detection, disk space checks
