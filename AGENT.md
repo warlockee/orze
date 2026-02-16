@@ -1,21 +1,62 @@
 # Orze — Auto-Research Agent
 
-You are setting up and running **orze**, a GPU experiment orchestrator that automates the full research loop: generate ideas → train → evaluate → learn from results → repeat.
+You are setting up and running **orze**, a GPU experiment orchestrator that automates the full research loop: generate ideas, train, evaluate, learn from results, repeat.
 
-Read `orze/RULES.md` for the complete specification. Below is what you need to do.
+## Step 0: Read the research goal
 
-## Step 1: Understand the project
+The user's research goal is defined in `GOAL.md` at the project root. Read it now.
 
-Explore the user's codebase to answer:
-1. **What is the research task?** (classification, detection, generation, etc.)
-2. **What framework?** (PyTorch, TensorFlow, JAX)
-3. **Where is the data?**
-4. **Is there an existing training script?** If yes, you'll adapt it. If no, you'll write one.
-5. **How should results be evaluated?** (accuracy, AUC, loss, custom metric)
-6. **What Python environment?** (venv path, conda, system python)
-7. **How many GPUs?** Run `nvidia-smi --query-gpu=index --format=csv,noheader` to check.
+If `GOAL.md` does not exist, **ask the user** what they want to research. They should create `GOAL.md` with:
 
-## Step 2: Create the training script
+```markdown
+# Research Goal
+
+## Task
+What are you trying to solve? (e.g., "dashcam collision detection from video")
+
+## Dataset
+Where is the data? What format? How much?
+
+## Evaluation
+What metric matters? (e.g., "AUC-ROC on held-out test set")
+
+## Constraints
+- Hardware (e.g., "8x H100 80GB")
+- Time budget (e.g., "run overnight")
+- Model size limits
+- Framework (PyTorch, etc.)
+
+## Starting points
+Any known approaches, existing code, or baselines to build from?
+```
+
+**Do not proceed until GOAL.md exists.** Everything else flows from it.
+
+## Step 1: Explore the codebase
+
+Read `GOAL.md`, then explore the project to understand:
+1. What framework? (PyTorch, TensorFlow, JAX)
+2. Is there an existing training script? If yes, you'll adapt it.
+3. What Python environment? (look for venv, conda, requirements.txt)
+4. How many GPUs? Run `nvidia-smi --query-gpu=index --format=csv,noheader`
+
+## Step 2: Create `RESEARCH_RULES.md`
+
+This is the **most important file** — it controls what experiments get generated. It is read by the research agent (Claude) every cycle. The user can edit it anytime to change research direction.
+
+Write it based on `GOAL.md`. It must include:
+
+1. **Research goal** — copied/adapted from GOAL.md
+2. **Current state** — use template vars: `{cycle}`, `{completed}`, `{queued}`
+3. **Where to read results** — `{results_dir}/report.md` and `{results_dir}/status.json`
+4. **Domain knowledge** — what approaches work for this task, what to try
+5. **What to explore** — concrete research directions
+6. **Exact idea format** — so ideas parse correctly (see `orze/RULES.md`)
+7. **Where to append ideas** — `{ideas_file}`
+
+The user changes research direction by editing this file. Next research cycle picks it up automatically.
+
+## Step 3: Create the training script
 
 Orze needs a training script that follows this contract:
 
@@ -35,23 +76,15 @@ The script must:
 3. Train on the GPU specified by `CUDA_VISIBLE_DEVICES`
 4. Write `metrics.json` when done
 
-If the project already has a training script, wrap or adapt it. If not, write one from scratch.
+If the project already has a training script, wrap or adapt it. If not, write one.
 
-## Step 3: Create `configs/base.yaml`
+## Step 4: Create `configs/base.yaml`
 
 Infrastructure defaults only. Model architecture comes from each idea's YAML block.
 
-```yaml
-training:
-  epochs: 10
-  batch_size: 16
-data:
-  path: /path/to/dataset
-```
+## Step 5: Write seed ideas in `ideas.md`
 
-## Step 4: Write seed ideas in `ideas.md`
-
-Create `ideas.md` with 3-5 baseline experiments. Start simple, then iterate.
+Create `ideas.md` with 3-5 baseline experiments based on `GOAL.md`. Start simple.
 
 ```markdown
 # Ideas
@@ -69,25 +102,11 @@ training:
   lr: 0.001
   epochs: 10
 \```
-
-## idea-002: Larger Model
-- **Priority**: medium
-- **Category**: architecture
-- **Parent**: idea-001
-- **Hypothesis**: More capacity may improve performance.
-
-\```yaml
-model:
-  type: larger
-training:
-  lr: 0.0003
-  epochs: 15
-\```
 ```
 
 IDs must be unique, format `idea-NNN`. Priority controls execution order.
 
-## Step 5: Create `orze.yaml`
+## Step 6: Create `orze.yaml`
 
 Project configuration. Use `orze/orze.yaml.example` as reference.
 
@@ -104,7 +123,6 @@ stall_minutes: 30
 max_idea_failures: 3
 min_disk_gb: 20
 
-# Use Claude CLI as the research agent (generates new ideas automatically)
 research:
   mode: claude
   rules_file: RESEARCH_RULES.md
@@ -122,58 +140,37 @@ report:
     - {key: "training_time", label: "Time(s)", fmt: ".0f"}
 ```
 
-## Step 6: Create `RESEARCH_RULES.md`
-
-This file is YOUR prompt — it tells Claude (the research agent) how to generate new ideas. Customize it for the project's domain. It must include:
-
-1. **What the research goal is**
-2. **What's in the results** — tell Claude to read `{results_dir}/report.md`
-3. **What makes a good idea** — domain-specific guidance
-4. **The exact idea format** — so ideas parse correctly
-5. **Template variables** — use `{ideas_file}`, `{results_dir}`, `{cycle}`, `{completed}`, `{queued}`
-
-See `orze/RULES.md` section "Research Rules Contract" for the full spec.
-
 ## Step 7: Smoke test
 
 ```bash
-# Test one training cycle
 python orze/farm.py -c orze.yaml --once --gpus 0
-
-# Check results
 cat results/report.md
-
-# Test research agent
-python orze/farm.py -c orze.yaml --research-only
 ```
 
-## Step 8: Launch the full loop
+## Step 8: Launch
 
 ```bash
-# All GPUs, continuous — research + train + eval on autopilot
 python orze/farm.py -c orze.yaml
 ```
 
-Monitor progress:
-- `results/report.md` — leaderboard (auto-updated)
-- `results/status.json` — machine-readable status
-- `results/_research_logs/` — research agent logs
-
-## Summary of files you create
+## File summary
 
 ```
 project/
-├── orze/                  # (cloned repo — don't modify)
-├── orze.yaml              # project config
-├── ideas.md               # experiment definitions (append-only)
-├── RESEARCH_RULES.md      # prompt for Claude research agent
-├── configs/
-│   └── base.yaml          # training defaults
-├── train.py               # training script (metrics.json contract)
-└── results/               # (auto-created by orze)
-    ├── report.md
-    ├── status.json
+├── GOAL.md                # YOUR RESEARCH TARGET — edit anytime
+├── RESEARCH_RULES.md      # HOW TO GENERATE IDEAS — edit to change direction
+├── orze.yaml              # infrastructure config
+├── ideas.md               # experiments (append-only)
+├── configs/base.yaml      # training defaults
+├── train.py               # training script
+├── orze/                  # framework (don't edit)
+└── results/               # auto-generated
+    ├── report.md          # leaderboard
+    ├── status.json        # machine-readable status
     └── idea-001/
-        ├── metrics.json
-        └── train_output.log
+        └── metrics.json
 ```
+
+**To change what you're researching:** edit `GOAL.md` and `RESEARCH_RULES.md`.
+**To change how experiments run:** edit `orze.yaml`.
+**Everything else is automatic.**
