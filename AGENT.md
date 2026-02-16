@@ -99,12 +99,13 @@ stall_minutes: 30
 max_idea_failures: 3
 min_disk_gb: 20
 
-research:
-  mode: claude
-  rules_file: RESEARCH_RULES.md
-  model: sonnet
-  cooldown: 300
-  timeout: 600
+roles:
+  research:
+    mode: claude
+    rules_file: RESEARCH_RULES.md
+    model: sonnet
+    cooldown: 300
+    timeout: 600
 
 report:
   title: "Research Report"

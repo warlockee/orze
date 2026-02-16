@@ -13,6 +13,7 @@ Usage:
     python farm.py -c orze.yaml --gpus 0,1      # with project config
     python farm.py --once                       # one cycle then exit
     python farm.py --report-only                # just regenerate report
+    python farm.py --role-only research         # run one role once
 """
 
 import argparse
@@ -165,6 +166,7 @@ DEFAULT_CONFIG = {
     "max_idea_failures": 0,     # 0 = disabled (never skip)
     "min_disk_gb": 0,           # 0 = disabled
     "orphan_timeout_hours": 0,  # 0 = disabled
+    "roles": {},
 }
 
 
@@ -183,6 +185,13 @@ def load_project_config(path: Optional[str]) -> dict:
         logger.info("Loaded config from %s", path)
     elif path:
         logger.warning("Config file %s not found, using defaults", path)
+
+    # Migrate legacy research: into roles: dict
+    if "research" in cfg and isinstance(cfg["research"], dict):
+        if not cfg.get("roles"):
+            cfg["roles"] = {"research": cfg["research"]}
+        elif "research" not in cfg["roles"]:
+            cfg["roles"]["research"] = cfg["research"]
 
     return cfg
 
@@ -1008,8 +1017,7 @@ def write_status_json(results_dir: Path, iteration: int,
                       completed_count: int, failed_count: int,
                       skipped_count: int, top_results: list,
                       cfg: dict,
-                      research_cycles: int = 0,
-                      last_research_time: float = 0.0):
+                      role_states: Optional[dict] = None):
     """Write machine-readable status.json for LLM agents.
     Merges heartbeats from all hosts for a combined multi-machine view."""
     disk_free_gb = 0.0
@@ -1020,10 +1028,6 @@ def write_status_json(results_dir: Path, iteration: int,
         pass
 
     now = time.time()
-    last_research_min_ago = (
-        round((now - last_research_time) / 60, 1)
-        if last_research_time > 0 else None
-    )
 
     # Merge active processes from all hosts
     heartbeats = _read_all_heartbeats(results_dir)
@@ -1035,6 +1039,25 @@ def write_status_json(results_dir: Path, iteration: int,
             a["host"] = host
             all_active.append(a)
         free_gpus_by_host[host] = hb.get("free_gpus", [])
+
+    # Build per-role status
+    role_states = role_states or {}
+    roles_cfg = cfg.get("roles", {})
+    roles_status = {}
+    for rname in roles_cfg:
+        rs = role_states.get(rname, {})
+        last_run = rs.get("last_run_time", 0.0)
+        roles_status[rname] = {
+            "enabled": True,
+            "cycles": rs.get("cycles", 0),
+            "last_run_min_ago": (
+                round((now - last_run) / 60, 1) if last_run > 0 else None
+            ),
+        }
+
+    # Backward compat: flat research_* keys
+    research_rs = role_states.get("research", {})
+    research_last = research_rs.get("last_run_time", 0.0)
 
     hostname = socket.gethostname()
     status = {
@@ -1050,9 +1073,13 @@ def write_status_json(results_dir: Path, iteration: int,
         "skipped": skipped_count,
         "disk_free_gb": round(disk_free_gb, 1),
         "top_results": top_results[:10],
-        "research_enabled": bool(cfg.get("research", {}).get("script")),
-        "research_cycles": research_cycles,
-        "last_research_min_ago": last_research_min_ago,
+        "roles": roles_status,
+        "research_enabled": "research" in roles_cfg,
+        "research_cycles": research_rs.get("cycles", 0),
+        "last_research_min_ago": (
+            round((now - research_last) / 60, 1) if research_last > 0
+            else None
+        ),
     }
 
     atomic_write(results_dir / "status.json", json.dumps(status, indent=2))
@@ -1071,7 +1098,8 @@ def save_state(results_dir: Path, state: dict):
 
 def load_state(results_dir: Path) -> dict:
     """Load orchestrator state from checkpoint (per-host).
-    Falls back to legacy .orze_state.json for backward compat."""
+    Falls back to legacy .orze_state.json for backward compat.
+    Migrates legacy flat research_* keys into roles dict."""
     hostname = socket.gethostname()
     path = results_dir / f".orze_state_{hostname}.json"
 
@@ -1082,10 +1110,22 @@ def load_state(results_dir: Path) -> dict:
 
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            state = json.loads(path.read_text())
         except json.JSONDecodeError:
             logger.warning("Corrupt state file, starting fresh")
-    return {"iteration": 0, "failure_counts": {}}
+            return {"iteration": 0, "failure_counts": {}, "roles": {}}
+
+        # Migrate legacy flat research state into roles dict
+        if "roles" not in state and "research_cycles" in state:
+            state["roles"] = {
+                "research": {
+                    "cycles": state.pop("research_cycles", 0),
+                    "last_run_time": state.pop("last_research_time", 0.0),
+                }
+            }
+        state.setdefault("roles", {})
+        return state
+    return {"iteration": 0, "failure_counts": {}, "roles": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -1105,9 +1145,8 @@ class Orze:
         self.iteration = state.get("iteration", 0)
         self.failure_counts = state.get("failure_counts", {})
 
-        # Research agent state
-        self.research_cycles = state.get("research_cycles", 0)
-        self.last_research_time = state.get("last_research_time", 0.0)
+        # Per-role agent state: {role_name: {"cycles": int, "last_run_time": float}}
+        self.role_states: Dict[str, dict] = state.get("roles", {})
 
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1130,81 +1169,81 @@ class Orze:
         save_state(self.results_dir, {
             "iteration": self.iteration,
             "failure_counts": self.failure_counts,
-            "research_cycles": self.research_cycles,
-            "last_research_time": self.last_research_time,
+            "roles": self.role_states,
         })
         logger.info("Shutdown complete.")
         sys.exit(0)
 
-    def _run_research_step(self):
-        """Run the research agent to generate new ideas (rate-limited).
+    def _run_role_step(self, role_name: str, role_cfg: dict):
+        """Run an agent role (rate-limited, locked, logged).
 
         Supports two modes:
-          - mode: script  — run a Python script (default)
+          - mode: script  — run a Python script
           - mode: claude  — run Claude CLI with a rules/prompt file
         """
-        research_cfg = self.cfg.get("research")
-        if not research_cfg:
+        mode = role_cfg.get("mode", "script")
+        if mode == "script" and not role_cfg.get("script"):
+            return
+        if mode == "claude" and not role_cfg.get("rules_file"):
             return
 
-        mode = research_cfg.get("mode", "script")
-        if mode == "script" and not research_cfg.get("script"):
-            return
-        if mode == "claude" and not research_cfg.get("rules_file"):
-            return
-
-        cooldown = research_cfg.get("cooldown", 300)
-        elapsed = time.time() - self.last_research_time
+        # Per-role cooldown
+        role_state = self.role_states.setdefault(
+            role_name, {"cycles": 0, "last_run_time": 0.0})
+        cooldown = role_cfg.get("cooldown", 300)
+        elapsed = time.time() - role_state["last_run_time"]
         if elapsed < cooldown:
             return
 
-        timeout = research_cfg.get("timeout", 600)
+        timeout = role_cfg.get("timeout", 600)
 
-        # Acquire cross-machine lock (only one host runs research at a time)
-        lock_dir = self.results_dir / "_research_lock"
+        # Per-role cross-machine lock
+        lock_dir = self.results_dir / f"_{role_name}_lock"
         if not _fs_lock(lock_dir, stale_seconds=timeout + 60):
-            logger.debug("Research lock held by another host, skipping")
+            logger.debug("%s lock held by another host, skipping", role_name)
             return
 
-        # Count current status for template vars
+        # Template variables (shared across all roles)
         ideas = parse_ideas(self.cfg["ideas_file"])
         counts = _count_statuses(ideas, self.results_dir)
         template_vars = {
             "ideas_file": self.cfg["ideas_file"],
             "results_dir": str(self.results_dir),
-            "cycle": self.research_cycles + 1,
+            "cycle": role_state["cycles"] + 1,
             "gpu_count": len(self.gpu_ids),
             "completed": counts.get("COMPLETED", 0),
             "queued": counts.get("QUEUED", 0),
+            "role_name": role_name,
         }
 
         # Build command based on mode
         if mode == "claude":
-            cmd = self._build_claude_cmd(research_cfg, template_vars)
+            cmd = self._build_claude_cmd(role_cfg, template_vars)
             if not cmd:
+                _fs_unlock(lock_dir)
                 return
         else:
             python = self.cfg.get("python", sys.executable)
-            cmd = [python, research_cfg["script"]]
-            for arg in research_cfg.get("args", []):
+            cmd = [python, role_cfg["script"]]
+            for arg in role_cfg.get("args", []):
                 cmd.append(str(arg).format(**template_vars))
 
         # Environment
         env = os.environ.copy()
         for k, v in self.cfg.get("train_extra_env", {}).items():
             env[k] = str(v)
-        for k, v in research_cfg.get("env", {}).items():
+        for k, v in role_cfg.get("env", {}).items():
             env[k] = str(v)
 
-        # Log directory
-        log_dir_name = research_cfg.get("log_dir", "_research_logs")
+        # Per-role log directory
+        log_dir_name = role_cfg.get("log_dir", f"_{role_name}_logs")
         log_dir = self.results_dir / log_dir_name
         log_dir.mkdir(parents=True, exist_ok=True)
-        cycle_num = self.research_cycles + 1
+        cycle_num = role_state["cycles"] + 1
         log_path = log_dir / f"cycle_{cycle_num:03d}.log"
 
-        logger.info("Running research agent [%s] (cycle %d)...",
-                     mode, cycle_num)
+        logger.info("Running %s [%s] (cycle %d)...",
+                     role_name, mode, cycle_num)
 
         try:
             with open(log_path, "w") as log_fh:
@@ -1213,27 +1252,31 @@ class Orze:
                     timeout=timeout,
                 )
 
-            self.last_research_time = time.time()
-            self.research_cycles += 1
+            role_state["last_run_time"] = time.time()
+            role_state["cycles"] += 1
 
             if result.returncode == 0:
-                n_new = self._count_new_ideas(log_path)
-                logger.info("Research cycle %d completed (%d new ideas)",
-                            cycle_num, n_new)
+                logger.info("%s cycle %d completed", role_name, cycle_num)
             else:
                 logger.warning(
-                    "Research agent failed (exit %d), see %s",
-                    result.returncode, log_path)
+                    "%s failed (exit %d), see %s",
+                    role_name, result.returncode, log_path)
 
         except subprocess.TimeoutExpired:
-            self.last_research_time = time.time()
-            self.research_cycles += 1
-            logger.warning("Research agent timed out after %ds", timeout)
+            role_state["last_run_time"] = time.time()
+            role_state["cycles"] += 1
+            logger.warning("%s timed out after %ds", role_name, timeout)
         except Exception as e:
-            self.last_research_time = time.time()
-            logger.warning("Research agent error: %s", e)
+            role_state["last_run_time"] = time.time()
+            logger.warning("%s error: %s", role_name, e)
         finally:
             _fs_unlock(lock_dir)
+
+    def _run_all_roles(self):
+        """Run all configured agent roles (each independently rate-limited)."""
+        for role_name, role_cfg in self.cfg.get("roles", {}).items():
+            if isinstance(role_cfg, dict):
+                self._run_role_step(role_name, role_cfg)
 
     def _build_claude_cmd(self, research_cfg: dict,
                           template_vars: dict) -> Optional[List[str]]:
@@ -1295,16 +1338,17 @@ class Orze:
         logger.info("Ideas: %s | Results: %s | Timeout: %ds | Poll: %ds",
                      cfg["ideas_file"], cfg["results_dir"],
                      cfg["timeout"], cfg["poll"])
-        research_cfg = cfg.get("research", {})
-        research_mode = research_cfg.get("mode", "script")
-        research_target = (research_cfg.get("rules_file")
-                           if research_mode == "claude"
-                           else research_cfg.get("script"))
-        if research_target:
-            logger.info("Research [%s]: %s (cooldown: %ds, timeout: %ds)",
-                        research_mode, research_target,
-                        research_cfg.get("cooldown", 300),
-                        research_cfg.get("timeout", 600))
+        for rname, rcfg in cfg.get("roles", {}).items():
+            if not isinstance(rcfg, dict):
+                continue
+            rmode = rcfg.get("mode", "script")
+            rtarget = (rcfg.get("rules_file") if rmode == "claude"
+                       else rcfg.get("script"))
+            if rtarget:
+                logger.info("Role '%s' [%s]: %s (cooldown: %ds, timeout: %ds)",
+                            rname, rmode, rtarget,
+                            rcfg.get("cooldown", 300),
+                            rcfg.get("timeout", 600))
 
         while self.running:
             self.iteration += 1
@@ -1359,8 +1403,8 @@ class Orze:
                     except json.JSONDecodeError:
                         pass
 
-            # 5. Run research agent to generate new ideas
-            self._run_research_step()
+            # 5. Run agent roles (research, documenter, etc.)
+            self._run_all_roles()
 
             # 6. Parse ideas and find unclaimed
             ideas = parse_ideas(cfg["ideas_file"])
@@ -1433,16 +1477,14 @@ class Orze:
                 self.results_dir, self.iteration, self.active, free,
                 len(unclaimed), counts.get("COMPLETED", 0),
                 counts.get("FAILED", 0), len(skipped), top_results, cfg,
-                research_cycles=self.research_cycles,
-                last_research_time=self.last_research_time,
+                role_states=self.role_states,
             )
 
             # 10. Save state
             save_state(self.results_dir, {
                 "iteration": self.iteration,
                 "failure_counts": self.failure_counts,
-                "research_cycles": self.research_cycles,
-                "last_research_time": self.last_research_time,
+                "roles": self.role_states,
             })
 
             if self.once:
@@ -1517,8 +1559,10 @@ Examples:
                         help="Run one cycle and exit")
     parser.add_argument("--report-only", action="store_true",
                         help="Only regenerate report")
+    parser.add_argument("--role-only", type=str, default=None, metavar="NAME",
+                        help="Run a single agent role once and exit")
     parser.add_argument("--research-only", action="store_true",
-                        help="Only run research agent once and exit")
+                        help="Alias for --role-only research")
     parser.add_argument("--ideas-md", type=str, default=None,
                         help="Path to ideas markdown file")
     parser.add_argument("--base-config", type=str, default=None,
@@ -1565,22 +1609,30 @@ Examples:
         update_report(Path(cfg["results_dir"]), ideas, cfg)
         return
 
-    # Research-only mode
+    # Role-only mode (--role-only NAME or --research-only)
+    role_only = args.role_only
     if args.research_only:
-        research_cfg = cfg.get("research")
-        if not research_cfg:
-            logger.error("No research section configured in orze.yaml")
+        role_only = "research"
+    if role_only:
+        roles_cfg = cfg.get("roles", {})
+        role_cfg = roles_cfg.get(role_only)
+        if not role_cfg or not isinstance(role_cfg, dict):
+            logger.error("No role '%s' configured in orze.yaml", role_only)
             sys.exit(1)
-        mode = research_cfg.get("mode", "script")
-        has_target = (research_cfg.get("rules_file") if mode == "claude"
-                      else research_cfg.get("script"))
+        mode = role_cfg.get("mode", "script")
+        has_target = (role_cfg.get("rules_file") if mode == "claude"
+                      else role_cfg.get("script"))
         if not has_target:
-            logger.error("No research.%s configured in orze.yaml",
+            logger.error("No %s.%s configured in orze.yaml",
+                         role_only,
                          "rules_file" if mode == "claude" else "script")
             sys.exit(1)
         orze = Orze(gpu_ids, cfg, once=True)
-        orze.last_research_time = 0.0  # Force immediate run
-        orze._run_research_step()
+        # Force immediate run by zeroing cooldown
+        rs = orze.role_states.setdefault(
+            role_only, {"cycles": 0, "last_run_time": 0.0})
+        rs["last_run_time"] = 0.0
+        orze._run_role_step(role_only, role_cfg)
         return
 
     orze = Orze(gpu_ids, cfg, once=args.once)
