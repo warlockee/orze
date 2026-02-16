@@ -107,7 +107,10 @@ def _fs_lock(lock_dir: Path, stale_seconds: float = 600) -> bool:
                 age = time.time() - lock_dir.stat().st_mtime
 
             if age > stale_seconds:
-                shutil.rmtree(lock_dir)
+                try:
+                    shutil.rmtree(lock_dir)
+                except OSError:
+                    pass  # Another node already deleted the stale lock
                 try:
                     lock_dir.mkdir(parents=True, exist_ok=False)
                 except FileExistsError:
@@ -272,8 +275,8 @@ def get_unclaimed(ideas: Dict[str, dict], results_dir: Path,
 
     def sort_key(idea_id):
         pri = PRIORITY_ORDER.get(ideas[idea_id]["priority"], 2)
-        num = int(re.search(r"\d+", idea_id).group())
-        return (pri, num)
+        match = re.search(r"\d+", idea_id)
+        return (pri, int(match.group()) if match else 999999)
 
     unclaimed.sort(key=sort_key)
     return unclaimed
@@ -881,8 +884,11 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     title = report_cfg.get("title", "Orze Report")
 
     rows = []
-    for idea_id in sorted(ideas.keys(),
-                          key=lambda x: int(re.search(r"\d+", x).group())):
+    def _id_sort_key(x):
+        match = re.search(r"\d+", x)
+        return int(match.group()) if match else 999999
+
+    for idea_id in sorted(ideas.keys(), key=_id_sort_key):
         idea_dir = results_dir / idea_id
 
         if not idea_dir.exists():
@@ -956,8 +962,9 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
         header = "| Rank | Idea | Title"
         sep = "|------|------|------"
         for col in columns:
-            header += f" | {col['label']}"
-            sep += " |" + "-" * max(6, len(col["label"]))
+            label = col.get("label", col.get("key", "?"))
+            header += f" | {label}"
+            sep += " |" + "-" * max(6, len(str(label)))
         header += " |"
         sep += " |"
         lines.append(header)
@@ -1057,6 +1064,12 @@ def _read_all_heartbeats(results_dir: Path,
                 except OSError:
                     pass
         except Exception:
+            # Purge unparseable/corrupt heartbeat files if stale
+            try:
+                if now - hb_path.stat().st_mtime > stale_seconds:
+                    hb_path.unlink()
+            except OSError:
+                pass
             continue
     return heartbeats
 
@@ -1145,28 +1158,33 @@ def _notify_send(url: str, payload: dict,
     """POST JSON payload to a URL. Never raises."""
     try:
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST",
-                                     headers={"Content-Type": "application/json"})
+        req_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": f"orze/{__version__}",
+        }
         if headers:
-            for k, v in headers.items():
-                req.add_header(k, v)
+            req_headers.update(headers)
+        req = urllib.request.Request(url, data=data, method="POST",
+                                     headers=req_headers)
         urllib.request.urlopen(req, timeout=timeout)
     except Exception as e:
         logger.warning("Notification failed (%s): %s", url[:60], e)
 
 
-def _format_leaderboard(data: dict, bold_fn=str) -> str:
-    """Format top 10 leaderboard lines from data['leaderboard']."""
+def _format_leaderboard(data: dict, bold_fn=str, escape_fn=str) -> str:
+    """Format top 10 leaderboard lines from data['leaderboard'].
+    escape_fn is applied to all text content (needed for Telegram HTML)."""
     board = data.get("leaderboard", [])
     if not board:
         return ""
-    metric = data.get("metric_name", "score")
+    metric = escape_fn(str(data.get("metric_name", "score")))
     lines = [f"\nTop {len(board)} ({metric}):"]
     for i, entry in enumerate(board, 1):
         val = entry.get("value")
         val_str = f"{val:.4f}" if isinstance(val, float) else str(val)
-        marker = " <-" if entry["id"] == data.get("idea_id") else ""
-        line = f"#{i} {entry['id']}: {val_str} {entry['title'][:30]}{marker}"
+        marker = escape_fn(" <-" if entry["id"] == data.get("idea_id") else "")
+        title = escape_fn(str(entry.get("title", ""))[:30])
+        line = f"#{i} {escape_fn(str(entry['id']))}: {val_str} {title}{marker}"
         if i == 1:
             line = bold_fn(line)
         lines.append(line)
@@ -1303,7 +1321,7 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
                 f"{metric}: {val}"
                 f" (rank #{rank})"
                 f" in {t:.0f}s")
-    text += _format_leaderboard(data, lambda s: f"<b>{esc(s)}</b>")
+    text += _format_leaderboard(data, lambda s: f"<b>{s}</b>", escape_fn=esc)
 
     return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 
@@ -1885,8 +1903,10 @@ class Orze:
                                     pass
                     ideas = parse_ideas(cfg["ideas_file"])
                     once_rows = update_report(self.results_dir, ideas, cfg)
+                    once_counts = _count_statuses(ideas, self.results_dir)
                     self._process_notifications(
-                        all_once_finished, once_rows or [], ideas)
+                        all_once_finished, once_rows or [], ideas,
+                        once_counts)
                 logger.info("Done.")
                 break
 
@@ -2024,6 +2044,12 @@ Examples:
             role_only, {"cycles": 0, "last_run_time": 0.0})
         rs["last_run_time"] = 0.0
         orze._run_role_step(role_only, role_cfg)
+        save_state(orze.results_dir, {
+            "iteration": orze.iteration,
+            "failure_counts": orze.failure_counts,
+            "roles": orze.role_states,
+            "best_idea_id": orze._best_idea_id,
+        })
         return
 
     orze = Orze(gpu_ids, cfg, once=args.once)
