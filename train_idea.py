@@ -213,24 +213,31 @@ def train(args):
     extracted_dir = data_dir / "cifar-10-batches-py"
     needs_download = not extracted_dir.exists()
 
-    if needs_download:
+    marker = data_dir / ".download_complete"
+    if not marker.exists():
+        acquired_lock = False
         while True:
             try:
                 lock_dir.mkdir(exist_ok=False)
+                acquired_lock = True
                 break
             except FileExistsError:
-                if extracted_dir.exists():
+                if marker.exists():
                     break
                 time.sleep(2)
-        try:
-            torchvision.datasets.CIFAR10(root=str(data_dir), train=True, download=True, transform=transform_train)
-            torchvision.datasets.CIFAR10(root=str(data_dir), train=False, download=True, transform=transform_test)
-        finally:
-            if lock_dir.exists():
-                try:
-                    lock_dir.rmdir()
-                except Exception:
-                    pass
+
+        if acquired_lock:
+            try:
+                if not marker.exists():
+                    torchvision.datasets.CIFAR10(root=str(data_dir), train=True, download=True, transform=transform_train)
+                    torchvision.datasets.CIFAR10(root=str(data_dir), train=False, download=True, transform=transform_test)
+                    marker.touch()
+            finally:
+                if lock_dir.exists():
+                    try:
+                        lock_dir.rmdir()
+                    except Exception:
+                        pass
 
     trainset = torchvision.datasets.CIFAR10(
         root=str(data_dir), train=True, download=False, transform=transform_train)
