@@ -66,6 +66,7 @@ python orze/farm.py -c orze.yaml
 
 ## Key Features
 
+- **Agent roles** — multiple agents (research, documenter, analyzer, etc.) run alongside training
 - **Research agent** — Claude CLI or any script generates ideas automatically
 - **Multi-GPU** — claims and trains across all GPUs in parallel
 - **Health monitoring** — stall detection, OOM detection, disk space checks
@@ -108,7 +109,8 @@ python orze/farm.py [OPTIONS]
   --gpus GPU_IDS           Comma-separated GPU IDs (default: all)
   --once                   Run one cycle and exit
   --report-only            Only regenerate report.md
-  --research-only          Only run research agent once
+  --role-only NAME         Run a single agent role once and exit
+  --research-only          Alias for --role-only research
   -v, --verbose            Debug logging
 ```
 

@@ -56,31 +56,45 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 #     args: ["--idea-id", "{idea_id}"]
 #     timeout: 600
 
-# --- Research agent (optional) ---
-# Spawns an LLM to generate new ideas based on results.
-# Two modes: "script" (Python script) or "claude" (Claude CLI).
+# --- Agent roles (optional) ---
+# Each role is an independently scheduled agent that runs alongside training.
+# Each gets its own cooldown, timeout, lock, state, and log directory.
+# Two modes per role: "script" (Python script) or "claude" (Claude CLI).
 #
-# Mode: script (default) — run any Python script
-# research:
-#   mode: script
-#   script: research_agent.py
-#   args: ["--ideas-md", "{ideas_file}", "--results-dir", "{results_dir}", "--cycle", "{cycle}"]
-#   timeout: 600                       # max time per research cycle (seconds)
-#   cooldown: 300                      # min seconds between research cycles
-#   log_dir: _research_logs            # relative to results_dir
-#   env:                               # extra env vars (e.g., API keys)
-#     ANTHROPIC_API_KEY: sk-...
+# roles:
+#   research:
+#     mode: claude
+#     rules_file: RESEARCH_RULES.md
+#     cooldown: 300
+#     timeout: 600
+#     model: sonnet
+#     allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
+#     log_dir: _research_logs          # relative to results_dir
 #
-# Mode: claude — use Claude CLI directly (no API keys needed)
+#   documenter:
+#     mode: claude
+#     rules_file: DOCUMENTER_RULES.md
+#     cooldown: 600
+#     timeout: 300
+#     model: haiku
+#     log_dir: _documenter_logs
+#
+#   analyzer:
+#     mode: script
+#     script: analysis_agent.py
+#     args: ["--results-dir", "{results_dir}", "--cycle", "{cycle}"]
+#     timeout: 600
+#     cooldown: 300
+#     log_dir: _analyzer_logs
+#     env:
+#       ANTHROPIC_API_KEY: sk-...
+#
+# Legacy: top-level "research:" still works (auto-migrated to roles.research)
 # research:
 #   mode: claude
-#   rules_file: RESEARCH_RULES.md      # prompt/instructions for Claude
+#   rules_file: RESEARCH_RULES.md
 #   cooldown: 300
 #   timeout: 600
-#   model: sonnet                      # optional: sonnet, opus, haiku
-#   allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
-#   claude_bin: claude                 # path to claude CLI
-#   claude_args: []                    # extra CLI flags
 
 # --- Garbage collection (optional) ---
 # cleanup:
