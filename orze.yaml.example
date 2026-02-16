@@ -1,0 +1,49 @@
+# orze.yaml — Project configuration for orze experiment orchestrator
+# Copy this file to your project root as orze.yaml and customize.
+# See RULES.md for full documentation.
+
+# --- Scripts and paths ---
+train_script: train_idea.py          # your training script
+ideas_file: ideas.md                 # experiment definitions
+base_config: configs/base.yaml      # base config passed to training
+results_dir: results                 # output directory
+python: python3                      # python interpreter (use venv path)
+
+# --- Extra args/env for training script ---
+# Appended to: python train_script --idea-id X --results-dir Y --ideas-md Z --config W
+train_extra_args: []
+#  - "--data-dir"
+#  - "/path/to/data"
+
+train_extra_env: {}
+#  TORCH_HOME: /path/to/cache
+#  HF_HOME: /path/to/hf_cache
+
+# --- Timeouts ---
+timeout: 3600                        # max training time (seconds)
+poll: 30                             # loop interval (seconds)
+gpu_mem_threshold: 2000              # GPU memory (MiB) to consider "in use"
+
+# --- Health monitoring (0 = disabled) ---
+stall_minutes: 0                     # kill if no log growth for N minutes
+max_idea_failures: 0                 # skip idea after N failures
+min_disk_gb: 0                       # pause launches if disk < N GB free
+orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
+
+# --- Post-training evaluation (optional) ---
+# eval_script: evaluate.py
+# eval_args: ["--idea-id", "{idea_id}", "--gpu", "{gpu}"]
+# eval_timeout: 3600
+# eval_output: eval_report.json      # skip eval if this file exists
+
+# --- Report configuration ---
+report:
+  title: "Orze Report"
+  primary_metric: test_accuracy      # sort leaderboard by this
+  sort: descending                   # or "ascending"
+  columns:
+    - {key: "test_accuracy", label: "Accuracy", fmt: ".4f"}
+    - {key: "test_loss", label: "Loss", fmt: ".4f"}
+    - {key: "training_time", label: "Time(s)", fmt: ".0f"}
+    # Read from other JSON files:
+    # - {key: "auc", label: "AUC", fmt: ".4f", source: "eval.json:metrics.auc"}
