@@ -186,10 +186,10 @@ def train(args):
         else:
             cfg[key] = idea_cfg[key]
 
-    train_cfg = cfg.get("training", {})
-    data_cfg = cfg.get("data", {})
-    model_cfg = cfg.get("model", {})
-    ckpt_cfg = cfg.get("checkpointing", {})
+    train_cfg = cfg.get("training") or {}
+    data_cfg = cfg.get("data") or {}
+    model_cfg = cfg.get("model") or {}
+    ckpt_cfg = cfg.get("checkpointing") or {}
 
     epochs = train_cfg.get("epochs", 10)
     batch_size = train_cfg.get("batch_size", 128)
@@ -212,7 +212,7 @@ def train(args):
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
-    data_dir = Path(data_cfg.get("data_dir", "./data"))
+    data_dir = Path(data_cfg.get("data_dir") or "./data")
     data_dir.mkdir(parents=True, exist_ok=True)
     num_workers = data_cfg.get("num_workers", 2)
 
