@@ -1163,8 +1163,57 @@ def _format_leaderboard(data: dict, bold_fn=str) -> str:
     return "\n".join(lines)
 
 
+def _format_report_text(data: dict, monospace: bool = False) -> str:
+    """Format a periodic report summary.
+
+    data keys:
+      title, completed, failed, active_count, queued,
+      leaderboard: [{id, title, value}],
+      metric_name,
+      machines: [{host, gpus_busy, gpus_total, utilization}]
+    """
+    c = data.get("completed", 0)
+    f = data.get("failed", 0)
+    a = data.get("active_count", 0)
+    q = data.get("queued", 0)
+    title = data.get("title", "Report")
+    metric = data.get("metric_name", "score")
+    board = data.get("leaderboard", [])
+    machines = data.get("machines", [])
+
+    lines = [title]
+    lines.append(f"{c} completed | {f} failed | {a} active | {q} queued")
+    lines.append("")
+
+    # Machine status
+    if machines:
+        lines.append("Machines:")
+        for m in machines:
+            host = m.get("host", "?")
+            busy = m.get("gpus_busy", 0)
+            total = m.get("gpus_total", 0)
+            util = m.get("utilization", "?")
+            lines.append(f"  {host}: {busy}/{total} GPUs, {util}% util")
+        lines.append("")
+
+    # Top 10 leaderboard
+    if board:
+        lines.append(f"Top {len(board)} ({metric}):")
+        for i, entry in enumerate(board, 1):
+            val = entry.get("value")
+            val_str = f"{val:.4f}" if isinstance(val, float) else str(val)
+            eid = entry.get("id", "?")
+            title_short = entry.get("title", "")[:25]
+            lines.append(f"  #{i} {eid}: {val_str} {title_short}")
+
+    return "\n".join(lines)
+
+
 def _format_slack(event: str, data: dict) -> dict:
     """Format notification for Slack webhook."""
+    if event == "report":
+        text = f"```\n{_format_report_text(data)}\n```"
+        return {"text": text}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         text = (f":trophy: *NEW BEST* `{data['idea_id']}`: {data['title']}\n"
@@ -1185,6 +1234,8 @@ def _format_slack(event: str, data: dict) -> dict:
 
 def _format_discord(event: str, data: dict) -> dict:
     """Format notification for Discord webhook."""
+    if event == "report":
+        return {"content": f"```\n{_format_report_text(data)}\n```"}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         content = (f"**NEW BEST** `{data['idea_id']}`: {data['title']}\n"
@@ -1207,6 +1258,11 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
     token = channel_cfg["bot_token"]
     chat_id = channel_cfg["chat_id"]
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    if event == "report":
+        text = f"```\n{_format_report_text(data)}\n```"
+        return url, {"chat_id": chat_id, "text": text,
+                     "parse_mode": "Markdown"}
 
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
@@ -1350,8 +1406,28 @@ class Orze:
         logger.info("Shutdown complete.")
         sys.exit(0)
 
+    def _build_machine_status(self) -> list:
+        """Build machine status from heartbeats for report notifications."""
+        heartbeats = _read_all_heartbeats(self.results_dir)
+        machines = []
+        for hb in heartbeats:
+            host = hb.get("host", "unknown")
+            active_list = hb.get("active", [])
+            free_list = hb.get("free_gpus", [])
+            gpus_busy = len(active_list)
+            gpus_total = gpus_busy + len(free_list)
+            util = round(gpus_busy / gpus_total * 100) if gpus_total else 0
+            machines.append({
+                "host": host,
+                "gpus_busy": gpus_busy,
+                "gpus_total": gpus_total,
+                "utilization": util,
+            })
+        return machines
+
     def _process_notifications(self, finished: list,
-                               completed_rows: list, ideas: dict):
+                               completed_rows: list, ideas: dict,
+                               counts: dict):
         """Fire notifications for finished experiments and new bests. Never raises."""
         try:
             cfg = self.cfg
@@ -1417,6 +1493,23 @@ class Orze:
                     }, cfg)
                 self._best_idea_id = current_best
 
+            # Periodic report summary
+            report_interval = ncfg.get("report_interval", 0)
+            if report_interval > 0:
+                last_report = getattr(self, "_last_report_notify", 0.0)
+                if time.time() - last_report >= report_interval:
+                    notify("report", {
+                        "title": cfg["report"].get("title", "Report"),
+                        "completed": counts.get("COMPLETED", 0),
+                        "failed": counts.get("FAILED", 0),
+                        "active_count": len(self.active),
+                        "queued": counts.get("QUEUED", 0),
+                        "metric_name": primary,
+                        "leaderboard": leaderboard,
+                        "machines": self._build_machine_status(),
+                    }, cfg)
+                    self._last_report_notify = time.time()
+
         except Exception as e:
             logger.warning("Notification processing error: %s", e)
 
@@ -1475,6 +1568,8 @@ class Orze:
 
         # Environment
         env = os.environ.copy()
+        env.pop("CLAUDECODE", None)  # Allow nested Claude CLI sessions
+        env.pop("CLAUDE_CODE_ENTRYPOINT", None)
         for k, v in self.cfg.get("train_extra_env", {}).items():
             env[k] = str(v)
         for k, v in role_cfg.get("env", {}).items():
@@ -1703,12 +1798,13 @@ class Orze:
             # 8. Update report
             completed_rows = update_report(self.results_dir, ideas, cfg)
 
-            # 8a. Notifications
-            self._process_notifications(finished, completed_rows or [], ideas)
-
             # 9. Write heartbeat + status.json
             write_host_heartbeat(self.results_dir, self.active, free)
             counts = _count_statuses(ideas, self.results_dir)
+
+            # 8a. Notifications (after heartbeat so machine data is fresh)
+            self._process_notifications(
+                finished, completed_rows or [], ideas, counts)
             top_results = []
             if completed_rows:
                 primary = cfg["report"].get("primary_metric",
