@@ -26,6 +26,7 @@ import yaml
 
 def _atomic_write_json(path: Path, data: dict):
     """Write JSON atomically via tmp+replace to prevent partial reads."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     safe_host = "".join(c if c.isalnum() else "_" for c in socket.gethostname())
     tmp = path.with_name(f"{path.name}.{safe_host}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -174,7 +175,7 @@ def train(args):
     # Load configs: base config merged with idea-specific overrides
     base_cfg = {}
     if Path(args.config).exists():
-        base_cfg = yaml.safe_load(Path(args.config).read_text()) or {}
+        base_cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
 
     idea_cfg = get_idea_config(args.ideas_md, args.idea_id)
 
@@ -233,6 +234,12 @@ def train(args):
             except FileExistsError:
                 if marker.exists():
                     break
+                # Break stale locks (e.g. downloader was SIGKILLed)
+                try:
+                    if time.time() - lock_dir.stat().st_mtime > 300:
+                        lock_dir.rmdir()
+                except OSError:
+                    pass
                 time.sleep(2)
 
         if acquired_lock:
