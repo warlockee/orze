@@ -45,13 +45,9 @@ Then confirm with the user in **one sentence**:
 
 If they say yes (or anything not a correction), proceed. If they correct you, update GOAL.md and proceed.
 
-### 3. Create agent rules files
+### 3. Create `RESEARCH_RULES.md`
 
-Create these three rules files based on `GOAL.md` and what you learned from the codebase.
-
-#### `RESEARCH_RULES.md` — idea generation
-
-This controls what experiments get generated. Include:
+This controls what experiments get generated. Write it based on `GOAL.md` and what you learned from the codebase. Include:
 
 1. Research goal (from GOAL.md)
 2. Template vars for current state: `{cycle}`, `{completed}`, `{queued}`, `{results_dir}`, `{ideas_file}`
@@ -62,35 +58,6 @@ This controls what experiments get generated. Include:
 7. Rules: append-only, unique IDs, complete YAML configs
 
 **The user edits this file to change research direction.** Make that clear with a comment at the top.
-
-#### `MONITOR_RULES.md` — health monitoring & alerts
-
-This agent runs frequently and watches over the pipeline. Include instructions to:
-
-1. Read `{results_dir}/status.json` for current pipeline state
-2. Read `{results_dir}/report.md` for latest results
-3. Check for anomalies: sudden accuracy drops, repeated failures, stalled GPUs, disk pressure
-4. Check training logs for warnings (NaN losses, gradient explosions, OOM near-misses)
-5. Write a brief status summary to `{results_dir}/monitor.md` with:
-   - Current pipeline health (healthy / warning / critical)
-   - Active training jobs and their progress
-   - Recent completions and their results
-   - Any issues detected
-6. If critical issues are found, write details to `{results_dir}/alerts.md`
-
-#### `DOCUMENTER_RULES.md` — research documentation
-
-This agent maintains a living research log. Include instructions to:
-
-1. Read `{results_dir}/report.md` for current leaderboard
-2. Read `{results_dir}/monitor.md` for pipeline health
-3. Read recent experiment configs and results from `{results_dir}/`
-4. Maintain `{results_dir}/research_log.md` — a chronological narrative of:
-   - What experiments have been tried and why
-   - Key findings (what worked, what didn't, and why)
-   - Current best approaches and their characteristics
-   - Promising directions for future work
-5. Keep it concise and insight-dense — this is for humans to read
 
 ### 4. Create or adapt the training script
 
@@ -140,20 +107,6 @@ roles:
     cooldown: 300
     timeout: 600
 
-  monitor:
-    mode: claude
-    rules_file: MONITOR_RULES.md
-    model: haiku
-    cooldown: 120
-    timeout: 120
-
-  documenter:
-    mode: claude
-    rules_file: DOCUMENTER_RULES.md
-    model: haiku
-    cooldown: 900
-    timeout: 300
-
 report:
   title: "Research Report"
   primary_metric: test_accuracy     # from GOAL.md
@@ -182,8 +135,6 @@ Run the smoke test first. If it fails, fix the issue and retry. Once it passes, 
 project/
 ├── GOAL.md                # Research target (edit to pivot)
 ├── RESEARCH_RULES.md      # Idea generation strategy (edit to steer)
-├── MONITOR_RULES.md       # Health monitoring agent rules
-├── DOCUMENTER_RULES.md    # Documentation agent rules
 ├── orze.yaml              # Infrastructure config
 ├── ideas.md               # Experiments (auto-grows)
 ├── configs/base.yaml      # Training defaults
@@ -193,5 +144,3 @@ project/
 ```
 
 **To change research direction:** edit `GOAL.md` and/or `RESEARCH_RULES.md`.
-**To adjust monitoring:** edit `MONITOR_RULES.md`.
-**To change documentation style:** edit `DOCUMENTER_RULES.md`.
