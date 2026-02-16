@@ -234,8 +234,13 @@ Each iteration:
 
 ### Research Configuration
 
+Two modes: **script** (call any Python script) or **claude** (use Claude CLI directly).
+
+#### Mode: script (for custom research scripts)
+
 ```yaml
 research:
+  mode: script                     # default
   script: research_agent.py        # your research script
   args: ["--ideas-md", "{ideas_file}", "--results-dir", "{results_dir}"]
   timeout: 600                     # max time per cycle (seconds)
@@ -247,7 +252,25 @@ research:
 
 Template variables for `args`: `{ideas_file}`, `{results_dir}`, `{cycle}`, `{gpu_count}`, `{completed}`, `{queued}`.
 
-### Research Script Contract
+#### Mode: claude (use Claude CLI — no API keys needed)
+
+```yaml
+research:
+  mode: claude
+  rules_file: RESEARCH_RULES.md    # prompt/instructions file for Claude
+  cooldown: 300
+  timeout: 600
+  model: sonnet                    # optional: sonnet, opus, haiku
+  allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"  # tools Claude can use
+  claude_bin: claude               # path to Claude CLI binary
+  claude_args: []                  # extra CLI flags
+```
+
+In this mode, orze spawns `claude -p "<rules_file content>" --allowedTools ... --model ...` as a subprocess. Claude reads results, generates ideas, and appends them to `ideas.md` — all via its native file tools. No API keys needed since Claude CLI handles its own auth.
+
+The `rules_file` supports the same template variables: `{ideas_file}`, `{results_dir}`, `{cycle}`, `{completed}`, `{queued}`, `{gpu_count}`.
+
+### Research Script Contract (mode: script)
 
 **Input**: The command from `research.args` with template variables substituted.
 
@@ -259,13 +282,42 @@ Template variables for `args`: `{ideas_file}`, `{results_dir}`, `{cycle}`, `{gpu
 
 **Output**: Append new ideas to `ideas.md`. Print "N new ideas" to stdout for logging.
 
-**Failures are non-fatal**: If the research script crashes or times out, orze logs a warning and continues training. Research never blocks execution.
+### Research Rules Contract (mode: claude)
 
-### Research Logging
+The `rules_file` is a markdown file that serves as Claude's prompt. It should tell Claude:
+1. What the research goal is
+2. Where to find results (`{results_dir}/report.md`, `{results_dir}/status.json`)
+3. How to format ideas (the Ideas Format from this document)
+4. Where to append ideas (`{ideas_file}`)
+5. What makes a good experiment idea for this domain
 
-All research cycles are logged to `results/_research_logs/`:
-- `cycle_001.log` — stdout/stderr from the first research cycle
-- `cycle_002.log` — second cycle, etc.
+Example `RESEARCH_RULES.md`:
+```markdown
+You are a research agent for [project description].
+
+## Your task
+Read `{results_dir}/report.md` for current results. Read `{results_dir}/status.json` for pipeline status.
+Generate new experiment ideas and append them to `{ideas_file}`.
+
+## Current state
+This is research cycle {cycle}. {completed} experiments completed, {queued} in queue.
+
+## Idea format
+Each idea must be an H2 header with YAML config:
+## idea-NNN: Title
+- **Priority**: high/medium/low
+- **Hypothesis**: Why this might work.
+\```yaml
+model:
+  ...
+\```
+```
+
+### Research Behavior (both modes)
+
+- **Non-fatal**: If the research agent crashes or times out, orze logs a warning and continues training. Research never blocks execution.
+- **Rate-limited**: The `cooldown` timer prevents excessive API/LLM calls.
+- **Logged**: All cycles go to `results/_research_logs/cycle_NNN.log`.
 
 ### Running Research Manually
 

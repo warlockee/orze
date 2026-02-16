@@ -1017,12 +1017,20 @@ class Orze:
         sys.exit(0)
 
     def _run_research_step(self):
-        """Run the research agent to generate new ideas (rate-limited)."""
+        """Run the research agent to generate new ideas (rate-limited).
+
+        Supports two modes:
+          - mode: script  — run a Python script (default)
+          - mode: claude  — run Claude CLI with a rules/prompt file
+        """
         research_cfg = self.cfg.get("research")
         if not research_cfg:
             return
-        script = research_cfg.get("script")
-        if not script:
+
+        mode = research_cfg.get("mode", "script")
+        if mode == "script" and not research_cfg.get("script"):
+            return
+        if mode == "claude" and not research_cfg.get("rules_file"):
             return
 
         cooldown = research_cfg.get("cooldown", 300)
@@ -1030,15 +1038,11 @@ class Orze:
         if elapsed < cooldown:
             return
 
-        python = self.cfg.get("python", sys.executable)
         timeout = research_cfg.get("timeout", 600)
-        raw_args = research_cfg.get("args", [])
 
         # Count current status for template vars
         ideas = parse_ideas(self.cfg["ideas_file"])
         counts = _count_statuses(ideas, self.results_dir)
-
-        # Template substitution
         template_vars = {
             "ideas_file": self.cfg["ideas_file"],
             "results_dir": str(self.results_dir),
@@ -1047,9 +1051,17 @@ class Orze:
             "completed": counts.get("COMPLETED", 0),
             "queued": counts.get("QUEUED", 0),
         }
-        cmd = [python, script]
-        for arg in raw_args:
-            cmd.append(str(arg).format(**template_vars))
+
+        # Build command based on mode
+        if mode == "claude":
+            cmd = self._build_claude_cmd(research_cfg, template_vars)
+            if not cmd:
+                return
+        else:
+            python = self.cfg.get("python", sys.executable)
+            cmd = [python, research_cfg["script"]]
+            for arg in research_cfg.get("args", []):
+                cmd.append(str(arg).format(**template_vars))
 
         # Environment
         env = os.environ.copy()
@@ -1065,7 +1077,8 @@ class Orze:
         cycle_num = self.research_cycles + 1
         log_path = log_dir / f"cycle_{cycle_num:03d}.log"
 
-        logger.info("Running research agent (cycle %d)...", cycle_num)
+        logger.info("Running research agent [%s] (cycle %d)...",
+                     mode, cycle_num)
 
         try:
             with open(log_path, "w") as log_fh:
@@ -1078,18 +1091,7 @@ class Orze:
             self.research_cycles += 1
 
             if result.returncode == 0:
-                # Try to parse how many ideas were generated from log
-                n_new = 0
-                try:
-                    log_text = log_path.read_text()
-                    for line in log_text.split("\n"):
-                        if "ideas" in line.lower():
-                            nums = re.findall(
-                                r"(\d+)\s+(?:new\s+)?ideas?", line, re.I)
-                            if nums:
-                                n_new = int(nums[-1])
-                except Exception:
-                    pass
+                n_new = self._count_new_ideas(log_path)
                 logger.info("Research cycle %d completed (%d new ideas)",
                             cycle_num, n_new)
             else:
@@ -1105,6 +1107,61 @@ class Orze:
             self.last_research_time = time.time()
             logger.warning("Research agent error: %s", e)
 
+    def _build_claude_cmd(self, research_cfg: dict,
+                          template_vars: dict) -> Optional[List[str]]:
+        """Build a Claude CLI command for mode: claude."""
+        rules_file = research_cfg["rules_file"]
+        rules_path = Path(rules_file)
+        if not rules_path.exists():
+            logger.warning("Research rules file not found: %s", rules_file)
+            return None
+
+        rules_content = rules_path.read_text()
+
+        # Substitute template vars in the rules content
+        try:
+            prompt = rules_content.format(**template_vars)
+        except KeyError:
+            prompt = rules_content
+
+        claude_bin = research_cfg.get("claude_bin", "claude")
+        cmd = [claude_bin, "-p", prompt]
+
+        # --model (e.g., sonnet, opus, haiku)
+        model = research_cfg.get("model")
+        if model:
+            cmd.extend(["--model", model])
+
+        # --allowedTools (default: let Claude read/write files)
+        allowed_tools = research_cfg.get("allowed_tools",
+                                         "Read,Write,Edit,Glob,Grep,Bash")
+        cmd.extend(["--allowedTools", allowed_tools])
+
+        # --output-format
+        output_format = research_cfg.get("output_format", "text")
+        cmd.extend(["--output-format", output_format])
+
+        # Any extra CLI args
+        for arg in research_cfg.get("claude_args", []):
+            cmd.append(str(arg).format(**template_vars))
+
+        return cmd
+
+    @staticmethod
+    def _count_new_ideas(log_path: Path) -> int:
+        """Parse research log to count how many new ideas were generated."""
+        try:
+            log_text = log_path.read_text()
+            for line in log_text.split("\n"):
+                if "ideas" in line.lower():
+                    nums = re.findall(
+                        r"(\d+)\s+(?:new\s+)?ideas?", line, re.I)
+                    if nums:
+                        return int(nums[-1])
+        except Exception:
+            pass
+        return 0
+
     def run(self):
         cfg = self.cfg
         logger.info("Starting orze v%s on GPUs %s", __version__, self.gpu_ids)
@@ -1112,9 +1169,13 @@ class Orze:
                      cfg["ideas_file"], cfg["results_dir"],
                      cfg["timeout"], cfg["poll"])
         research_cfg = cfg.get("research", {})
-        if research_cfg.get("script"):
-            logger.info("Research: %s (cooldown: %ds, timeout: %ds)",
-                        research_cfg["script"],
+        research_mode = research_cfg.get("mode", "script")
+        research_target = (research_cfg.get("rules_file")
+                           if research_mode == "claude"
+                           else research_cfg.get("script"))
+        if research_target:
+            logger.info("Research [%s]: %s (cooldown: %ds, timeout: %ds)",
+                        research_mode, research_target,
                         research_cfg.get("cooldown", 300),
                         research_cfg.get("timeout", 600))
 
@@ -1368,8 +1429,15 @@ Examples:
     # Research-only mode
     if args.research_only:
         research_cfg = cfg.get("research")
-        if not research_cfg or not research_cfg.get("script"):
-            logger.error("No research.script configured in orze.yaml")
+        if not research_cfg:
+            logger.error("No research section configured in orze.yaml")
+            sys.exit(1)
+        mode = research_cfg.get("mode", "script")
+        has_target = (research_cfg.get("rules_file") if mode == "claude"
+                      else research_cfg.get("script"))
+        if not has_target:
+            logger.error("No research.%s configured in orze.yaml",
+                         "rules_file" if mode == "claude" else "script")
             sys.exit(1)
         orze = Orze(gpu_ids, cfg, once=True)
         orze.last_research_time = 0.0  # Force immediate run
