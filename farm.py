@@ -629,7 +629,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
         if ret == 0 and metrics_path.exists():
             try:
                 metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 metrics = {"status": "UNKNOWN"}
             status = metrics.get("status", "COMPLETED")
             logger.info("[%s] %s on GPU %d in %.1fm",
@@ -692,7 +692,7 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             if metrics.get("status") != "COMPLETED":
                 return
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             return
     else:
         return
@@ -743,7 +743,7 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             if metrics.get("status") != "COMPLETED":
                 return
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             return
     else:
         return
@@ -861,7 +861,7 @@ def _read_metric_value(results_dir: Path, idea_id: str, col: dict) -> Any:
             try:
                 data = json.loads(filepath.read_text(encoding="utf-8"))
                 return deep_get(data, dotpath)
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError, OSError, UnicodeDecodeError):
                 return None
         return None
 
@@ -870,7 +870,7 @@ def _read_metric_value(results_dir: Path, idea_id: str, col: dict) -> Any:
         try:
             data = json.loads(metrics_path.read_text(encoding="utf-8"))
             return deep_get(data, key) if "." in key else data.get(key)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             return None
     return None
 
@@ -906,7 +906,7 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 
         try:
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             metrics = {"status": "FAILED", "error": "corrupt metrics.json"}
 
         values = {}
@@ -1394,7 +1394,7 @@ def load_state(results_dir: Path) -> dict:
     if path.exists():
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             logger.warning("Corrupt state file, starting fresh")
             return {"iteration": 0, "failure_counts": {}, "roles": {}}
 
@@ -1513,7 +1513,7 @@ class Orze:
                     continue
                 try:
                     m = json.loads(m_path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                     continue
 
                 status = m.get("status", "UNKNOWN")
@@ -1691,7 +1691,7 @@ class Orze:
         for k, v in template_vars.items():
             prompt = prompt.replace(f"{{{k}}}", str(v))
 
-        claude_bin = research_cfg.get("claude_bin", "claude")
+        claude_bin = research_cfg.get("claude_bin") or "claude"
         cmd = [claude_bin, "-p", prompt]
 
         # --model (e.g., sonnet, opus, haiku)
@@ -1700,13 +1700,12 @@ class Orze:
             cmd.extend(["--model", model])
 
         # --allowedTools (default: let Claude read/write files)
-        allowed_tools = research_cfg.get("allowed_tools",
-                                         "Read,Write,Edit,Glob,Grep,Bash")
-        cmd.extend(["--allowedTools", allowed_tools])
+        allowed_tools = research_cfg.get("allowed_tools") or "Read,Write,Edit,Glob,Grep,Bash"
+        cmd.extend(["--allowedTools", str(allowed_tools)])
 
         # --output-format
-        output_format = research_cfg.get("output_format", "text")
-        cmd.extend(["--output-format", output_format])
+        output_format = research_cfg.get("output_format") or "text"
+        cmd.extend(["--output-format", str(output_format)])
 
         # Any extra CLI args
         cmd.extend(_format_args(research_cfg.get("claude_args") or [],
@@ -1796,7 +1795,7 @@ class Orze:
                             run_eval(idea_id, gpu, self.results_dir, cfg)
                             run_post_scripts(idea_id, gpu, self.results_dir,
                                              cfg)
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                         pass
 
             # 5. Run agent roles (research, documenter, etc.)
@@ -1834,7 +1833,15 @@ class Orze:
                         logger.info("Launching %s on GPU %d: %s",
                                     idea_id, gpu,
                                     ideas[idea_id]["title"][:50])
-                        tp = launch(idea_id, gpu, self.results_dir, cfg)
+                        try:
+                            tp = launch(idea_id, gpu, self.results_dir, cfg)
+                        except Exception as e:
+                            logger.error("Failed to launch %s on GPU %d: %s",
+                                         idea_id, gpu, e)
+                            _write_failure(self.results_dir / idea_id,
+                                           f"Launch error: {e}")
+                            _record_failure(self.failure_counts, idea_id)
+                            continue
                         self.active[gpu] = tp
                         launched = True
                         break
@@ -1908,7 +1915,7 @@ class Orze:
                                                  self.results_dir, cfg)
                                         run_post_scripts(idea_id, gpu,
                                                          self.results_dir, cfg)
-                                except json.JSONDecodeError:
+                                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                                     pass
                     ideas = parse_ideas(cfg["ideas_file"])
                     once_rows = update_report(self.results_dir, ideas, cfg)
@@ -1941,7 +1948,7 @@ def _count_statuses(ideas: Dict[str, dict], results_dir: Path) -> dict:
             try:
                 m = json.loads((idea_dir / "metrics.json").read_text(encoding="utf-8"))
                 st = m.get("status", "UNKNOWN")
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 st = "FAILED"
             counts[st] = counts.get(st, 0) + 1
         else:
