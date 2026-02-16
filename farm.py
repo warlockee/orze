@@ -68,10 +68,15 @@ def tail_file(path: Path, n_bytes: int = 4096) -> str:
 
 def _format_args(args, template_vars: dict) -> list:
     """Safely format arguments without crashing on literal {} braces."""
-    if isinstance(args, str):
+    if args is None:
+        args = []
+    elif isinstance(args, str):
         args = [args]
     elif not isinstance(args, list):
-        args = list(args) if args else []
+        try:
+            args = list(args)
+        except TypeError:
+            args = [args]
     formatted = []
     for arg in args:
         s = str(arg)
