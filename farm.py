@@ -384,6 +384,25 @@ class TrainingProcess:
                 pass
 
 
+@dataclass
+class EvalProcess:
+    """Tracks a non-blocking eval subprocess."""
+    idea_id: str
+    gpu: int
+    process: subprocess.Popen
+    start_time: float
+    log_path: Path
+    timeout: float
+    _log_fh: Any = field(default=None, repr=False)
+
+    def close_log(self):
+        if self._log_fh and not self._log_fh.closed:
+            try:
+                self._log_fh.close()
+            except Exception:
+                pass
+
+
 def run_pre_script(idea_id: str, gpu: int, cfg: dict) -> bool:
     """Run pre-training script if configured. Returns True if OK to proceed."""
     pre_script = cfg.get("pre_script")
@@ -684,28 +703,29 @@ def get_skipped_ideas(failure_counts: dict, max_failures: int) -> set:
 # Post-training evaluation
 # ---------------------------------------------------------------------------
 
-def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
-    """Run post-training evaluation if configured."""
+def launch_eval(idea_id: str, gpu: int, results_dir: Path,
+                cfg: dict) -> Optional[EvalProcess]:
+    """Launch a non-blocking eval subprocess. Returns EvalProcess or None."""
     eval_script = cfg.get("eval_script")
     if not eval_script:
-        return
+        return None
 
     eval_output = cfg.get("eval_output") or "eval_report.json"
     output_path = results_dir / idea_id / eval_output
     if output_path.exists():
         logger.debug("Eval already exists for %s, skipping", idea_id)
-        return
+        return None
 
     metrics_path = results_dir / idea_id / "metrics.json"
     if metrics_path.exists():
         try:
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             if metrics.get("status") != "COMPLETED":
-                return
+                return None
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            return
+            return None
     else:
-        return
+        return None
 
     python = cfg.get("python", sys.executable)
     eval_args = cfg.get("eval_args") or []
@@ -715,30 +735,93 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     cmd.extend(_format_args(eval_args, {"idea_id": idea_id, "gpu": gpu}))
 
     log_path = results_dir / idea_id / "eval_output.log"
-    logger.info("Running eval for %s on GPU %d", idea_id, gpu)
+    logger.info("Launching eval for %s on GPU %d", idea_id, gpu)
 
     try:
-        with open(log_path, "w", encoding="utf-8") as log_fh:
-            env = os.environ.copy()
-            for k, v in (cfg.get("train_extra_env") or {}).items():
-                env[k] = str(v)
-            # Don't set CUDA_VISIBLE_DEVICES — the eval script uses --gpu
-            # to select the device via torch.cuda.set_device().
-            env.pop("CUDA_VISIBLE_DEVICES", None)
-            result = subprocess.run(
-                cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
-                timeout=eval_timeout,
-            )
-        if result.returncode == 0:
+        env = os.environ.copy()
+        for k, v in (cfg.get("train_extra_env") or {}).items():
+            env[k] = str(v)
+        # Don't set CUDA_VISIBLE_DEVICES — the eval script uses --gpu
+        # to select the device via torch.cuda.set_device().
+        env.pop("CUDA_VISIBLE_DEVICES", None)
+        log_fh = open(log_path, "w", encoding="utf-8")
+        proc = subprocess.Popen(
+            cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+        )
+        return EvalProcess(
+            idea_id=idea_id, gpu=gpu, process=proc,
+            start_time=time.time(), log_path=log_path,
+            timeout=eval_timeout, _log_fh=log_fh,
+        )
+    except Exception as e:
+        logger.warning("Failed to launch eval for %s: %s", idea_id, e)
+        return None
+
+
+def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
+    """Run post-training evaluation (blocking). Used in --once mode."""
+    ep = launch_eval(idea_id, gpu, results_dir, cfg)
+    if ep is None:
+        return
+    try:
+        ep.process.wait(timeout=ep.timeout)
+        if ep.process.returncode == 0:
             logger.info("Eval completed for %s", idea_id)
         else:
             logger.warning("Eval failed for %s (exit %d)",
-                           idea_id, result.returncode)
+                           idea_id, ep.process.returncode)
     except subprocess.TimeoutExpired:
         logger.warning("Eval timed out for %s after %ds",
-                       idea_id, eval_timeout)
+                       idea_id, ep.timeout)
+        ep.process.terminate()
+        try:
+            ep.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            ep.process.kill()
+            ep.process.wait()
     except Exception as e:
         logger.warning("Eval error for %s: %s", idea_id, e)
+    finally:
+        ep.close_log()
+
+
+def check_active_evals(active_evals: Dict[int, EvalProcess],
+                       results_dir: Path, cfg: dict) -> list:
+    """Check running eval processes. Returns list of (idea_id, gpu) for finished evals."""
+    finished = []
+    for gpu in list(active_evals.keys()):
+        ep = active_evals[gpu]
+        ret = ep.process.poll()
+        elapsed = time.time() - ep.start_time
+
+        if ret is None:
+            # Still running — check timeout
+            if elapsed > ep.timeout:
+                logger.warning("[EVAL TIMEOUT] %s after %.0fm — killing",
+                               ep.idea_id, elapsed / 60)
+                ep.process.terminate()
+                try:
+                    ep.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    ep.process.kill()
+                    ep.process.wait()
+                ep.close_log()
+                del active_evals[gpu]
+                finished.append((ep.idea_id, gpu))
+            continue
+
+        # Process exited
+        ep.close_log()
+        if ret == 0:
+            logger.info("[EVAL OK] %s on GPU %d in %.1fm",
+                        ep.idea_id, gpu, elapsed / 60)
+        else:
+            logger.warning("[EVAL FAILED] %s on GPU %d — exit %d",
+                           ep.idea_id, gpu, ret)
+        del active_evals[gpu]
+        finished.append((ep.idea_id, gpu))
+
+    return finished
 
 
 def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
@@ -1443,6 +1526,7 @@ class Orze:
         self.once = once
         self.results_dir = Path(cfg["results_dir"])
         self.active: Dict[int, TrainingProcess] = {}
+        self.active_evals: Dict[int, EvalProcess] = {}
         self.running = True
 
         state = load_state(self.results_dir)
@@ -1461,10 +1545,14 @@ class Orze:
     def _shutdown(self, signum, frame):
         logger.info("Received signal %d, shutting down gracefully...", signum)
         self.running = False
-        # Terminate all first so they begin clean shutdown
+        # Terminate all training processes first
         for gpu, tp in self.active.items():
             logger.info("Terminating %s on GPU %d...", tp.idea_id, gpu)
             tp.process.terminate()
+        # Terminate all eval processes
+        for gpu, ep in self.active_evals.items():
+            logger.info("Terminating eval %s on GPU %d...", ep.idea_id, gpu)
+            ep.process.terminate()
         deadline = time.time() + 300
         for gpu, tp in self.active.items():
             remaining = max(1, deadline - time.time())
@@ -1475,6 +1563,14 @@ class Orze:
                 tp.process.kill()
                 tp.process.wait()
             tp.close_log()
+        for gpu, ep in self.active_evals.items():
+            remaining = max(1, deadline - time.time())
+            try:
+                ep.process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                ep.process.kill()
+                ep.process.wait()
+            ep.close_log()
         save_state(self.results_dir, {
             "iteration": self.iteration,
             "failure_counts": self.failure_counts,
@@ -1811,28 +1907,43 @@ class Orze:
                 else:
                     logger.debug("Cleanup lock held by another host, skipping")
 
-            # 3. Check active processes (with health monitoring)
+            # 3. Check active training processes (with health monitoring)
             finished = []
             if self.active:
                 finished = check_active(self.active, self.results_dir,
                                         cfg, self.failure_counts)
 
-            # 4. Run post-training steps for newly completed ideas
-            #    Track which ideas have been fully processed (eval done)
-            #    so notifications can include the eval metric.
-            evaled_finished = []
+            # 3a. Check active eval processes
+            eval_finished = []
+            if self.active_evals:
+                eval_finished = check_active_evals(
+                    self.active_evals, self.results_dir, cfg)
+
+            # 4. Launch evals for newly completed training (non-blocking)
             for idea_id, gpu in finished:
                 metrics_path = self.results_dir / idea_id / "metrics.json"
                 if metrics_path.exists():
                     try:
-                        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+                        metrics = json.loads(
+                            metrics_path.read_text(encoding="utf-8"))
                         if metrics.get("status") == "COMPLETED":
-                            run_eval(idea_id, gpu, self.results_dir, cfg)
-                            run_post_scripts(idea_id, gpu, self.results_dir,
-                                             cfg)
+                            ep = launch_eval(
+                                idea_id, gpu, self.results_dir, cfg)
+                            if ep is not None:
+                                self.active_evals[gpu] = ep
+                            else:
+                                # No eval configured or already done
+                                eval_finished.append((idea_id, gpu))
+                        else:
+                            eval_finished.append((idea_id, gpu))
                     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-                        pass
-                evaled_finished.append((idea_id, gpu))
+                        eval_finished.append((idea_id, gpu))
+                else:
+                    eval_finished.append((idea_id, gpu))
+
+            # 4a. Run post-scripts for evals that just completed
+            for idea_id, gpu in eval_finished:
+                run_post_scripts(idea_id, gpu, self.results_dir, cfg)
 
             # 5. Run agent roles (research, documenter, etc.)
             self._run_all_roles()
@@ -1844,9 +1955,12 @@ class Orze:
                 cfg.get("max_idea_failures", 0))
             unclaimed = get_unclaimed(ideas, self.results_dir, skipped)
 
-            # 7. Find free GPUs and launch
-            free = get_free_gpus(self.gpu_ids, self.active,
-                                 cfg.get("gpu_mem_threshold", 2000))
+            # 7. Find free GPUs and launch training
+            #    A GPU is free if not running training AND not running eval
+            busy_gpus = set(self.active.keys()) | set(self.active_evals.keys())
+            free = [g for g in self.gpu_ids if g not in busy_gpus
+                    and (get_gpu_memory_used(g) or 0)
+                    <= cfg.get("gpu_mem_threshold", 2000)]
 
             if unclaimed and free and disk_ok:
                 for gpu in free:
@@ -1884,16 +1998,18 @@ class Orze:
                     if not launched:
                         break
             elif not unclaimed:
-                if not self.active:
+                if not self.active and not self.active_evals:
                     logger.info("All ideas completed or skipped!")
                     if not self.once:
                         logger.info("Waiting for new ideas...")
                 else:
-                    logger.info("No unclaimed ideas. %d training.",
-                                len(self.active))
+                    logger.info("No unclaimed ideas. %d training, %d eval.",
+                                len(self.active), len(self.active_evals))
             else:
-                logger.info("%d ideas queued, no free GPUs (%d active)",
-                            len(unclaimed), len(self.active))
+                logger.info("%d ideas queued, no free GPUs (%d training, "
+                            "%d eval)",
+                            len(unclaimed), len(self.active),
+                            len(self.active_evals))
 
             # 8. Update report
             completed_rows = update_report(self.results_dir, ideas, cfg)
@@ -1902,9 +2018,9 @@ class Orze:
             write_host_heartbeat(self.results_dir, self.active, free)
             counts = _count_statuses(ideas, self.results_dir)
 
-            # 8a. Notifications (uses evaled_finished so eval metrics are available)
+            # 8a. Notifications (fires for eval-finished ideas, metrics available)
             self._process_notifications(
-                evaled_finished, completed_rows or [], ideas, counts)
+                eval_finished, completed_rows or [], ideas, counts)
             top_results = []
             if completed_rows:
                 primary = cfg["report"].get("primary_metric",
@@ -1933,6 +2049,7 @@ class Orze:
 
             if self.once:
                 all_once_finished = []
+                # Wait for active training
                 if self.active:
                     logger.info("--once mode: waiting for active training...")
                     while self.active:
@@ -1940,7 +2057,6 @@ class Orze:
                         once_finished = check_active(
                             self.active, self.results_dir,
                             cfg, self.failure_counts)
-                        all_once_finished.extend(once_finished)
                         for idea_id, gpu in once_finished:
                             m_path = self.results_dir / idea_id / "metrics.json"
                             if m_path.exists():
@@ -1953,6 +2069,20 @@ class Orze:
                                                          self.results_dir, cfg)
                                 except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                                     pass
+                            all_once_finished.append((idea_id, gpu))
+                # Wait for active evals (launched this iteration or earlier)
+                if self.active_evals:
+                    logger.info("--once mode: waiting for %d active evals...",
+                                len(self.active_evals))
+                    while self.active_evals:
+                        time.sleep(5)
+                        ef = check_active_evals(
+                            self.active_evals, self.results_dir, cfg)
+                        for idea_id, gpu in ef:
+                            run_post_scripts(
+                                idea_id, gpu, self.results_dir, cfg)
+                            all_once_finished.append((idea_id, gpu))
+                if all_once_finished:
                     ideas = parse_ideas(cfg["ideas_file"])
                     once_rows = update_report(self.results_dir, ideas, cfg)
                     once_counts = _count_statuses(ideas, self.results_dir)
