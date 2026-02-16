@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import time
 from pathlib import Path
 
@@ -21,6 +22,14 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import yaml
+
+
+def _atomic_write_json(path: Path, data: dict):
+    """Write JSON atomically via tmp+replace to prevent partial reads."""
+    safe_host = "".join(c if c.isalnum() else "_" for c in socket.gethostname())
+    tmp = path.with_name(f"{path.name}.{safe_host}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +348,7 @@ def train(args):
         "config": cfg,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    (results_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    _atomic_write_json(results_dir / "metrics.json", metrics)
     print(f"[{args.idea_id}] Done! best_acc={best_acc:.4f} in {training_time:.0f}s")
 
 
@@ -363,7 +372,7 @@ def main():
             "idea_id": args.idea_id,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
-        (results_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        _atomic_write_json(results_dir / "metrics.json", metrics)
         print(f"[{args.idea_id}] FAILED: {e}")
         raise
 
