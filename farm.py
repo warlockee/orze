@@ -64,6 +64,17 @@ def tail_file(path: Path, n_bytes: int = 4096) -> str:
         return ""
 
 
+def _format_args(args: list, template_vars: dict) -> list:
+    """Safely format arguments without crashing on literal {} braces."""
+    formatted = []
+    for arg in args:
+        s = str(arg)
+        for k, v in template_vars.items():
+            s = s.replace(f"{{{k}}}", str(v))
+        formatted.append(s)
+    return formatted
+
+
 def deep_get(obj: dict, dotpath: str, default=None):
     """Get nested dict value by dot path: 'a.b.c' -> obj[a][b][c]."""
     keys = dotpath.split(".")
@@ -370,13 +381,12 @@ def run_pre_script(idea_id: str, gpu: int, cfg: dict) -> bool:
     pre_timeout = cfg.get("pre_timeout", 3600)
 
     cmd = [python, pre_script]
-    for arg in pre_args:
-        cmd.append(str(arg).format(idea_id=idea_id, gpu=gpu))
+    cmd.extend(_format_args(pre_args, {"idea_id": idea_id, "gpu": gpu}))
 
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     for k, v in cfg.get("train_extra_env", {}).items():
         env[k] = str(v)
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
     logger.info("Running pre-script for %s on GPU %d", idea_id, gpu)
     try:
@@ -419,9 +429,9 @@ def launch(idea_id: str, gpu: int, results_dir: Path, cfg: dict) -> TrainingProc
         cmd.append(str(arg))
 
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     for k, v in cfg.get("train_extra_env", {}).items():
         env[k] = str(v)
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
     # Keep file handle open for subprocess lifetime
     log_fh = open(log_path, "w", encoding="utf-8")
@@ -523,11 +533,15 @@ def cleanup_orphans(results_dir: Path, hours: float) -> int:
 
         if claim_path.exists() and not metrics_path.exists():
             try:
-                claim_time = claim_path.stat().st_mtime
-                if claim_time < cutoff:
+                last_activity = claim_path.stat().st_mtime
+                log_path = d / "train_output.log"
+                if log_path.exists():
+                    last_activity = max(last_activity,
+                                        log_path.stat().st_mtime)
+                if last_activity < cutoff:
                     shutil.rmtree(d)
-                    logger.info("Cleaned orphan: %s (claimed %.1fh ago)",
-                                d.name, (time.time() - claim_time) / 3600)
+                    logger.info("Cleaned orphan: %s (last activity %.1fh ago)",
+                                d.name, (time.time() - last_activity) / 3600)
                     cleaned += 1
             except Exception as e:
                 logger.warning("Failed to clean orphan %s: %s", d.name, e)
@@ -556,8 +570,12 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if elapsed > tp.timeout:
                 logger.warning("[TIMEOUT] %s after %.0fm — killing",
                                tp.idea_id, elapsed / 60)
-                tp.process.kill()
-                tp.process.wait()
+                tp.process.terminate()
+                try:
+                    tp.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    tp.process.kill()
+                    tp.process.wait()
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id, "Timed out")
                 _record_failure(failure_counts, tp.idea_id)
@@ -568,8 +586,12 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if check_stalled(tp, stall_minutes):
                 logger.warning("[STALLED] %s — no log output for %dm, killing",
                                tp.idea_id, stall_minutes)
-                tp.process.kill()
-                tp.process.wait()
+                tp.process.terminate()
+                try:
+                    tp.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    tp.process.kill()
+                    tp.process.wait()
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id,
                                f"Stalled (no output for {stall_minutes}m)")
@@ -581,8 +603,12 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if detect_oom(tp) and tp.process.poll() is None:
                 logger.warning("[OOM] %s — CUDA out of memory detected, killing",
                                tp.idea_id)
-                tp.process.kill()
-                tp.process.wait()
+                tp.process.terminate()
+                try:
+                    tp.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    tp.process.kill()
+                    tp.process.wait()
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id, "CUDA out of memory")
                 _record_failure(failure_counts, tp.idea_id)
@@ -672,8 +698,7 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     eval_timeout = cfg.get("eval_timeout", 3600)
 
     cmd = [python, eval_script]
-    for arg in eval_args:
-        cmd.append(str(arg).format(idea_id=idea_id, gpu=gpu))
+    cmd.extend(_format_args(eval_args, {"idea_id": idea_id, "gpu": gpu}))
 
     log_path = results_dir / idea_id / "eval_output.log"
     logger.info("Running eval for %s on GPU %d", idea_id, gpu)
@@ -681,9 +706,9 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     try:
         with open(log_path, "w") as log_fh:
             env = os.environ.copy()
-            env["CUDA_VISIBLE_DEVICES"] = str(gpu)
             for k, v in cfg.get("train_extra_env", {}).items():
                 env[k] = str(v)
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu)
             result = subprocess.run(
                 cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
                 timeout=eval_timeout,
@@ -721,9 +746,9 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
 
     python = cfg.get("python", sys.executable)
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     for k, v in cfg.get("train_extra_env", {}).items():
         env[k] = str(v)
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
     for i, ps in enumerate(post_scripts):
         script = ps.get("script")
@@ -744,8 +769,7 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
         name = ps.get("name", f"post-script-{i}")
 
         cmd = [python, script]
-        for arg in args:
-            cmd.append(str(arg).format(idea_id=idea_id, gpu=gpu))
+        cmd.extend(_format_args(args, {"idea_id": idea_id, "gpu": gpu}))
 
         log_path = results_dir / idea_id / f"{name}.log"
         logger.info("Running %s for %s", name, idea_id)
@@ -916,7 +940,16 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 
     completed = [r for r in rows if r["status"] == "COMPLETED"]
     reverse = sort_order == "descending"
-    completed.sort(key=lambda r: r.get("primary_val") or 0, reverse=reverse)
+    _sentinel = float("-inf") if reverse else float("inf")
+
+    def _safe_float(v):
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return _sentinel
+
+    completed.sort(key=lambda r: _safe_float(r.get("primary_val")),
+                   reverse=reverse)
 
     if completed:
         header = "| Rank | Idea | Title"
@@ -1438,8 +1471,7 @@ class Orze:
         else:
             python = self.cfg.get("python", sys.executable)
             cmd = [python, role_cfg["script"]]
-            for arg in role_cfg.get("args", []):
-                cmd.append(str(arg).format(**template_vars))
+            cmd.extend(_format_args(role_cfg.get("args", []), template_vars))
 
         # Environment
         env = os.environ.copy()
@@ -1525,8 +1557,8 @@ class Orze:
         cmd.extend(["--output-format", output_format])
 
         # Any extra CLI args
-        for arg in research_cfg.get("claude_args", []):
-            cmd.append(str(arg).format(**template_vars))
+        cmd.extend(_format_args(research_cfg.get("claude_args", []),
+                                template_vars))
 
         return cmd
 
@@ -1568,14 +1600,13 @@ class Orze:
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             logger.info("--- Iteration %d [%s] ---", self.iteration, ts)
 
-            # 1. Check disk space
-            if not check_disk_space(self.results_dir,
-                                    cfg.get("min_disk_gb", 0)):
+            # 1. Check disk space (only gates launches, never skips reaping)
+            disk_ok = check_disk_space(self.results_dir,
+                                       cfg.get("min_disk_gb", 0))
+            if not disk_ok:
                 logger.warning(
                     "Low disk space (< %dGB free). Pausing launches.",
                     cfg["min_disk_gb"])
-                time.sleep(cfg["poll"])
-                continue
 
             # 2. Periodic maintenance (orphans + GC, locked for multi-machine)
             cleanup_cfg = cfg.get("cleanup", {})
@@ -1630,7 +1661,7 @@ class Orze:
             free = get_free_gpus(self.gpu_ids, self.active,
                                  cfg.get("gpu_mem_threshold", 2000))
 
-            if unclaimed and free:
+            if unclaimed and free and disk_ok:
                 for gpu in free:
                     launched = False
                     while unclaimed:
@@ -1708,8 +1739,21 @@ class Orze:
                     logger.info("--once mode: waiting for active training...")
                     while self.active:
                         time.sleep(5)
-                        check_active(self.active, self.results_dir,
-                                     cfg, self.failure_counts)
+                        once_finished = check_active(
+                            self.active, self.results_dir,
+                            cfg, self.failure_counts)
+                        for idea_id, gpu in once_finished:
+                            m_path = self.results_dir / idea_id / "metrics.json"
+                            if m_path.exists():
+                                try:
+                                    m = json.loads(m_path.read_text())
+                                    if m.get("status") == "COMPLETED":
+                                        run_eval(idea_id, gpu,
+                                                 self.results_dir, cfg)
+                                        run_post_scripts(idea_id, gpu,
+                                                         self.results_dir, cfg)
+                                except json.JSONDecodeError:
+                                    pass
                     ideas = parse_ideas(cfg["ideas_file"])
                     update_report(self.results_dir, ideas, cfg)
                 logger.info("Done.")
