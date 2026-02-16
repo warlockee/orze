@@ -43,9 +43,10 @@ The loop:
 3. **Claim** unclaimed ideas via atomic `mkdir`
 4. **Launch** training as subprocesses across free GPUs
 5. **Monitor** health — stalls, OOM, timeouts, disk space
-6. **Evaluate** — run post-training eval scripts
-7. **Report** — update `results/report.md` leaderboard + `status.json`
-8. Sleep, repeat
+6. **Evaluate** — run post-training eval scripts (non-blocking)
+7. **Notify** — push updates to Telegram, Slack, Discord
+8. **Report** — update `results/report.md` leaderboard + `status.json`
+9. Sleep, repeat
 
 ## Manual Setup (without Claude Code)
 
@@ -66,20 +67,20 @@ python orze/farm.py -c orze.yaml
 
 ## Key Features
 
-- **Agent roles** — multiple agents (research, documenter, analyzer, etc.) run alongside training
+- **Agent roles** — multiple agents (research, documenter, analyzer) run alongside training, each with their own cooldown and state
 - **Research agent** — Claude CLI or any script generates ideas automatically
 - **Multi-GPU** — claims and trains across all GPUs in parallel
+- **Parallel eval** — eval scripts launch non-blocking so GPUs stay busy
 - **Health monitoring** — stall detection, OOM detection, disk space checks
-- **Post-training eval** — runs automatically after each successful training
+- **Push notifications** — Telegram, Slack, Discord, or any webhook. Every message includes the top 10 leaderboard
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
-- **Push notifications** — Telegram, Slack, Discord, or any webhook
 - **Atomic coordination** — `mkdir` as lock, no race conditions
 
 ## Notifications
 
-Get pinged on your phone when experiments complete, fail, or set new bests. Every message includes the top 10 leaderboard.
+Get pinged on your phone when experiments complete, fail, or set new bests.
 
 ```yaml
 # In orze.yaml
@@ -95,7 +96,7 @@ notifications:
       webhook_url: "https://discord.com/api/webhooks/..."
 ```
 
-Supports per-channel event filtering (`on: [new_best, failed]`) and generic webhooks.
+Events: `completed`, `failed`, `new_best`, `report`. Supports per-channel filtering (`on: [new_best, failed]`) and generic webhooks.
 
 ## The Contract
 
@@ -126,13 +127,19 @@ That's it. See [RULES.md](RULES.md) for the full specification.
 ```
 python orze/farm.py [OPTIONS]
 
-  -c, --config-file PATH   Path to orze.yaml
-  --gpus GPU_IDS           Comma-separated GPU IDs (default: all)
-  --once                   Run one cycle and exit
-  --report-only            Only regenerate report.md
-  --role-only NAME         Run a single agent role once and exit
-  --research-only          Alias for --role-only research
-  -v, --verbose            Debug logging
+  -c, --config-file PATH    Path to orze.yaml
+  --gpus GPU_IDS            Comma-separated GPU IDs (default: all)
+  --once                    Run one cycle and exit
+  --report-only             Only regenerate report.md
+  --role-only NAME          Run a single agent role once and exit
+  --research-only           Alias for --role-only research
+  --timeout SECONDS         Override training timeout
+  --poll SECONDS            Override loop interval
+  --ideas-md PATH           Override ideas file path
+  --base-config PATH        Override base config path
+  --results-dir PATH        Override results directory
+  --train-script PATH       Override training script
+  -v, --verbose             Debug logging
 ```
 
 ## License

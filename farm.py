@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-__version__ = "0.4.0"
+__version__ = "1.1.0"
 
 logger = logging.getLogger("orze")
 
