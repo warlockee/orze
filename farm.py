@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 logger = logging.getLogger("orze")
 
@@ -904,7 +904,9 @@ def write_status_json(results_dir: Path, iteration: int,
                       free_gpus: List[int], queue_depth: int,
                       completed_count: int, failed_count: int,
                       skipped_count: int, top_results: list,
-                      cfg: dict):
+                      cfg: dict,
+                      research_cycles: int = 0,
+                      last_research_time: float = 0.0):
     """Write machine-readable status.json for LLM agents."""
     disk_free_gb = 0.0
     try:
@@ -913,6 +915,12 @@ def write_status_json(results_dir: Path, iteration: int,
     except Exception:
         pass
 
+    now = time.time()
+    last_research_min_ago = (
+        round((now - last_research_time) / 60, 1)
+        if last_research_time > 0 else None
+    )
+
     status = {
         "timestamp": datetime.datetime.now().isoformat(),
         "iteration": iteration,
@@ -920,7 +928,7 @@ def write_status_json(results_dir: Path, iteration: int,
             {
                 "idea_id": tp.idea_id,
                 "gpu": tp.gpu,
-                "elapsed_min": round((time.time() - tp.start_time) / 60, 1),
+                "elapsed_min": round((now - tp.start_time) / 60, 1),
             }
             for tp in active.values()
         ],
@@ -931,6 +939,9 @@ def write_status_json(results_dir: Path, iteration: int,
         "skipped": skipped_count,
         "disk_free_gb": round(disk_free_gb, 1),
         "top_results": top_results[:10],
+        "research_enabled": bool(cfg.get("research", {}).get("script")),
+        "research_cycles": research_cycles,
+        "last_research_min_ago": last_research_min_ago,
     }
 
     atomic_write(results_dir / "status.json", json.dumps(status, indent=2))
@@ -974,6 +985,10 @@ class Orze:
         self.iteration = state.get("iteration", 0)
         self.failure_counts = state.get("failure_counts", {})
 
+        # Research agent state
+        self.research_cycles = state.get("research_cycles", 0)
+        self.last_research_time = state.get("last_research_time", 0.0)
+
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
         signal.signal(signal.SIGINT, self._shutdown)
@@ -995,9 +1010,100 @@ class Orze:
         save_state(self.results_dir, {
             "iteration": self.iteration,
             "failure_counts": self.failure_counts,
+            "research_cycles": self.research_cycles,
+            "last_research_time": self.last_research_time,
         })
         logger.info("Shutdown complete.")
         sys.exit(0)
+
+    def _run_research_step(self):
+        """Run the research agent to generate new ideas (rate-limited)."""
+        research_cfg = self.cfg.get("research")
+        if not research_cfg:
+            return
+        script = research_cfg.get("script")
+        if not script:
+            return
+
+        cooldown = research_cfg.get("cooldown", 300)
+        elapsed = time.time() - self.last_research_time
+        if elapsed < cooldown:
+            return
+
+        python = self.cfg.get("python", sys.executable)
+        timeout = research_cfg.get("timeout", 600)
+        raw_args = research_cfg.get("args", [])
+
+        # Count current status for template vars
+        ideas = parse_ideas(self.cfg["ideas_file"])
+        counts = _count_statuses(ideas, self.results_dir)
+
+        # Template substitution
+        template_vars = {
+            "ideas_file": self.cfg["ideas_file"],
+            "results_dir": str(self.results_dir),
+            "cycle": self.research_cycles + 1,
+            "gpu_count": len(self.gpu_ids),
+            "completed": counts.get("COMPLETED", 0),
+            "queued": counts.get("QUEUED", 0),
+        }
+        cmd = [python, script]
+        for arg in raw_args:
+            cmd.append(str(arg).format(**template_vars))
+
+        # Environment
+        env = os.environ.copy()
+        for k, v in self.cfg.get("train_extra_env", {}).items():
+            env[k] = str(v)
+        for k, v in research_cfg.get("env", {}).items():
+            env[k] = str(v)
+
+        # Log directory
+        log_dir_name = research_cfg.get("log_dir", "_research_logs")
+        log_dir = self.results_dir / log_dir_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+        cycle_num = self.research_cycles + 1
+        log_path = log_dir / f"cycle_{cycle_num:03d}.log"
+
+        logger.info("Running research agent (cycle %d)...", cycle_num)
+
+        try:
+            with open(log_path, "w") as log_fh:
+                result = subprocess.run(
+                    cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+                    timeout=timeout,
+                )
+
+            self.last_research_time = time.time()
+            self.research_cycles += 1
+
+            if result.returncode == 0:
+                # Try to parse how many ideas were generated from log
+                n_new = 0
+                try:
+                    log_text = log_path.read_text()
+                    for line in log_text.split("\n"):
+                        if "ideas" in line.lower():
+                            nums = re.findall(
+                                r"(\d+)\s+(?:new\s+)?ideas?", line, re.I)
+                            if nums:
+                                n_new = int(nums[-1])
+                except Exception:
+                    pass
+                logger.info("Research cycle %d completed (%d new ideas)",
+                            cycle_num, n_new)
+            else:
+                logger.warning(
+                    "Research agent failed (exit %d), see %s",
+                    result.returncode, log_path)
+
+        except subprocess.TimeoutExpired:
+            self.last_research_time = time.time()
+            self.research_cycles += 1
+            logger.warning("Research agent timed out after %ds", timeout)
+        except Exception as e:
+            self.last_research_time = time.time()
+            logger.warning("Research agent error: %s", e)
 
     def run(self):
         cfg = self.cfg
@@ -1005,6 +1111,12 @@ class Orze:
         logger.info("Ideas: %s | Results: %s | Timeout: %ds | Poll: %ds",
                      cfg["ideas_file"], cfg["results_dir"],
                      cfg["timeout"], cfg["poll"])
+        research_cfg = cfg.get("research", {})
+        if research_cfg.get("script"):
+            logger.info("Research: %s (cooldown: %ds, timeout: %ds)",
+                        research_cfg["script"],
+                        research_cfg.get("cooldown", 300),
+                        research_cfg.get("timeout", 600))
 
         while self.running:
             self.iteration += 1
@@ -1050,14 +1162,17 @@ class Orze:
                     except json.JSONDecodeError:
                         pass
 
-            # 5. Parse ideas and find unclaimed
+            # 5. Run research agent to generate new ideas
+            self._run_research_step()
+
+            # 6. Parse ideas and find unclaimed
             ideas = parse_ideas(cfg["ideas_file"])
             skipped = get_skipped_ideas(
                 self.failure_counts,
                 cfg.get("max_idea_failures", 0))
             unclaimed = get_unclaimed(ideas, self.results_dir, skipped)
 
-            # 6. Find free GPUs and launch
+            # 7. Find free GPUs and launch
             free = get_free_gpus(self.gpu_ids, self.active,
                                  cfg.get("gpu_mem_threshold", 2000))
 
@@ -1098,10 +1213,10 @@ class Orze:
                 logger.info("%d ideas queued, no free GPUs (%d active)",
                             len(unclaimed), len(self.active))
 
-            # 7. Update report
+            # 8. Update report
             completed_rows = update_report(self.results_dir, ideas, cfg)
 
-            # 8. Write status.json
+            # 9. Write status.json
             counts = _count_statuses(ideas, self.results_dir)
             top_results = []
             if completed_rows:
@@ -1118,12 +1233,16 @@ class Orze:
                 self.results_dir, self.iteration, self.active, free,
                 len(unclaimed), counts.get("COMPLETED", 0),
                 counts.get("FAILED", 0), len(skipped), top_results, cfg,
+                research_cycles=self.research_cycles,
+                last_research_time=self.last_research_time,
             )
 
-            # 9. Save state
+            # 10. Save state
             save_state(self.results_dir, {
                 "iteration": self.iteration,
                 "failure_counts": self.failure_counts,
+                "research_cycles": self.research_cycles,
+                "last_research_time": self.last_research_time,
             })
 
             if self.once:
@@ -1198,6 +1317,8 @@ Examples:
                         help="Run one cycle and exit")
     parser.add_argument("--report-only", action="store_true",
                         help="Only regenerate report")
+    parser.add_argument("--research-only", action="store_true",
+                        help="Only run research agent once and exit")
     parser.add_argument("--ideas-md", type=str, default=None,
                         help="Path to ideas markdown file")
     parser.add_argument("--base-config", type=str, default=None,
@@ -1242,6 +1363,17 @@ Examples:
     if args.report_only:
         ideas = parse_ideas(cfg["ideas_file"])
         update_report(Path(cfg["results_dir"]), ideas, cfg)
+        return
+
+    # Research-only mode
+    if args.research_only:
+        research_cfg = cfg.get("research")
+        if not research_cfg or not research_cfg.get("script"):
+            logger.error("No research.script configured in orze.yaml")
+            sys.exit(1)
+        orze = Orze(gpu_ids, cfg, once=True)
+        orze.last_research_time = 0.0  # Force immediate run
+        orze._run_research_step()
         return
 
     orze = Orze(gpu_ids, cfg, once=args.once)

@@ -32,15 +32,16 @@ Designed to be operated by LLM agents. See [RULES.md](RULES.md) for the complete
 ```
 
 The loop:
-1. Parse `ideas.md` for experiment definitions
-2. Find unclaimed ideas (no `results/{idea_id}/` directory)
-3. Detect free GPUs (low memory usage, no active training)
-4. **Claim** an idea by creating its results directory (`mkdir` — atomic, fails if exists)
-5. **Launch** training as a subprocess with `CUDA_VISIBLE_DEVICES`
-6. **Monitor** health — detect stalls, OOM, timeouts
-7. **Evaluate** — run optional post-training eval script
-8. **Report** — generate `results/report.md` leaderboard + `status.json`
-9. Sleep, repeat
+1. **Research** — spawn an LLM agent to generate new experiment ideas (optional, rate-limited)
+2. Parse `ideas.md` for experiment definitions
+3. Find unclaimed ideas (no `results/{idea_id}/` directory)
+4. Detect free GPUs (low memory usage, no active training)
+5. **Claim** an idea by creating its results directory (`mkdir` — atomic, fails if exists)
+6. **Launch** training as a subprocess with `CUDA_VISIBLE_DEVICES`
+7. **Monitor** health — detect stalls, OOM, timeouts
+8. **Evaluate** — run optional post-training eval script
+9. **Report** — generate `results/report.md` leaderboard + `status.json`
+10. Sleep, repeat
 
 ## Quick Start
 
@@ -72,6 +73,7 @@ python farm.py -c orze.yaml
 See [orze.yaml.example](orze.yaml.example) for all options.
 
 Key features enabled by orze.yaml:
+- **Research agent** — spawn an LLM agent to auto-generate experiment ideas
 - **Custom training script** with extra args and env vars
 - **Post-training evaluation** (runs automatically after training succeeds)
 - **Health monitoring** — stall detection, OOM detection, disk space checks
@@ -174,6 +176,7 @@ Options:
   --poll SECONDS           Seconds between loop iterations (default: 30)
   --once                   Run one cycle and exit
   --report-only            Only regenerate report.md
+  --research-only          Only run research agent once and exit
   --ideas-md PATH          Path to ideas file (default: ideas.md)
   --base-config PATH       Path to base config (default: configs/base.yaml)
   --results-dir PATH       Results directory (default: results)
