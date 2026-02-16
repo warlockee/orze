@@ -74,6 +74,7 @@ python orze/farm.py -c orze.yaml
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
+- **Push notifications** — Telegram, Slack, Discord, or any webhook
 - **Atomic coordination** — `mkdir` as lock, no race conditions
 
 ## The Contract
