@@ -203,9 +203,41 @@ Set `min_disk_gb` to pause new launches when disk space is low:
 min_disk_gb: 50   # pause if < 50GB free
 ```
 
-## Orze as Research Commander
+## Agent Roles
 
-Orze is the **single entry point** for the entire auto-research loop. It manages everything: spawning the research agent, training ideas, evaluating results, and feeding results back to the research agent. One process, one command.
+Orze supports multiple **agent roles** that run alongside training. Each role is an independently scheduled subprocess with its own cooldown, timeout, lock, state, and log directory.
+
+The most common role is `research` (generates new experiment ideas), but you can add any role: `documenter`, `analyzer`, `pruner`, etc.
+
+### Configuration
+
+Roles are defined under the `roles:` key in `orze.yaml`:
+
+```yaml
+roles:
+  research:
+    mode: claude
+    rules_file: RESEARCH_RULES.md
+    cooldown: 300
+    timeout: 600
+    model: sonnet
+    allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
+    log_dir: _research_logs
+
+  documenter:
+    mode: claude
+    rules_file: DOCUMENTER_RULES.md
+    cooldown: 600
+    timeout: 300
+    model: haiku
+    log_dir: _documenter_logs
+```
+
+**Legacy support**: A top-level `research:` key (without `roles:`) is auto-migrated to `roles: {research: ...}`.
+
+### Role Modes
+
+Each role supports two modes: **script** or **claude**.
 
 ### The Full Loop
 
@@ -225,62 +257,54 @@ Orze is the **single entry point** for the entire auto-research loop. It manages
 ```
 
 Each iteration:
-1. Orze spawns the **research agent** (subprocess, rate-limited by cooldown timer)
-2. Research agent reads `results/report.md` and `results/status.json`, appends new ideas to `ideas.md`
+1. Orze runs all configured **agent roles** (each independently rate-limited)
+2. Research role reads `results/report.md` and `results/status.json`, appends new ideas to `ideas.md`
 3. Orze parses `ideas.md`, claims unclaimed ideas, launches **training** on free GPUs
 4. Training completes → orze runs **evaluation** and **post-scripts**
 5. Orze updates `report.md` and `status.json`
 6. Loop repeats
 
-### Research Configuration
-
-Two modes: **script** (call any Python script) or **claude** (use Claude CLI directly).
-
-#### Mode: script (for custom research scripts)
+#### Mode: script (run any Python script)
 
 ```yaml
-research:
-  mode: script                     # default
-  script: research_agent.py        # your research script
-  args: ["--ideas-md", "{ideas_file}", "--results-dir", "{results_dir}"]
-  timeout: 600                     # max time per cycle (seconds)
-  cooldown: 300                    # min seconds between cycles
-  log_dir: _research_logs          # relative to results_dir
-  env:                             # extra env vars (API keys, etc.)
-    ANTHROPIC_API_KEY: sk-...
+roles:
+  my_role:
+    mode: script
+    script: my_agent.py
+    args: ["--ideas-md", "{ideas_file}", "--results-dir", "{results_dir}"]
+    timeout: 600
+    cooldown: 300
+    log_dir: _my_role_logs
+    env:
+      ANTHROPIC_API_KEY: sk-...
 ```
 
-Template variables for `args`: `{ideas_file}`, `{results_dir}`, `{cycle}`, `{gpu_count}`, `{completed}`, `{queued}`.
+Template variables for `args`: `{ideas_file}`, `{results_dir}`, `{cycle}`, `{gpu_count}`, `{completed}`, `{queued}`, `{role_name}`.
 
 #### Mode: claude (use Claude CLI — no API keys needed)
 
 ```yaml
-research:
-  mode: claude
-  rules_file: RESEARCH_RULES.md    # prompt/instructions file for Claude
-  cooldown: 300
-  timeout: 600
-  model: sonnet                    # optional: sonnet, opus, haiku
-  allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"  # tools Claude can use
-  claude_bin: claude               # path to Claude CLI binary
-  claude_args: []                  # extra CLI flags
+roles:
+  my_role:
+    mode: claude
+    rules_file: MY_ROLE_RULES.md
+    cooldown: 300
+    timeout: 600
+    model: sonnet
+    allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
+    claude_bin: claude
+    claude_args: []
 ```
 
-In this mode, orze spawns `claude -p "<rules_file content>" --allowedTools ... --model ...` as a subprocess. Claude reads results, generates ideas, and appends them to `ideas.md` — all via its native file tools. No API keys needed since Claude CLI handles its own auth.
+In this mode, orze spawns `claude -p "<rules_file content>" --allowedTools ... --model ...` as a subprocess. The `rules_file` supports the same template variables.
 
-The `rules_file` supports the same template variables: `{ideas_file}`, `{results_dir}`, `{cycle}`, `{completed}`, `{queued}`, `{gpu_count}`.
+### Role Behavior
 
-### Research Script Contract (mode: script)
-
-**Input**: The command from `research.args` with template variables substituted.
-
-**Expected behavior**:
-1. Read `results/report.md` and/or `results/status.json` to understand current state
-2. Analyze what's working (top results) and what's failing
-3. Generate new experiment ideas
-4. Append them to `ideas.md` (following the Ideas Format above)
-
-**Output**: Append new ideas to `ideas.md`. Print "N new ideas" to stdout for logging.
+- **Independent**: Each role has its own cooldown timer, cycle counter, and filesystem lock
+- **Non-fatal**: If any role crashes or times out, orze logs a warning and continues. Roles never block training
+- **Rate-limited**: Each role's `cooldown` timer prevents excessive runs
+- **Logged**: Cycles go to `results/{log_dir}/cycle_NNN.log`
+- **Cross-machine safe**: Each role uses its own `_{role_name}_lock` directory for coordination
 
 ### Research Rules Contract (mode: claude)
 
@@ -313,33 +337,33 @@ model:
 \```
 ```
 
-### Research Behavior (both modes)
-
-- **Non-fatal**: If the research agent crashes or times out, orze logs a warning and continues training. Research never blocks execution.
-- **Rate-limited**: The `cooldown` timer prevents excessive API/LLM calls.
-- **Logged**: All cycles go to `results/_research_logs/cycle_NNN.log`.
-
-### Running Research Manually
+### Running Roles Manually
 
 ```bash
 # Run one research cycle and exit
+python farm.py -c orze.yaml --role-only research
+
+# Legacy alias for the above
 python farm.py -c orze.yaml --research-only
 
-# The full loop (research + train + eval, continuous)
+# Run only the documenter role once
+python farm.py -c orze.yaml --role-only documenter
+
+# The full loop (all roles + train + eval, continuous)
 python farm.py -c orze.yaml
 ```
 
 ### Multi-Machine Setup
 On machines sharing a filesystem:
 ```bash
-# Machine 1 (commander — runs research + training)
+# Machine 1 (commander — runs roles + training)
 python farm.py -c orze.yaml --gpus 0,1,2,3
 
-# Machine 2 (worker — just runs training, no research config)
+# Machine 2 (worker — just runs training, no roles configured)
 python farm.py -c orze.yaml --gpus 0,1,2,3
 ```
 
-Only one machine should have `research:` configured (the commander). Workers just train whatever ideas are in the queue. The atomic mkdir prevents duplicate claims.
+Only one machine should have roles configured (the commander). Workers just train whatever ideas are in the queue. The atomic mkdir prevents duplicate claims.
 
 ## Phase Transitions
 
@@ -502,6 +526,8 @@ Options:
   --poll SECONDS           Loop sleep interval (default: 30)
   --once                   Run one cycle and exit
   --report-only            Only regenerate report.md
+  --role-only NAME         Run a single agent role once and exit
+  --research-only          Alias for --role-only research
   --ideas-md PATH          Ideas file path
   --base-config PATH       Base config YAML path
   --results-dir PATH       Results directory
