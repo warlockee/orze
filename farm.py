@@ -48,6 +48,7 @@ logger = logging.getLogger("orze")
 
 def atomic_write(path: Path, content: str):
     """Write content atomically via tmp+replace (safe across machines)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     safe_host = "".join(c if c.isalnum() else "_" for c in socket.gethostname())
     tmp = path.with_name(f"{path.name}.{safe_host}.{os.getpid()}.tmp")
     tmp.write_text(content, encoding="utf-8")
@@ -65,8 +66,12 @@ def tail_file(path: Path, n_bytes: int = 4096) -> str:
         return ""
 
 
-def _format_args(args: list, template_vars: dict) -> list:
+def _format_args(args, template_vars: dict) -> list:
     """Safely format arguments without crashing on literal {} braces."""
+    if isinstance(args, str):
+        args = [args]
+    elif not isinstance(args, list):
+        args = list(args) if args else []
     formatted = []
     for arg in args:
         s = str(arg)
@@ -229,7 +234,7 @@ def parse_ideas(path: str) -> Dict[str, dict]:
     """Parse ideas.md into {idea_id: {title, priority, config, raw}}."""
     try:
         text = Path(path).read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except OSError:
         return {}
     ideas = {}
     pattern = re.compile(r"^## (idea-\d+):\s*(.+?)$", re.MULTILINE)
@@ -479,7 +484,7 @@ def check_stalled(tp: TrainingProcess, stall_minutes: int) -> bool:
     now = time.time()
     try:
         current_size = tp.log_path.stat().st_size
-    except FileNotFoundError:
+    except OSError:
         return False
 
     if current_size > tp._last_log_size:
@@ -1263,7 +1268,10 @@ def _format_slack(event: str, data: dict) -> dict:
         text = (f":x: *FAILED* `{data['idea_id']}`: {data['title']}\n"
                 f"Error: {err}")
     else:
-        t = data.get("training_time") or 0
+        try:
+            t = float(data.get("training_time") or 0)
+        except (ValueError, TypeError):
+            t = 0.0
         text = (f":white_check_mark: *Completed* `{data['idea_id']}`: "
                 f"{data['title']}\n"
                 f"{data['metric_name']}: {data['metric_value']}"
@@ -1287,7 +1295,10 @@ def _format_discord(event: str, data: dict) -> dict:
         content = (f"**FAILED** `{data['idea_id']}`: {data['title']}\n"
                    f"Error: {err}")
     else:
-        t = data.get("training_time") or 0
+        try:
+            t = float(data.get("training_time") or 0)
+        except (ValueError, TypeError):
+            t = 0.0
         content = (f"**Completed** `{data['idea_id']}`: {data['title']}\n"
                    f"{data['metric_name']}: {data['metric_value']}"
                    f" (rank #{data.get('rank', '?')})"
@@ -1324,7 +1335,10 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
         text = (f"<b>FAILED</b> <code>{idea_id}</code>: {title}\n"
                 f"Error: {err}")
     else:
-        t = data.get("training_time") or 0
+        try:
+            t = float(data.get("training_time") or 0)
+        except (ValueError, TypeError):
+            t = 0.0
         metric = esc(str(data.get("metric_name", "")))
         val = esc(str(data.get("metric_value", "")))
         rank = esc(str(data.get("rank", "?")))
@@ -1913,7 +1927,7 @@ class Orze:
             })
 
             if self.once:
-                all_once_finished = list(finished)
+                all_once_finished = []
                 if self.active:
                     logger.info("--once mode: waiting for active training...")
                     while self.active:
