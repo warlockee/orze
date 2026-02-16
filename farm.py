@@ -43,19 +43,20 @@ logger = logging.getLogger("orze")
 # ---------------------------------------------------------------------------
 
 def atomic_write(path: Path, content: str):
-    """Write content atomically via tmp+rename (POSIX atomic)."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content)
-    tmp.rename(path)
+    """Write content atomically via tmp+replace (safe across machines)."""
+    safe_host = "".join(c if c.isalnum() else "_" for c in socket.gethostname())
+    tmp = path.with_name(f"{path.name}.{safe_host}.{os.getpid()}.tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
 
 
 def tail_file(path: Path, n_bytes: int = 4096) -> str:
     """Read last n_bytes of a file."""
     try:
         size = path.stat().st_size
-        with open(path, "r", errors="replace") as f:
+        with open(path, "rb") as f:
             f.seek(max(0, size - n_bytes))
-            return f.read()
+            return f.read().decode("utf-8", errors="replace")
     except Exception:
         return ""
 
@@ -86,13 +87,15 @@ def _fs_lock(lock_dir: Path, stale_seconds: float = 600) -> bool:
             lock_file = lock_dir / "lock.json"
             if lock_file.exists():
                 age = time.time() - lock_file.stat().st_mtime
-                if age > stale_seconds:
-                    shutil.rmtree(lock_dir)
-                    try:
-                        lock_dir.mkdir(parents=True, exist_ok=False)
-                    except FileExistsError:
-                        return False
-                else:
+            else:
+                # lock.json missing (crash between mkdir and write) — use dir mtime
+                age = time.time() - lock_dir.stat().st_mtime
+
+            if age > stale_seconds:
+                shutil.rmtree(lock_dir)
+                try:
+                    lock_dir.mkdir(parents=True, exist_ok=False)
+                except FileExistsError:
                     return False
             else:
                 return False
@@ -193,7 +196,10 @@ PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 def parse_ideas(path: str) -> Dict[str, dict]:
     """Parse ideas.md into {idea_id: {title, priority, config, raw}}."""
-    text = Path(path).read_text()
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
     ideas = {}
     pattern = re.compile(r"^## (idea-\d+):\s*(.+?)$", re.MULTILINE)
     matches = list(pattern.finditer(text))
@@ -401,11 +407,15 @@ def launch(idea_id: str, gpu: int, results_dir: Path, cfg: dict) -> TrainingProc
     for k, v in cfg.get("train_extra_env", {}).items():
         env[k] = str(v)
 
-    # Keep file handle open for subprocess lifetime (fixes FD leak)
-    log_fh = open(log_path, "w")
-    proc = subprocess.Popen(
-        cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
-    )
+    # Keep file handle open for subprocess lifetime
+    log_fh = open(log_path, "w", encoding="utf-8")
+    try:
+        proc = subprocess.Popen(
+            cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        log_fh.close()
+        raise
 
     now = time.time()
     return TrainingProcess(
@@ -583,7 +593,8 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
         else:
             reason = f"exit code {ret}"
             try:
-                lines = tp.log_path.read_text().strip().split("\n")
+                tail_str = tail_file(tp.log_path, 8192)
+                lines = tail_str.strip().split("\n")
                 tail = "\n".join(lines[-5:])
                 reason += f"\n{tail}"
             except Exception:
@@ -654,6 +665,7 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     try:
         with open(log_path, "w") as log_fh:
             env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu)
             for k, v in cfg.get("train_extra_env", {}).items():
                 env[k] = str(v)
             result = subprocess.run(
@@ -693,6 +705,7 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
 
     python = cfg.get("python", sys.executable)
     env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
     for k, v in cfg.get("train_extra_env", {}).items():
         env[k] = str(v)
 
@@ -1233,11 +1246,10 @@ class Orze:
 
         rules_content = rules_path.read_text()
 
-        # Substitute template vars in the rules content
-        try:
-            prompt = rules_content.format(**template_vars)
-        except KeyError:
-            prompt = rules_content
+        # Substitute template vars using explicit replace (safe with literal {})
+        prompt = rules_content
+        for k, v in template_vars.items():
+            prompt = prompt.replace(f"{{{k}}}", str(v))
 
         claude_bin = research_cfg.get("claude_bin", "claude")
         cmd = [claude_bin, "-p", prompt]
