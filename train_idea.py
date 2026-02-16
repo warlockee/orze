@@ -135,7 +135,10 @@ def build_model(model_cfg: dict) -> nn.Module:
 
 def get_idea_config(ideas_md: str, idea_id: str) -> dict:
     """Extract a single idea's YAML config from ideas.md."""
-    text = Path(ideas_md).read_text()
+    try:
+        text = Path(ideas_md).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
     pattern = re.compile(r"^## (idea-\d+):\s*(.+?)$", re.MULTILINE)
     matches = list(pattern.finditer(text))
 
@@ -200,16 +203,42 @@ def train(args):
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
-    data_dir = data_cfg.get("data_dir", "./data")
+    data_dir = Path(data_cfg.get("data_dir", "./data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
     num_workers = data_cfg.get("num_workers", 2)
 
+    # Cross-process lock for dataset download (prevents corruption when
+    # multiple GPUs launch simultaneously on a fresh machine)
+    lock_dir = data_dir / ".download_lock"
+    extracted_dir = data_dir / "cifar-10-batches-py"
+    needs_download = not extracted_dir.exists()
+
+    if needs_download:
+        while True:
+            try:
+                lock_dir.mkdir(exist_ok=False)
+                break
+            except FileExistsError:
+                if extracted_dir.exists():
+                    break
+                time.sleep(2)
+        try:
+            torchvision.datasets.CIFAR10(root=str(data_dir), train=True, download=True, transform=transform_train)
+            torchvision.datasets.CIFAR10(root=str(data_dir), train=False, download=True, transform=transform_test)
+        finally:
+            if lock_dir.exists():
+                try:
+                    lock_dir.rmdir()
+                except Exception:
+                    pass
+
     trainset = torchvision.datasets.CIFAR10(
-        root=data_dir, train=True, download=True, transform=transform_train)
+        root=str(data_dir), train=True, download=False, transform=transform_train)
     trainloader = torch.utils.data.DataLoader(
         trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
     testset = torchvision.datasets.CIFAR10(
-        root=data_dir, train=False, download=True, transform=transform_test)
+        root=str(data_dir), train=False, download=False, transform=transform_test)
     testloader = torch.utils.data.DataLoader(
         testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
