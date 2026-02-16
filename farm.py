@@ -28,6 +28,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -167,6 +169,11 @@ DEFAULT_CONFIG = {
     "min_disk_gb": 0,           # 0 = disabled
     "orphan_timeout_hours": 0,  # 0 = disabled
     "roles": {},
+    "notifications": {
+        "enabled": False,
+        "on": ["completed", "failed", "new_best"],
+        "channels": [],
+    },
 }
 
 
@@ -1086,6 +1093,119 @@ def write_status_json(results_dir: Path, iteration: int,
 
 
 # ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+def _notify_send(url: str, payload: dict,
+                 headers: Optional[Dict[str, str]] = None,
+                 timeout: int = 10):
+    """POST JSON payload to a URL. Never raises."""
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        if headers:
+            for k, v in headers.items():
+                req.add_header(k, v)
+        urllib.request.urlopen(req, timeout=timeout)
+    except Exception as e:
+        logger.warning("Notification failed (%s): %s", url[:60], e)
+
+
+def _format_slack(event: str, data: dict) -> dict:
+    """Format notification for Slack webhook."""
+    if event == "new_best":
+        prev = data.get("prev_best_id", "none")
+        text = (f":trophy: *NEW BEST* `{data['idea_id']}`: {data['title']}\n"
+                f"{data['metric_name']}: *{data['metric_value']}*"
+                f" (was `{prev}`)")
+    elif event == "failed":
+        text = (f":x: *FAILED* `{data['idea_id']}`: {data['title']}\n"
+                f"Error: {data.get('error', 'unknown')[:200]}")
+    else:
+        text = (f":white_check_mark: *Completed* `{data['idea_id']}`: "
+                f"{data['title']}\n"
+                f"{data['metric_name']}: {data['metric_value']}"
+                f" (rank #{data.get('rank', '?')})"
+                f" in {data.get('training_time', 0):.0f}s")
+    return {"text": text}
+
+
+def _format_discord(event: str, data: dict) -> dict:
+    """Format notification for Discord webhook."""
+    if event == "new_best":
+        prev = data.get("prev_best_id", "none")
+        content = (f"**NEW BEST** `{data['idea_id']}`: {data['title']}\n"
+                   f"{data['metric_name']}: **{data['metric_value']}**"
+                   f" (was `{prev}`)")
+    elif event == "failed":
+        content = (f"**FAILED** `{data['idea_id']}`: {data['title']}\n"
+                   f"Error: {data.get('error', 'unknown')[:200]}")
+    else:
+        content = (f"**Completed** `{data['idea_id']}`: {data['title']}\n"
+                   f"{data['metric_name']}: {data['metric_value']}"
+                   f" (rank #{data.get('rank', '?')})"
+                   f" in {data.get('training_time', 0):.0f}s")
+    return {"content": content}
+
+
+def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
+    """Format notification for Telegram Bot API. Returns (url, payload)."""
+    token = channel_cfg["bot_token"]
+    chat_id = channel_cfg["chat_id"]
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    if event == "new_best":
+        prev = data.get("prev_best_id", "none")
+        text = (f"NEW BEST `{data['idea_id']}`: {data['title']}\n"
+                f"{data['metric_name']}: *{data['metric_value']}*"
+                f" (was `{prev}`)")
+    elif event == "failed":
+        text = (f"FAILED `{data['idea_id']}`: {data['title']}\n"
+                f"Error: {data.get('error', 'unknown')[:200]}")
+    else:
+        text = (f"Completed `{data['idea_id']}`: {data['title']}\n"
+                f"{data['metric_name']}: {data['metric_value']}"
+                f" (rank #{data.get('rank', '?')})"
+                f" in {data.get('training_time', 0):.0f}s")
+
+    return url, {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+
+
+def notify(event: str, data: dict, cfg: dict):
+    """Send notifications for an event to all configured channels. Never raises."""
+    try:
+        ncfg = cfg.get("notifications", {})
+        if not ncfg.get("enabled", False):
+            return
+
+        global_on = ncfg.get("on", ["completed", "failed", "new_best"])
+
+        for ch in ncfg.get("channels", []):
+            ch_on = ch.get("on", global_on)
+            if event not in ch_on:
+                continue
+
+            ch_type = ch.get("type", "webhook")
+            if ch_type == "slack":
+                _notify_send(ch["webhook_url"], _format_slack(event, data))
+            elif ch_type == "discord":
+                _notify_send(ch["webhook_url"], _format_discord(event, data))
+            elif ch_type == "telegram":
+                url, payload = _format_telegram(event, data, ch)
+                _notify_send(url, payload)
+            elif ch_type == "webhook":
+                payload = {"event": event, "data": data,
+                           "host": socket.gethostname(),
+                           "timestamp": datetime.datetime.now().isoformat()}
+                _notify_send(ch["url"], payload, headers=ch.get("headers"))
+            else:
+                logger.warning("Unknown notification channel: %s", ch_type)
+    except Exception as e:
+        logger.warning("Notification dispatch error: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
 
@@ -1147,6 +1267,7 @@ class Orze:
 
         # Per-role agent state: {role_name: {"cycles": int, "last_run_time": float}}
         self.role_states: Dict[str, dict] = state.get("roles", {})
+        self._best_idea_id: Optional[str] = state.get("best_idea_id")
 
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1170,9 +1291,70 @@ class Orze:
             "iteration": self.iteration,
             "failure_counts": self.failure_counts,
             "roles": self.role_states,
+            "best_idea_id": self._best_idea_id,
         })
         logger.info("Shutdown complete.")
         sys.exit(0)
+
+    def _process_notifications(self, finished: list,
+                               completed_rows: list, ideas: dict):
+        """Fire notifications for finished experiments and new bests. Never raises."""
+        try:
+            cfg = self.cfg
+            ncfg = cfg.get("notifications", {})
+            if not ncfg.get("enabled", False):
+                return
+
+            primary = cfg["report"].get("primary_metric", "test_accuracy")
+
+            # Build rank lookup from sorted completed_rows
+            rank_lookup = {}
+            for rank, r in enumerate(completed_rows, 1):
+                rank_lookup[r["id"]] = rank
+
+            # Notify for each finished experiment
+            for idea_id, gpu in finished:
+                m_path = self.results_dir / idea_id / "metrics.json"
+                if not m_path.exists():
+                    continue
+                try:
+                    m = json.loads(m_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    continue
+
+                status = m.get("status", "UNKNOWN")
+                title = ideas.get(idea_id, {}).get("title", idea_id)
+
+                if status == "COMPLETED":
+                    notify("completed", {
+                        "idea_id": idea_id, "title": title,
+                        "metric_name": primary,
+                        "metric_value": m.get(primary),
+                        "training_time": m.get("training_time", 0),
+                        "rank": rank_lookup.get(idea_id, "?"),
+                    }, cfg)
+                elif status == "FAILED":
+                    notify("failed", {
+                        "idea_id": idea_id, "title": title,
+                        "error": m.get("error", "unknown"),
+                    }, cfg)
+
+            # New best detection
+            if completed_rows:
+                current_best = completed_rows[0]["id"]
+                if (self._best_idea_id is not None
+                        and current_best != self._best_idea_id):
+                    notify("new_best", {
+                        "idea_id": current_best,
+                        "title": completed_rows[0]["title"],
+                        "metric_name": primary,
+                        "metric_value": completed_rows[0].get("primary_val"),
+                        "prev_best_id": self._best_idea_id,
+                    }, cfg)
+                self._best_idea_id = current_best
+
+        except Exception as e:
+            logger.warning("Notification processing error: %s", e)
 
     def _run_role_step(self, role_name: str, role_cfg: dict):
         """Run an agent role (rate-limited, locked, logged).
@@ -1458,6 +1640,9 @@ class Orze:
 
             # 8. Update report
             completed_rows = update_report(self.results_dir, ideas, cfg)
+
+            # 8a. Notifications
+            self._process_notifications(finished, completed_rows or [], ideas)
 
             # 9. Write heartbeat + status.json
             write_host_heartbeat(self.results_dir, self.active, free)
