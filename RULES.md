@@ -365,6 +365,46 @@ python farm.py -c orze.yaml --gpus 0,1,2,3
 
 Only one machine should have roles configured (the commander). Workers just train whatever ideas are in the queue. The atomic mkdir prevents duplicate claims.
 
+## Notifications
+
+Orze can push updates to Telegram, Slack, Discord, or any webhook endpoint when experiments complete, fail, or set new bests.
+
+### Configuration
+
+```yaml
+notifications:
+  enabled: true
+  on: [completed, failed, new_best]   # events to notify on
+  channels:
+    - type: telegram
+      bot_token: "123456:ABC-DEF"
+      chat_id: "-100123456789"
+    - type: slack
+      webhook_url: "https://hooks.slack.com/services/..."
+      on: [new_best, failed]          # per-channel override
+    - type: discord
+      webhook_url: "https://discord.com/api/webhooks/..."
+    - type: webhook
+      url: "https://example.com/hook"
+      headers:
+        Authorization: "Bearer tok"
+```
+
+### Events
+
+| Event | When | Message |
+|-------|------|---------|
+| `completed` | Experiment finishes successfully | Idea ID, title, primary metric, rank, training time |
+| `failed` | Experiment fails | Idea ID, title, error message |
+| `new_best` | A new experiment displaces the #1 spot | New best ID, metric value, previous best ID |
+
+### Behavior
+
+- **Disabled by default** — set `enabled: true` to activate
+- **Per-channel filtering** — each channel can override the global `on` list
+- **Non-blocking** — notification failures are logged as warnings, never crash the loop
+- **No dependencies** — uses `urllib.request` (stdlib), no `requests` library needed
+
 ## Phase Transitions
 
 For projects with distinct research phases, use marker files:
