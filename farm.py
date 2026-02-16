@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 logger = logging.getLogger("orze")
 
@@ -86,10 +86,19 @@ DEFAULT_CONFIG = {
     "timeout": 3600,
     "poll": 30,
     "gpu_mem_threshold": 2000,
+    "pre_script": None,
+    "pre_args": [],
+    "pre_timeout": 3600,
     "eval_script": None,
     "eval_args": [],
     "eval_timeout": 3600,
     "eval_output": "eval_report.json",
+    "post_scripts": [],
+    "cleanup": {
+        "script": None,
+        "interval": 100,
+        "patterns": [],
+    },
     "report": {
         "title": "Orze Report",
         "primary_metric": "test_accuracy",
@@ -277,6 +286,48 @@ class TrainingProcess:
                 self._log_fh.close()
             except Exception:
                 pass
+
+
+def run_pre_script(idea_id: str, gpu: int, cfg: dict) -> bool:
+    """Run pre-training script if configured. Returns True if OK to proceed."""
+    pre_script = cfg.get("pre_script")
+    if not pre_script:
+        return True
+
+    python = cfg.get("python", sys.executable)
+    pre_args = cfg.get("pre_args", [])
+    pre_timeout = cfg.get("pre_timeout", 3600)
+
+    cmd = [python, pre_script]
+    for arg in pre_args:
+        cmd.append(str(arg).format(idea_id=idea_id, gpu=gpu))
+
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    for k, v in cfg.get("train_extra_env", {}).items():
+        env[k] = str(v)
+
+    logger.info("Running pre-script for %s on GPU %d", idea_id, gpu)
+    try:
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True,
+            timeout=pre_timeout,
+        )
+        if result.returncode == 0:
+            logger.info("Pre-script OK for %s", idea_id)
+            return True
+        else:
+            logger.warning("Pre-script failed for %s (exit %d): %s",
+                           idea_id, result.returncode,
+                           result.stderr[-200:] if result.stderr else "")
+            return False
+    except subprocess.TimeoutExpired:
+        logger.warning("Pre-script timed out for %s after %ds",
+                       idea_id, pre_timeout)
+        return False
+    except Exception as e:
+        logger.warning("Pre-script error for %s: %s", idea_id, e)
+        return False
 
 
 def launch(idea_id: str, gpu: int, results_dir: Path, cfg: dict) -> TrainingProcess:
@@ -572,6 +623,119 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
         logger.warning("Eval error for %s: %s", idea_id, e)
 
 
+def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
+    """Run additional post-training scripts (beyond eval_script).
+    Each entry in post_scripts is a dict with: script, args, timeout, output."""
+    post_scripts = cfg.get("post_scripts", [])
+    if not post_scripts:
+        return
+
+    # Check training succeeded
+    metrics_path = results_dir / idea_id / "metrics.json"
+    if metrics_path.exists():
+        try:
+            metrics = json.loads(metrics_path.read_text())
+            if metrics.get("status") != "COMPLETED":
+                return
+        except json.JSONDecodeError:
+            return
+    else:
+        return
+
+    python = cfg.get("python", sys.executable)
+    env = os.environ.copy()
+    for k, v in cfg.get("train_extra_env", {}).items():
+        env[k] = str(v)
+
+    for i, ps in enumerate(post_scripts):
+        script = ps.get("script")
+        if not script:
+            continue
+
+        # Skip if output already exists
+        output_file = ps.get("output", "")
+        if output_file:
+            output_path = results_dir / idea_id / output_file
+            if output_path.exists():
+                logger.debug("Post-script %d output exists for %s, skipping",
+                             i, idea_id)
+                continue
+
+        args = ps.get("args", [])
+        timeout = ps.get("timeout", 3600)
+        name = ps.get("name", f"post-script-{i}")
+
+        cmd = [python, script]
+        for arg in args:
+            cmd.append(str(arg).format(idea_id=idea_id, gpu=gpu))
+
+        log_path = results_dir / idea_id / f"{name}.log"
+        logger.info("Running %s for %s", name, idea_id)
+
+        try:
+            with open(log_path, "w") as log_fh:
+                result = subprocess.run(
+                    cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+                    timeout=timeout,
+                )
+            if result.returncode == 0:
+                logger.info("%s completed for %s", name, idea_id)
+            else:
+                logger.warning("%s failed for %s (exit %d)",
+                               name, idea_id, result.returncode)
+        except subprocess.TimeoutExpired:
+            logger.warning("%s timed out for %s after %ds",
+                           name, idea_id, timeout)
+        except Exception as e:
+            logger.warning("%s error for %s: %s", name, idea_id, e)
+
+
+# ---------------------------------------------------------------------------
+# Garbage collection / cleanup
+# ---------------------------------------------------------------------------
+
+def run_cleanup(results_dir: Path, cfg: dict):
+    """Run periodic cleanup: delete files matching patterns, run cleanup script."""
+    cleanup_cfg = cfg.get("cleanup", {})
+
+    # Built-in: delete files matching glob patterns in results dirs
+    patterns = cleanup_cfg.get("patterns", [])
+    if patterns:
+        deleted = 0
+        for d in results_dir.iterdir():
+            if not d.is_dir() or not d.name.startswith("idea-"):
+                continue
+            for pattern in patterns:
+                for f in d.glob(pattern):
+                    try:
+                        if f.is_file():
+                            f.unlink()
+                            deleted += 1
+                    except Exception:
+                        pass
+        if deleted:
+            logger.info("Cleanup: deleted %d files matching %s",
+                        deleted, patterns)
+
+    # Custom cleanup script
+    script = cleanup_cfg.get("script")
+    if script:
+        python = cfg.get("python", sys.executable)
+        timeout = cleanup_cfg.get("timeout", 300)
+        try:
+            result = subprocess.run(
+                [python, script], capture_output=True, text=True,
+                timeout=timeout,
+            )
+            if result.returncode == 0:
+                logger.info("Cleanup script completed")
+            else:
+                logger.warning("Cleanup script failed (exit %d)",
+                               result.returncode)
+        except Exception as e:
+            logger.warning("Cleanup script error: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Report generation
 # ---------------------------------------------------------------------------
@@ -856,13 +1020,16 @@ class Orze:
                 time.sleep(cfg["poll"])
                 continue
 
-            # 2. Cleanup orphans periodically
-            if self.iteration % 100 == 0:
+            # 2. Periodic maintenance (orphans + GC)
+            cleanup_cfg = cfg.get("cleanup", {})
+            cleanup_interval = cleanup_cfg.get("interval", 100)
+            if cleanup_interval > 0 and self.iteration % cleanup_interval == 0:
                 orphan_hours = cfg.get("orphan_timeout_hours", 0)
                 if orphan_hours > 0:
                     cleaned = cleanup_orphans(self.results_dir, orphan_hours)
                     if cleaned:
                         logger.info("Cleaned %d orphaned claims", cleaned)
+                run_cleanup(self.results_dir, cfg)
 
             # 3. Check active processes (with health monitoring)
             finished = []
@@ -870,7 +1037,7 @@ class Orze:
                 finished = check_active(self.active, self.results_dir,
                                         cfg, self.failure_counts)
 
-            # 4. Run eval for newly completed ideas
+            # 4. Run post-training steps for newly completed ideas
             for idea_id in finished:
                 metrics_path = self.results_dir / idea_id / "metrics.json"
                 if metrics_path.exists():
@@ -878,6 +1045,8 @@ class Orze:
                         metrics = json.loads(metrics_path.read_text())
                         if metrics.get("status") == "COMPLETED":
                             run_eval(idea_id, 0, self.results_dir, cfg)
+                            run_post_scripts(idea_id, 0, self.results_dir,
+                                             cfg)
                     except json.JSONDecodeError:
                         pass
 
@@ -898,6 +1067,17 @@ class Orze:
                         break
                     idea_id = unclaimed[0]
                     if claim(idea_id, self.results_dir, gpu):
+                        # Run pre-script (e.g., feature extraction check)
+                        if not run_pre_script(idea_id, gpu, cfg):
+                            logger.warning(
+                                "Pre-script failed for %s, marking FAILED",
+                                idea_id)
+                            _write_failure(
+                                self.results_dir / idea_id,
+                                "Pre-script failed")
+                            _record_failure(self.failure_counts, idea_id)
+                            unclaimed.pop(0)
+                            continue
                         logger.info("Launching %s on GPU %d: %s",
                                     idea_id, gpu,
                                     ideas[idea_id]["title"][:50])

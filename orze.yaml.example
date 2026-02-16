@@ -30,11 +30,40 @@ max_idea_failures: 0                 # skip idea after N failures
 min_disk_gb: 0                       # pause launches if disk < N GB free
 orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 
+# --- Pre-training hook (optional) ---
+# Runs before each training launch. Exit 0 = proceed, non-zero = skip idea.
+# Use for: feature extraction check, config validation, disk space check.
+# pre_script: check_features.py
+# pre_args: ["--idea-id", "{idea_id}", "--gpu", "{gpu}"]
+# pre_timeout: 3600
+
 # --- Post-training evaluation (optional) ---
 # eval_script: evaluate.py
 # eval_args: ["--idea-id", "{idea_id}", "--gpu", "{gpu}"]
 # eval_timeout: 3600
 # eval_output: eval_report.json      # skip eval if this file exists
+
+# --- Additional post-training scripts (optional) ---
+# Run after eval. Each entry: {script, args, timeout, output, name}
+# post_scripts:
+#   - name: overlay
+#     script: generate_overlay.py
+#     args: ["--idea-id", "{idea_id}"]
+#     timeout: 1800
+#     output: overlay_done.json       # skip if exists
+#   - name: export
+#     script: export_model.py
+#     args: ["--idea-id", "{idea_id}"]
+#     timeout: 600
+
+# --- Garbage collection (optional) ---
+# cleanup:
+#   interval: 100                     # run every N iterations
+#   patterns:                         # glob patterns to delete from result dirs
+#     - "checkpoint_epoch*.pt"
+#     - "*.tmp"
+#   script: scripts/cleanup.py        # custom cleanup script
+#   timeout: 300
 
 # --- Report configuration ---
 report:

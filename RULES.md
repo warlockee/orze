@@ -7,10 +7,12 @@ This document tells you everything you need to operate orze — a filesystem-coo
 Orze runs experiments by:
 1. Reading experiment definitions from `ideas.md` (markdown + YAML)
 2. Claiming unclaimed ideas via atomic `mkdir` (filesystem lock)
-3. Launching training as subprocesses on free GPUs
-4. Monitoring health (stalls, OOM, disk space)
-5. Running optional post-training evaluation
-6. Generating a leaderboard report and machine-readable status
+3. Running optional pre-training checks (e.g., feature extraction)
+4. Launching training as subprocesses on free GPUs
+5. Monitoring health (stalls, OOM, disk space)
+6. Running post-training evaluation and additional scripts
+7. Periodic garbage collection and cleanup
+8. Generating a configurable leaderboard report and machine-readable status
 
 You control it by editing `ideas.md` and reading `results/`.
 
@@ -22,6 +24,7 @@ Each idea is an H2 header with an ID, title, metadata, and YAML config:
 ## idea-001: My Experiment Name
 - **Priority**: high
 - **Category**: architecture
+- **Parent**: none
 - **Hypothesis**: Why this might work.
 
 \```yaml
@@ -40,13 +43,17 @@ training:
 
 ### Optional Fields
 - **Priority**: `critical` > `high` > `medium` (default) > `low` — controls execution order
-- **Category**: Free-form label for grouping (e.g., architecture, hyperparameter, augmentation)
+- **Category**: Free-form label for grouping (e.g., architecture, hyperparameter, augmentation, data, loss, ensemble)
+- **Parent**: `none` or `idea-XXX` — tracks which idea inspired this one
 - **Hypothesis**: Why you think this idea will work — helps interpret results later
 
 ### ID Rules
 - Format: `idea-NNN` where NNN is zero-padded (e.g., idea-001, idea-042, idea-1337)
 - IDs must be unique within ideas.md
 - Higher priority ideas run first; within same priority, lower IDs run first
+
+### Append-Only Rule
+ideas.md is **append-only**. Only add new ideas — never edit or delete existing ones. Status is tracked by the filesystem (see Experiment Lifecycle), not in this file.
 
 ## The metrics.json Contract
 
@@ -71,21 +78,24 @@ Your training script **must** write `results/{idea_id}/metrics.json` when done:
 ## Experiment Lifecycle
 
 ```
-QUEUED → CLAIMED → TRAINING → COMPLETED or FAILED → [EVALUATED]
+QUEUED → CLAIMED → [PRE-CHECK] → TRAINING → COMPLETED or FAILED → [EVAL] → [POST-SCRIPTS]
 ```
 
 1. **QUEUED**: Idea exists in ideas.md, no `results/{idea_id}/` directory
 2. **CLAIMED**: `results/{idea_id}/` created (atomic mkdir), `claim.json` written
-3. **TRAINING**: Subprocess running, writing to `train_output.log`
-4. **COMPLETED**: `metrics.json` written with `status: COMPLETED`
-5. **FAILED**: `metrics.json` written with `status: FAILED` (by script or orze)
-6. **EVALUATED**: Optional eval script ran, wrote its output file
+3. **PRE-CHECK**: Optional `pre_script` runs (e.g., verify features exist)
+4. **TRAINING**: Subprocess running, writing to `train_output.log`
+5. **COMPLETED**: `metrics.json` written with `status: COMPLETED`
+6. **FAILED**: `metrics.json` written with `status: FAILED` (by script or orze)
+7. **EVAL**: Optional `eval_script` runs, writes eval output file
+8. **POST-SCRIPTS**: Optional additional scripts run (overlays, analysis, etc.)
 
 ### Failure Causes (auto-detected by orze)
 - **Timeout**: Training exceeded `timeout` seconds
 - **Stalled**: No log output for `stall_minutes` minutes
 - **OOM**: CUDA out of memory detected in log
 - **Crash**: Non-zero exit code
+- **Pre-script failure**: Pre-training check failed (e.g., missing features)
 
 ### Reclaiming Failed Ideas
 - Delete the `results/{idea_id}/` directory to allow retry
@@ -123,7 +133,124 @@ Each `results/{idea_id}/` contains:
 - `train_output.log` — stdout/stderr from training
 - `metrics.json` — final metrics (the contract)
 - `eval_output.log` — eval stdout (if eval configured)
-- Other files written by the training/eval scripts
+- Other files written by the training/eval/post scripts
+
+## Config Merging (Your Training Script's Job)
+
+Orze passes both `--ideas-md` and `--config` (base config) to your training script. **Your script is responsible for merging configs:**
+
+1. Load the base config from `--config` (e.g., `configs/base.yaml`)
+2. Parse the idea-specific YAML block from `--ideas-md` using `--idea-id`
+3. Merge: idea config overrides base config
+4. Train with the merged config
+
+This keeps orze generic — it doesn't need to understand your config schema.
+
+## JIT Feature Extraction Pattern
+
+If your project uses pre-extracted features (frozen backbone → .pt files), use this atomic staging pattern in your training script:
+
+```
+1. Check: does features/{backbone}/ exist?
+   → Yes: proceed to training
+   → No: need to extract, go to step 2
+
+2. Race: mkdir features/.tmp_{backbone}
+   → Succeeded: you are the extractor, go to step 3
+   → Failed (EEXIST): someone else is extracting, go to step 5
+
+3. Extract features using your ONE claimed GPU only
+   (do NOT spawn a multi-GPU loop — other GPUs are running other ideas)
+   Save .pt files into features/.tmp_{backbone}/
+
+4. When 100% done: mv features/.tmp_{backbone} → features/{backbone}
+   (atomic rename on POSIX — readers never see partial data)
+
+5. Wait: poll for features/{backbone}/ to exist (sleep 30, loop)
+   Another agent is extracting. Once it appears, proceed.
+```
+
+Orze's `pre_script` hook can automate this check. If features are missing and no one is extracting, the pre-script can trigger extraction before training starts.
+
+## Garbage Collection & Cleanup
+
+Long-running experiments generate disk pressure. Orze handles cleanup via:
+
+### Built-in Cleanup
+Configure `cleanup.patterns` in orze.yaml to auto-delete files matching glob patterns from result directories:
+
+```yaml
+cleanup:
+  interval: 100        # run every 100 iterations
+  patterns:
+    - "checkpoint_epoch*.pt"   # delete intermediate checkpoints
+    - "*.tmp"                  # delete temp files
+```
+
+### Custom Cleanup Script
+For more complex cleanup (frame cache, VRAM monitoring, etc.):
+
+```yaml
+cleanup:
+  script: scripts/cleanup.py
+  timeout: 300
+```
+
+### Disk Space Protection
+Set `min_disk_gb` to pause new launches when disk space is low:
+
+```yaml
+min_disk_gb: 50   # pause if < 50GB free
+```
+
+## LLM Agent Coordination
+
+Orze is the **execution layer** — it claims and runs ideas. LLM agents interact with orze through the filesystem:
+
+### Research Agent (idea producer)
+- Reads: `results/report.md`, `results/status.json`, `results/*/metrics.json`
+- Writes: `ideas.md` (append new ideas only)
+- Goal: Continuously generate new experiment ideas based on what works/fails
+
+### Orze (execution)
+- Reads: `ideas.md`
+- Writes: `results/*/` (claim, train, eval)
+- Goal: Run all ideas efficiently across GPUs
+
+### Documentation Agent (optional)
+- Reads: `results/report.md`, `results/status.json`
+- Writes: Project-specific progress docs
+- Goal: Maintain human-readable progress documentation
+
+### How They Work Together
+```
+Research Agent → writes ideas.md → Orze picks up new ideas → trains →
+writes results/ → Research Agent reads results → generates better ideas
+```
+
+The research agent can safely append to ideas.md while orze is running. Orze re-parses ideas.md every iteration (`poll` seconds), so new ideas are picked up automatically.
+
+### Multi-Machine Setup
+On machines sharing a filesystem:
+```bash
+# Machine 1 (also runs research agent)
+python farm.py -c orze.yaml --gpus 0,1,2,3
+
+# Machine 2 (worker — just runs ideas)
+python farm.py -c orze.yaml --gpus 0,1,2,3
+```
+
+The atomic mkdir prevents duplicate claims. Each machine's `claim.json` records which host claimed what. Research agent only needs to run on one machine.
+
+## Phase Transitions
+
+For projects with distinct research phases, use marker files:
+
+- **Phase 1 (Build)**: Infrastructure setup, smoke test. Create `.phase1_complete` when done.
+- **Phase 2 (Explore)**: Broad exploration. Orze runs ideas across all GPUs.
+- **Phase 3 (Converge)**: Focus on top approaches. Create `.phase3_started`.
+
+Orze itself doesn't enforce phases — it just runs whatever ideas are in ideas.md. The research agent should check phase markers and adjust its idea generation strategy accordingly. For example, in Phase 3, generate only ideas that build on the top 3 approaches.
 
 ## Configuring for Your Task (orze.yaml)
 
@@ -156,11 +283,31 @@ max_idea_failures: 3    # skip after N failures
 min_disk_gb: 20         # pause if disk < 20GB free
 orphan_timeout_hours: 6 # reclaim stale claims
 
+# Pre-training hook (optional, runs before each training launch)
+pre_script: check_features.py
+pre_args: ["--idea-id", "{idea_id}", "--gpu", "{gpu}"]
+pre_timeout: 3600
+
 # Post-training evaluation (optional)
 eval_script: my_eval.py
 eval_args: ["--idea-id", "{idea_id}", "--gpu", "{gpu}"]
 eval_timeout: 3600
 eval_output: eval_report.json  # checked for skip-if-exists
+
+# Additional post-training scripts (optional, run after eval)
+post_scripts:
+  - name: overlay
+    script: generate_overlay.py
+    args: ["--idea-id", "{idea_id}"]
+    timeout: 1800
+    output: overlay_done.json   # skip if exists
+
+# Garbage collection
+cleanup:
+  interval: 100               # run every N iterations
+  patterns: ["checkpoint_epoch*.pt"]  # delete from result dirs
+  script: scripts/cleanup.py  # custom cleanup script
+  timeout: 300
 
 # Report configuration
 report:
@@ -202,13 +349,34 @@ This reads `results/{idea_id}/eval_report.json` → `metrics` → `auc_roc`.
 
 **That's it.** Write metrics.json when done. Orze handles everything else.
 
+## Pre-Script Contract (Optional)
+
+If `pre_script` is configured, it runs before each training launch on the claimed GPU.
+
+**Input**: The command from `pre_args` with `{idea_id}` and `{gpu}` substituted, plus `CUDA_VISIBLE_DEVICES`
+**Success**: Exit code 0 — training proceeds
+**Failure**: Non-zero exit code — idea marked FAILED, training skipped
+
+Use cases: verify features exist, check disk space, validate configs.
+
 ## Evaluation Script Contract (Optional)
 
-If `eval_script` is configured in orze.yaml, it runs after each successful training.
+If `eval_script` is configured, it runs after each successful training.
 
 **Input**: The command from `eval_args` with `{idea_id}` and `{gpu}` substituted
 **Output**: The file named in `eval_output` (default: `eval_report.json`)
 **Skip**: If the output file already exists, eval is skipped
+
+## Post-Scripts Contract (Optional)
+
+Additional scripts in `post_scripts` list run after eval. Each entry specifies:
+- `script`: path to the script
+- `args`: list of args with `{idea_id}` and `{gpu}` substitution
+- `timeout`: max time in seconds
+- `output`: if this file exists, the script is skipped
+- `name`: label for logs
+
+Use cases: overlay generation, model export, additional analysis.
 
 ## Best Practices for Writing Ideas
 
@@ -218,21 +386,10 @@ If `eval_script` is configured in orze.yaml, it runs after each successful train
 4. **Include hypotheses** — helps interpret results and plan next ideas
 5. **Check the leaderboard** before generating similar ideas — avoid redundant work
 6. **Use categories** — group related ideas for easier analysis
-7. **Keep YAML configs complete** — don't rely on implicit defaults
-
-## Multi-Machine Setup
-
-On machines sharing a filesystem (NFS, EFS, FSx):
-
-```bash
-# Machine 1
-python farm.py -c orze.yaml --gpus 0,1,2,3
-
-# Machine 2
-python farm.py -c orze.yaml --gpus 0,1,2,3
-```
-
-The atomic mkdir prevents duplicate claims. Each machine's `claim.json` records which host claimed what.
+7. **Track lineage** — set `Parent: idea-XXX` to trace what inspired each idea
+8. **Keep YAML configs complete** — don't rely on implicit defaults
+9. **React to results** — combine winners, diagnose failures, push best approaches further
+10. **Span diverse categories** — architecture, training, data, loss, ensemble — not just hyperparameter tweaks
 
 ## CLI Quick Reference
 
