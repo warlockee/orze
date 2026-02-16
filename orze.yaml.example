@@ -56,6 +56,18 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 #     args: ["--idea-id", "{idea_id}"]
 #     timeout: 600
 
+# --- Research agent (optional) ---
+# Spawns an LLM agent to generate new ideas based on results.
+# The research script should: read results, append new ideas to ideas.md.
+# research:
+#   script: research_agent.py
+#   args: ["--ideas-md", "{ideas_file}", "--results-dir", "{results_dir}", "--cycle", "{cycle}"]
+#   timeout: 600                       # max time per research cycle (seconds)
+#   cooldown: 300                      # min seconds between research cycles
+#   log_dir: _research_logs            # relative to results_dir
+#   env:                               # extra env vars (e.g., API keys)
+#     ANTHROPIC_API_KEY: sk-...
+
 # --- Garbage collection (optional) ---
 # cleanup:
 #   interval: 100                     # run every N iterations

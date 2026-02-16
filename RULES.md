@@ -203,44 +203,91 @@ Set `min_disk_gb` to pause new launches when disk space is low:
 min_disk_gb: 50   # pause if < 50GB free
 ```
 
-## LLM Agent Coordination
+## Orze as Research Commander
 
-Orze is the **execution layer** — it claims and runs ideas. LLM agents interact with orze through the filesystem:
+Orze is the **single entry point** for the entire auto-research loop. It manages everything: spawning the research agent, training ideas, evaluating results, and feeding results back to the research agent. One process, one command.
 
-### Research Agent (idea producer)
-- Reads: `results/report.md`, `results/status.json`, `results/*/metrics.json`
-- Writes: `ideas.md` (append new ideas only)
-- Goal: Continuously generate new experiment ideas based on what works/fails
+### The Full Loop
 
-### Orze (execution)
-- Reads: `ideas.md`
-- Writes: `results/*/` (claim, train, eval)
-- Goal: Run all ideas efficiently across GPUs
-
-### Documentation Agent (optional)
-- Reads: `results/report.md`, `results/status.json`
-- Writes: Project-specific progress docs
-- Goal: Maintain human-readable progress documentation
-
-### How They Work Together
 ```
-Research Agent → writes ideas.md → Orze picks up new ideas → trains →
-writes results/ → Research Agent reads results → generates better ideas
+┌──────────────────────────────────────────────────┐
+│                    farm.py                        │
+│                                                   │
+│   ┌─────────┐     ┌─────────┐     ┌──────────┐  │
+│   │ Research │────>│  Train  │────>│ Evaluate │  │
+│   │  Agent   │     │ (GPUs)  │     │          │  │
+│   └────▲────┘     └─────────┘     └──────────┘  │
+│        │                                │         │
+│        └────────── results/ ◄───────────┘         │
+│                                                   │
+│   ideas.md ◄── research ── report.md              │
+└──────────────────────────────────────────────────┘
 ```
 
-The research agent can safely append to ideas.md while orze is running. Orze re-parses ideas.md every iteration (`poll` seconds), so new ideas are picked up automatically.
+Each iteration:
+1. Orze spawns the **research agent** (subprocess, rate-limited by cooldown timer)
+2. Research agent reads `results/report.md` and `results/status.json`, appends new ideas to `ideas.md`
+3. Orze parses `ideas.md`, claims unclaimed ideas, launches **training** on free GPUs
+4. Training completes → orze runs **evaluation** and **post-scripts**
+5. Orze updates `report.md` and `status.json`
+6. Loop repeats
+
+### Research Configuration
+
+```yaml
+research:
+  script: research_agent.py        # your research script
+  args: ["--ideas-md", "{ideas_file}", "--results-dir", "{results_dir}"]
+  timeout: 600                     # max time per cycle (seconds)
+  cooldown: 300                    # min seconds between cycles
+  log_dir: _research_logs          # relative to results_dir
+  env:                             # extra env vars (API keys, etc.)
+    ANTHROPIC_API_KEY: sk-...
+```
+
+Template variables for `args`: `{ideas_file}`, `{results_dir}`, `{cycle}`, `{gpu_count}`, `{completed}`, `{queued}`.
+
+### Research Script Contract
+
+**Input**: The command from `research.args` with template variables substituted.
+
+**Expected behavior**:
+1. Read `results/report.md` and/or `results/status.json` to understand current state
+2. Analyze what's working (top results) and what's failing
+3. Generate new experiment ideas
+4. Append them to `ideas.md` (following the Ideas Format above)
+
+**Output**: Append new ideas to `ideas.md`. Print "N new ideas" to stdout for logging.
+
+**Failures are non-fatal**: If the research script crashes or times out, orze logs a warning and continues training. Research never blocks execution.
+
+### Research Logging
+
+All research cycles are logged to `results/_research_logs/`:
+- `cycle_001.log` — stdout/stderr from the first research cycle
+- `cycle_002.log` — second cycle, etc.
+
+### Running Research Manually
+
+```bash
+# Run one research cycle and exit
+python farm.py -c orze.yaml --research-only
+
+# The full loop (research + train + eval, continuous)
+python farm.py -c orze.yaml
+```
 
 ### Multi-Machine Setup
 On machines sharing a filesystem:
 ```bash
-# Machine 1 (also runs research agent)
+# Machine 1 (commander — runs research + training)
 python farm.py -c orze.yaml --gpus 0,1,2,3
 
-# Machine 2 (worker — just runs ideas)
+# Machine 2 (worker — just runs training, no research config)
 python farm.py -c orze.yaml --gpus 0,1,2,3
 ```
 
-The atomic mkdir prevents duplicate claims. Each machine's `claim.json` records which host claimed what. Research agent only needs to run on one machine.
+Only one machine should have `research:` configured (the commander). Workers just train whatever ideas are in the queue. The atomic mkdir prevents duplicate claims.
 
 ## Phase Transitions
 
