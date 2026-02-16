@@ -96,6 +96,25 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 #   cooldown: 300
 #   timeout: 600
 
+# --- Notifications (optional) ---
+# Push updates to Telegram, Slack, Discord, or any webhook.
+# notifications:
+#   enabled: true
+#   on: [completed, failed, new_best]  # global event filter
+#   channels:
+#     - type: telegram
+#       bot_token: "123456:ABC-DEF"
+#       chat_id: "-100123456789"
+#     - type: slack
+#       webhook_url: "https://hooks.slack.com/services/T.../B.../xxx"
+#       on: [new_best, failed]         # per-channel override
+#     - type: discord
+#       webhook_url: "https://discord.com/api/webhooks/123/abc"
+#     - type: webhook                  # generic JSON POST
+#       url: "https://example.com/hook"
+#       headers:
+#         Authorization: "Bearer tok"
+
 # --- Garbage collection (optional) ---
 # cleanup:
 #   interval: 100                     # run every N iterations
