@@ -72,6 +72,55 @@ def deep_get(obj: dict, dotpath: str, default=None):
 
 
 # ---------------------------------------------------------------------------
+# Filesystem locks (mkdir-based, works across machines on shared FS)
+# ---------------------------------------------------------------------------
+
+def _fs_lock(lock_dir: Path, stale_seconds: float = 600) -> bool:
+    """Acquire a filesystem lock via mkdir. Returns True if acquired.
+    Stale locks (older than stale_seconds) are broken automatically."""
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        # Check if stale
+        try:
+            lock_file = lock_dir / "lock.json"
+            if lock_file.exists():
+                age = time.time() - lock_file.stat().st_mtime
+                if age > stale_seconds:
+                    shutil.rmtree(lock_dir)
+                    try:
+                        lock_dir.mkdir(parents=True, exist_ok=False)
+                    except FileExistsError:
+                        return False
+                else:
+                    return False
+            else:
+                return False
+        except Exception:
+            return False
+
+    # Write lock info
+    lock_info = {
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "time": datetime.datetime.now().isoformat(),
+    }
+    try:
+        atomic_write(lock_dir / "lock.json", json.dumps(lock_info))
+    except Exception:
+        pass
+    return True
+
+
+def _fs_unlock(lock_dir: Path):
+    """Release a filesystem lock."""
+    try:
+        shutil.rmtree(lock_dir)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Project config (orze.yaml)
 # ---------------------------------------------------------------------------
 
@@ -465,9 +514,9 @@ def cleanup_orphans(results_dir: Path, hours: float) -> int:
 # ---------------------------------------------------------------------------
 
 def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
-                 cfg: dict, failure_counts: dict) -> List[str]:
+                 cfg: dict, failure_counts: dict) -> list:
     """Check running processes. Reap completed/timed-out/stalled/OOM.
-    Returns list of finished idea IDs."""
+    Returns list of (idea_id, gpu) tuples for finished ideas."""
     finished = []
     stall_minutes = cfg.get("stall_minutes", 0)
 
@@ -487,7 +536,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                 _write_failure(results_dir / tp.idea_id, "Timed out")
                 _record_failure(failure_counts, tp.idea_id)
                 del active[gpu]
-                finished.append(tp.idea_id)
+                finished.append((tp.idea_id, gpu))
                 continue
 
             if check_stalled(tp, stall_minutes):
@@ -500,7 +549,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                                f"Stalled (no output for {stall_minutes}m)")
                 _record_failure(failure_counts, tp.idea_id)
                 del active[gpu]
-                finished.append(tp.idea_id)
+                finished.append((tp.idea_id, gpu))
                 continue
 
             if detect_oom(tp) and tp.process.poll() is None:
@@ -512,7 +561,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                 _write_failure(results_dir / tp.idea_id, "CUDA out of memory")
                 _record_failure(failure_counts, tp.idea_id)
                 del active[gpu]
-                finished.append(tp.idea_id)
+                finished.append((tp.idea_id, gpu))
                 continue
 
             continue
@@ -546,7 +595,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             _record_failure(failure_counts, tp.idea_id)
 
         del active[gpu]
-        finished.append(tp.idea_id)
+        finished.append((tp.idea_id, gpu))
 
     return finished
 
@@ -899,6 +948,47 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 # Status JSON (for LLM consumption)
 # ---------------------------------------------------------------------------
 
+def write_host_heartbeat(results_dir: Path,
+                         active: Dict[int, TrainingProcess],
+                         free_gpus: List[int]):
+    """Write per-host heartbeat file with active processes and free GPUs.
+    Other hosts read these to build a merged multi-machine view."""
+    hostname = socket.gethostname()
+    now = time.time()
+    heartbeat = {
+        "host": hostname,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "epoch": now,
+        "active": [
+            {
+                "idea_id": tp.idea_id,
+                "gpu": tp.gpu,
+                "elapsed_min": round((now - tp.start_time) / 60, 1),
+            }
+            for tp in active.values()
+        ],
+        "free_gpus": free_gpus,
+    }
+    atomic_write(results_dir / f"_host_{hostname}.json",
+                 json.dumps(heartbeat, indent=2))
+
+
+def _read_all_heartbeats(results_dir: Path,
+                         stale_seconds: float = 300) -> list:
+    """Read all host heartbeat files, filtering out stale ones (>5min)."""
+    now = time.time()
+    heartbeats = []
+    for hb_path in results_dir.glob("_host_*.json"):
+        try:
+            hb = json.loads(hb_path.read_text())
+            age = now - hb.get("epoch", 0)
+            if age <= stale_seconds:
+                heartbeats.append(hb)
+        except Exception:
+            continue
+    return heartbeats
+
+
 def write_status_json(results_dir: Path, iteration: int,
                       active: Dict[int, TrainingProcess],
                       free_gpus: List[int], queue_depth: int,
@@ -907,7 +997,8 @@ def write_status_json(results_dir: Path, iteration: int,
                       cfg: dict,
                       research_cycles: int = 0,
                       last_research_time: float = 0.0):
-    """Write machine-readable status.json for LLM agents."""
+    """Write machine-readable status.json for LLM agents.
+    Merges heartbeats from all hosts for a combined multi-machine view."""
     disk_free_gb = 0.0
     try:
         usage = shutil.disk_usage(results_dir)
@@ -921,18 +1012,25 @@ def write_status_json(results_dir: Path, iteration: int,
         if last_research_time > 0 else None
     )
 
+    # Merge active processes from all hosts
+    heartbeats = _read_all_heartbeats(results_dir)
+    all_active = []
+    free_gpus_by_host = {}
+    for hb in heartbeats:
+        host = hb.get("host", "unknown")
+        for a in hb.get("active", []):
+            a["host"] = host
+            all_active.append(a)
+        free_gpus_by_host[host] = hb.get("free_gpus", [])
+
+    hostname = socket.gethostname()
     status = {
         "timestamp": datetime.datetime.now().isoformat(),
+        "host": hostname,
         "iteration": iteration,
-        "active": [
-            {
-                "idea_id": tp.idea_id,
-                "gpu": tp.gpu,
-                "elapsed_min": round((now - tp.start_time) / 60, 1),
-            }
-            for tp in active.values()
-        ],
+        "active": all_active,
         "free_gpus": free_gpus,
+        "free_gpus_by_host": free_gpus_by_host,
         "queue_depth": queue_depth,
         "completed": completed_count,
         "failed": failed_count,
@@ -952,14 +1050,23 @@ def write_status_json(results_dir: Path, iteration: int,
 # ---------------------------------------------------------------------------
 
 def save_state(results_dir: Path, state: dict):
-    """Save orchestrator state for restart recovery."""
-    atomic_write(results_dir / ".orze_state.json",
+    """Save orchestrator state for restart recovery (per-host)."""
+    hostname = socket.gethostname()
+    atomic_write(results_dir / f".orze_state_{hostname}.json",
                  json.dumps(state, indent=2))
 
 
 def load_state(results_dir: Path) -> dict:
-    """Load orchestrator state from checkpoint."""
-    path = results_dir / ".orze_state.json"
+    """Load orchestrator state from checkpoint (per-host).
+    Falls back to legacy .orze_state.json for backward compat."""
+    hostname = socket.gethostname()
+    path = results_dir / f".orze_state_{hostname}.json"
+
+    if not path.exists():
+        legacy = results_dir / ".orze_state.json"
+        if legacy.exists():
+            path = legacy
+
     if path.exists():
         try:
             return json.loads(path.read_text())
@@ -1040,6 +1147,12 @@ class Orze:
 
         timeout = research_cfg.get("timeout", 600)
 
+        # Acquire cross-machine lock (only one host runs research at a time)
+        lock_dir = self.results_dir / "_research_lock"
+        if not _fs_lock(lock_dir, stale_seconds=timeout + 60):
+            logger.debug("Research lock held by another host, skipping")
+            return
+
         # Count current status for template vars
         ideas = parse_ideas(self.cfg["ideas_file"])
         counts = _count_statuses(ideas, self.results_dir)
@@ -1106,6 +1219,8 @@ class Orze:
         except Exception as e:
             self.last_research_time = time.time()
             logger.warning("Research agent error: %s", e)
+        finally:
+            _fs_unlock(lock_dir)
 
     def _build_claude_cmd(self, research_cfg: dict,
                           template_vars: dict) -> Optional[List[str]]:
@@ -1193,16 +1308,25 @@ class Orze:
                 time.sleep(cfg["poll"])
                 continue
 
-            # 2. Periodic maintenance (orphans + GC)
+            # 2. Periodic maintenance (orphans + GC, locked for multi-machine)
             cleanup_cfg = cfg.get("cleanup", {})
             cleanup_interval = cleanup_cfg.get("interval", 100)
             if cleanup_interval > 0 and self.iteration % cleanup_interval == 0:
-                orphan_hours = cfg.get("orphan_timeout_hours", 0)
-                if orphan_hours > 0:
-                    cleaned = cleanup_orphans(self.results_dir, orphan_hours)
-                    if cleaned:
-                        logger.info("Cleaned %d orphaned claims", cleaned)
-                run_cleanup(self.results_dir, cfg)
+                cleanup_lock = self.results_dir / "_cleanup_lock"
+                if _fs_lock(cleanup_lock, stale_seconds=300):
+                    try:
+                        orphan_hours = cfg.get("orphan_timeout_hours", 0)
+                        if orphan_hours > 0:
+                            cleaned = cleanup_orphans(
+                                self.results_dir, orphan_hours)
+                            if cleaned:
+                                logger.info("Cleaned %d orphaned claims",
+                                            cleaned)
+                        run_cleanup(self.results_dir, cfg)
+                    finally:
+                        _fs_unlock(cleanup_lock)
+                else:
+                    logger.debug("Cleanup lock held by another host, skipping")
 
             # 3. Check active processes (with health monitoring)
             finished = []
@@ -1211,14 +1335,14 @@ class Orze:
                                         cfg, self.failure_counts)
 
             # 4. Run post-training steps for newly completed ideas
-            for idea_id in finished:
+            for idea_id, gpu in finished:
                 metrics_path = self.results_dir / idea_id / "metrics.json"
                 if metrics_path.exists():
                     try:
                         metrics = json.loads(metrics_path.read_text())
                         if metrics.get("status") == "COMPLETED":
-                            run_eval(idea_id, 0, self.results_dir, cfg)
-                            run_post_scripts(idea_id, 0, self.results_dir,
+                            run_eval(idea_id, gpu, self.results_dir, cfg)
+                            run_post_scripts(idea_id, gpu, self.results_dir,
                                              cfg)
                     except json.JSONDecodeError:
                         pass
@@ -1239,10 +1363,12 @@ class Orze:
 
             if unclaimed and free:
                 for gpu in free:
-                    if not unclaimed:
-                        break
-                    idea_id = unclaimed[0]
-                    if claim(idea_id, self.results_dir, gpu):
+                    launched = False
+                    while unclaimed:
+                        idea_id = unclaimed.pop(0)
+                        if not claim(idea_id, self.results_dir, gpu):
+                            # Another machine claimed it, try next idea
+                            continue
                         # Run pre-script (e.g., feature extraction check)
                         if not run_pre_script(idea_id, gpu, cfg):
                             logger.warning(
@@ -1252,16 +1378,16 @@ class Orze:
                                 self.results_dir / idea_id,
                                 "Pre-script failed")
                             _record_failure(self.failure_counts, idea_id)
-                            unclaimed.pop(0)
                             continue
                         logger.info("Launching %s on GPU %d: %s",
                                     idea_id, gpu,
                                     ideas[idea_id]["title"][:50])
                         tp = launch(idea_id, gpu, self.results_dir, cfg)
                         self.active[gpu] = tp
-                        unclaimed.pop(0)
-                    else:
-                        unclaimed.pop(0)
+                        launched = True
+                        break
+                    if not launched:
+                        break
             elif not unclaimed:
                 if not self.active:
                     logger.info("All ideas completed or skipped!")
@@ -1277,7 +1403,8 @@ class Orze:
             # 8. Update report
             completed_rows = update_report(self.results_dir, ideas, cfg)
 
-            # 9. Write status.json
+            # 9. Write heartbeat + status.json
+            write_host_heartbeat(self.results_dir, self.active, free)
             counts = _count_statuses(ideas, self.results_dir)
             top_results = []
             if completed_rows:
