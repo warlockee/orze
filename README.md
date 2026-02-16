@@ -77,6 +77,26 @@ python orze/farm.py -c orze.yaml
 - **Push notifications** — Telegram, Slack, Discord, or any webhook
 - **Atomic coordination** — `mkdir` as lock, no race conditions
 
+## Notifications
+
+Get pinged on your phone when experiments complete, fail, or set new bests. Every message includes the top 10 leaderboard.
+
+```yaml
+# In orze.yaml
+notifications:
+  enabled: true
+  channels:
+    - type: telegram
+      bot_token: "your-bot-token"
+      chat_id: "your-chat-id"
+    - type: slack
+      webhook_url: "https://hooks.slack.com/services/..."
+    - type: discord
+      webhook_url: "https://discord.com/api/webhooks/..."
+```
+
+Supports per-channel event filtering (`on: [new_best, failed]`) and generic webhooks.
+
 ## The Contract
 
 Your training script receives these args from orze:
