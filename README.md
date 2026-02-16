@@ -1,190 +1,116 @@
 # orze
 
-A GPU experiment orchestrator that uses filesystem coordination. No databases, no message queues — just files.
+Auto-research on autopilot. One script, one config, all GPUs.
 
-Write your experiment ideas in a markdown file, and `farm.py` claims and runs them across your GPUs in parallel. It uses `mkdir` as an atomic lock, so it works across multiple machines with a shared filesystem.
-
-Designed to be operated by LLM agents. See [RULES.md](RULES.md) for the complete LLM-readable specification.
+Orze runs the full research loop: **generate ideas → train → evaluate → learn → repeat**. It coordinates GPUs via filesystem locks (`mkdir`), works across machines, and can use Claude as the research agent. No databases, no message queues — just files.
 
 **Website:** [orze.ai](https://orze.ai)
+
+## Install
+
+```bash
+curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
+```
+
+This downloads 4 files into `orze/`. Then open [Claude Code](https://claude.ai/claude-code) and say:
+
+```
+@orze/AGENT.md set up and run experiments for this project
+```
+
+Claude will explore your codebase, create the config, write seed ideas, and launch the loop. That's it.
 
 ## How It Works
 
 ```
-                 ideas.md                    results/
-              ┌─────────────┐            ┌──────────────┐
-              │ ## idea-001  │   claim    │ idea-001/    │
-              │ ## idea-002  │──(mkdir)──>│   claim.json │
-              │ ## idea-003  │            │   metrics.json│
-              │ ...          │            │ idea-002/    │
-              └─────────────┘            │   ...        │
-                                         └──────────────┘
-                     │                          ▲
-                     ▼                          │
-              ┌─────────────┐                   │
-              │   farm.py   │───launch──────────┘
-              │             │   (subprocess
-              │  ┌───┐ ┌───┐│   per GPU)
-              │  │GPU│ │GPU││
-              │  │ 0 │ │ 1 ││
-              │  └───┘ └───┘│
-              └─────────────┘
+┌──────────────────────────────────────────────────┐
+│                    farm.py                        │
+│                                                   │
+│   ┌─────────┐     ┌─────────┐     ┌──────────┐  │
+│   │ Research │────>│  Train  │────>│ Evaluate │  │
+│   │ (Claude) │     │ (GPUs)  │     │          │  │
+│   └────▲────┘     └─────────┘     └──────────┘  │
+│        │                                │         │
+│        └────────── results/ ◄───────────┘         │
+│                                                   │
+│   ideas.md ◄── research ── report.md              │
+└──────────────────────────────────────────────────┘
 ```
 
 The loop:
-1. **Research** — spawn an LLM agent to generate new experiment ideas (optional, rate-limited)
-2. Parse `ideas.md` for experiment definitions
-3. Find unclaimed ideas (no `results/{idea_id}/` directory)
-4. Detect free GPUs (low memory usage, no active training)
-5. **Claim** an idea by creating its results directory (`mkdir` — atomic, fails if exists)
-6. **Launch** training as a subprocess with `CUDA_VISIBLE_DEVICES`
-7. **Monitor** health — detect stalls, OOM, timeouts
-8. **Evaluate** — run optional post-training eval script
-9. **Report** — generate `results/report.md` leaderboard + `status.json`
-10. Sleep, repeat
+1. **Research** — Claude (or any LLM) reads results, generates new experiment ideas
+2. **Parse** `ideas.md` for experiment definitions
+3. **Claim** unclaimed ideas via atomic `mkdir`
+4. **Launch** training as subprocesses across free GPUs
+5. **Monitor** health — stalls, OOM, timeouts, disk space
+6. **Evaluate** — run post-training eval scripts
+7. **Report** — update `results/report.md` leaderboard + `status.json`
+8. Sleep, repeat
 
-## Quick Start
+## Manual Setup (without Claude Code)
 
 ```bash
-# 1. Install dependencies
-pip install torch torchvision pyyaml
+# 1. Install orze
+curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
 
-# 2. Run one cycle (claims and trains the first unclaimed idea)
-python farm.py --once
+# 2. Create your config (see orze/orze.yaml.example)
+cp orze/orze.yaml.example orze.yaml
+# Edit orze.yaml — set train_script, python path, report columns
 
-# 3. Check results
-cat results/report.md
-cat results/status.json
+# 3. Write seed ideas in ideas.md
+# See orze/RULES.md for the exact format
 
-# 4. Run continuously on GPUs 0 and 1
-python farm.py --gpus 0,1
+# 4. Run
+python orze/farm.py -c orze.yaml
 ```
 
-## Project Configuration (orze.yaml)
+## Key Features
 
-For real projects, create an `orze.yaml` to configure paths, scripts, health monitoring, evaluation, and report format:
-
-```bash
-cp orze.yaml.example orze.yaml
-# Edit orze.yaml for your project
-python farm.py -c orze.yaml
-```
-
-See [orze.yaml.example](orze.yaml.example) for all options.
-
-Key features enabled by orze.yaml:
-- **Research agent** — spawn an LLM agent to auto-generate experiment ideas
-- **Custom training script** with extra args and env vars
-- **Post-training evaluation** (runs automatically after training succeeds)
+- **Research agent** — Claude CLI or any script generates ideas automatically
+- **Multi-GPU** — claims and trains across all GPUs in parallel
 - **Health monitoring** — stall detection, OOM detection, disk space checks
-- **Failure handling** — auto-skip ideas after N failures, orphan cleanup
-- **Custom report** — configurable columns, metrics from any JSON file
+- **Post-training eval** — runs automatically after each successful training
+- **Configurable report** — custom columns, metrics from any JSON file
+- **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
+- **Failure handling** — auto-skip after N failures, orphan cleanup
+- **Atomic coordination** — `mkdir` as lock, no race conditions
 
-## The Protocol
+## The Contract
 
-### ideas.md format
+Your training script receives these args from orze:
 
-Each idea is an H2 header with an embedded YAML config block:
-
-~~~markdown
-## idea-001: My Experiment Name
-- **Priority**: high
-- **Category**: architecture
-- **Hypothesis**: Why this might work.
-
-```yaml
-model:
-  type: simple_cnn
-  channels: [32, 64, 128]
-training:
-  lr: 0.001
-  epochs: 5
 ```
-~~~
+CUDA_VISIBLE_DEVICES=N python train.py --idea-id idea-001 --results-dir results --ideas-md ideas.md --config base.yaml
+```
 
-Priority controls execution order: `critical` > `high` > `medium` > `low`.
-
-### Claiming (atomic mkdir)
-
-When `farm.py` wants to run an idea, it calls `mkdir(results/idea-001/, exist_ok=False)`. On any POSIX filesystem, only one process can create a directory — the rest get `FileExistsError`. This is the entire coordination mechanism. It works across machines on NFS/EFS/FSx.
-
-### metrics.json contract
-
-Your training script must write `results/{idea_id}/metrics.json` when done:
+Your script must write `results/{idea_id}/metrics.json`:
 
 ```json
-{
-  "status": "COMPLETED",
-  "test_accuracy": 0.9234,
-  "test_loss": 0.2451,
-  "training_time": 142.5
-}
+{"status": "COMPLETED", "test_accuracy": 0.92, "training_time": 142.5}
 ```
 
-Status must be `"COMPLETED"` or `"FAILED"`. Add any other metrics you want — they'll show up in the report.
+That's it. See [RULES.md](RULES.md) for the full specification.
 
-## Using Your Own Training Script
+## Documentation
 
-Replace `train_idea.py` with anything. The contract:
-
-**Input:**
-- `CUDA_VISIBLE_DEVICES` environment variable (set by farm.py)
-- `--idea-id idea-001` — which idea to train
-- `--results-dir results` — where to write output
-- `--ideas-md ideas.md` — path to ideas file (read your config from here)
-- `--config configs/base.yaml` — path to base config
-- Plus any `train_extra_args` and `train_extra_env` from orze.yaml
-
-**Output:**
-- `results/{idea_id}/metrics.json` — must contain `{"status": "COMPLETED"|"FAILED", ...}`
-
-**That's it.** Write metrics.json when done. Farm.py handles everything else.
-
-## Multi-Machine Setup
-
-If your machines share a filesystem (NFS, EFS, FSx, etc.):
-
-```bash
-# Machine 1
-python farm.py -c orze.yaml --gpus 0,1,2,3
-
-# Machine 2
-python farm.py -c orze.yaml --gpus 0,1,2,3
-```
-
-Both instances read the same `ideas.md` and write to the same `results/` directory. The `mkdir` claim prevents duplicate work. Each machine's `claim.json` records which host claimed what.
-
-## For LLM Agents
-
-Read [RULES.md](RULES.md) — it contains the complete specification for operating orze:
-- Ideas format and ID rules
-- The metrics.json contract
-- Experiment lifecycle (QUEUED → CLAIMED → TRAINING → COMPLETED → EVALUATED)
-- How to read results, report.md, and status.json
-- Configuration reference (orze.yaml)
-- Best practices for writing experiment ideas
+| File | For |
+|------|-----|
+| [AGENT.md](AGENT.md) | Claude Code bootstrap — `@orze/AGENT.md` |
+| [RULES.md](RULES.md) | Complete LLM-readable specification |
+| [orze.yaml.example](orze.yaml.example) | All configuration options |
 
 ## CLI Reference
 
 ```
-python farm.py [OPTIONS]
+python orze/farm.py [OPTIONS]
 
-Options:
-  -c, --config-file PATH   Path to orze.yaml project config
-  --gpus GPU_IDS           Comma-separated GPU IDs (default: auto-detect)
-  --timeout SECONDS        Max training time per idea (default: 3600)
-  --poll SECONDS           Seconds between loop iterations (default: 30)
+  -c, --config-file PATH   Path to orze.yaml
+  --gpus GPU_IDS           Comma-separated GPU IDs (default: all)
   --once                   Run one cycle and exit
   --report-only            Only regenerate report.md
-  --research-only          Only run research agent once and exit
-  --ideas-md PATH          Path to ideas file (default: ideas.md)
-  --base-config PATH       Path to base config (default: configs/base.yaml)
-  --results-dir PATH       Results directory (default: results)
-  --train-script PATH      Training script to run (default: train_idea.py)
+  --research-only          Only run research agent once
   -v, --verbose            Debug logging
 ```
-
-CLI args override orze.yaml values. Without orze.yaml, defaults match the original behavior.
 
 ## License
 
