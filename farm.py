@@ -680,7 +680,7 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     if not eval_script:
         return
 
-    eval_output = cfg.get("eval_output", "eval_report.json")
+    eval_output = cfg.get("eval_output") or "eval_report.json"
     output_path = results_dir / idea_id / eval_output
     if output_path.exists():
         logger.debug("Eval already exists for %s, skipping", idea_id)
@@ -850,7 +850,9 @@ def _read_metric_value(results_dir: Path, idea_id: str, col: dict) -> Any:
     """Read a metric value for a column. Supports 'source' field for
     reading from other JSON files: 'filename.json:dotpath'."""
     source = col.get("source", "")
-    key = col["key"]
+    key = col.get("key")
+    if not key:
+        return None
 
     if source and ":" in source:
         filename, dotpath = source.split(":", 1)
@@ -877,11 +879,11 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
                   cfg: dict) -> list:
     """Generate a configurable leaderboard report.md from all results.
     Returns sorted list of completed row dicts."""
-    report_cfg = cfg.get("report", DEFAULT_CONFIG["report"])
-    primary_metric = report_cfg.get("primary_metric", "test_accuracy")
-    sort_order = report_cfg.get("sort", "descending")
-    columns = report_cfg.get("columns", DEFAULT_CONFIG["report"]["columns"])
-    title = report_cfg.get("title", "Orze Report")
+    report_cfg = cfg.get("report") or DEFAULT_CONFIG["report"]
+    primary_metric = report_cfg.get("primary_metric") or "test_accuracy"
+    sort_order = report_cfg.get("sort") or "descending"
+    columns = report_cfg.get("columns") or DEFAULT_CONFIG["report"]["columns"]
+    title = report_cfg.get("title") or "Orze Report"
 
     rows = []
     def _id_sort_key(x):
@@ -909,7 +911,10 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 
         values = {}
         for col in columns:
-            values[col["key"]] = _read_metric_value(results_dir, idea_id, col)
+            key = col.get("key")
+            if not key:
+                continue
+            values[key] = _read_metric_value(results_dir, idea_id, col)
 
         primary_val = values.get(primary_metric)
         if primary_val is None:
@@ -973,7 +978,11 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
         for rank, r in enumerate(completed, 1):
             row = f"| {rank} | {r['id']} | {r['title'][:40]}"
             for col in columns:
-                val = r["values"].get(col["key"])
+                key = col.get("key")
+                if not key:
+                    row += " | —"
+                    continue
+                val = r["values"].get(key)
                 if val is not None:
                     fmt = col.get("fmt", "")
                     try:
@@ -1181,7 +1190,7 @@ def _format_leaderboard(data: dict, bold_fn=str, escape_fn=str) -> str:
     lines = [f"\nTop {len(board)} ({metric}):"]
     for i, entry in enumerate(board, 1):
         val = entry.get("value")
-        val_str = f"{val:.4f}" if isinstance(val, float) else str(val)
+        val_str = escape_fn(f"{val:.4f}" if isinstance(val, float) else str(val))
         marker = escape_fn(" <-" if entry["id"] == data.get("idea_id") else "")
         title = escape_fn(str(entry.get("title", ""))[:30])
         line = f"#{i} {escape_fn(str(entry['id']))}: {val_str} {title}{marker}"
@@ -1333,10 +1342,10 @@ def notify(event: str, data: dict, cfg: dict):
         if not ncfg.get("enabled", False):
             return
 
-        global_on = ncfg.get("on", ["completed", "failed", "new_best"])
+        global_on = ncfg.get("on") or ["completed", "failed", "new_best"]
 
         for ch in (ncfg.get("channels") or []):
-            ch_on = ch.get("on", global_on)
+            ch_on = ch.get("on") or global_on
             if event not in ch_on:
                 continue
 
@@ -1624,7 +1633,7 @@ class Orze:
             env[k] = str(v)
 
         # Per-role log directory
-        log_dir_name = role_cfg.get("log_dir", f"_{role_name}_logs")
+        log_dir_name = role_cfg.get("log_dir") or f"_{role_name}_logs"
         log_dir = self.results_dir / log_dir_name
         log_dir.mkdir(parents=True, exist_ok=True)
         cycle_num = role_state["cycles"] + 1
@@ -1907,6 +1916,12 @@ class Orze:
                     self._process_notifications(
                         all_once_finished, once_rows or [], ideas,
                         once_counts)
+                    save_state(self.results_dir, {
+                        "iteration": self.iteration,
+                        "failure_counts": self.failure_counts,
+                        "roles": self.role_states,
+                        "best_idea_id": self._best_idea_id,
+                    })
                 logger.info("Done.")
                 break
 
