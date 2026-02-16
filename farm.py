@@ -712,7 +712,9 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
             env = os.environ.copy()
             for k, v in (cfg.get("train_extra_env") or {}).items():
                 env[k] = str(v)
-            env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+            # Don't set CUDA_VISIBLE_DEVICES — the eval script uses --gpu
+            # to select the device via torch.cuda.set_device().
+            env.pop("CUDA_VISIBLE_DEVICES", None)
             result = subprocess.run(
                 cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
                 timeout=eval_timeout,
@@ -1506,6 +1508,9 @@ class Orze:
                         "value": r.get("primary_val"),
                     })
 
+            # Build a lookup from completed_rows for metric values
+            row_lookup = {r["id"]: r for r in completed_rows}
+
             # Notify for each finished experiment
             for idea_id, gpu in finished:
                 m_path = self.results_dir / idea_id / "metrics.json"
@@ -1520,11 +1525,19 @@ class Orze:
                 title = ideas.get(idea_id, {}).get("title", idea_id)
 
                 if status == "COMPLETED":
+                    # Use primary_val from report rows (reads from
+                    # nexar_test_report.json etc.), fall back to metrics.json
+                    row = row_lookup.get(idea_id, {})
+                    metric_val = row.get("primary_val") or m.get(primary)
+                    t_time = m.get("training_time", 0)
+                    if not t_time:
+                        t_time = m.get("training_log_summary", {}).get(
+                            "total_training_time", 0)
                     notify("completed", {
                         "idea_id": idea_id, "title": title,
                         "metric_name": primary,
-                        "metric_value": m.get(primary),
-                        "training_time": m.get("training_time", 0),
+                        "metric_value": metric_val,
+                        "training_time": t_time,
                         "rank": rank_lookup.get(idea_id, "?"),
                         "leaderboard": leaderboard,
                     }, cfg)
@@ -1786,6 +1799,9 @@ class Orze:
                                         cfg, self.failure_counts)
 
             # 4. Run post-training steps for newly completed ideas
+            #    Track which ideas have been fully processed (eval done)
+            #    so notifications can include the eval metric.
+            evaled_finished = []
             for idea_id, gpu in finished:
                 metrics_path = self.results_dir / idea_id / "metrics.json"
                 if metrics_path.exists():
@@ -1797,6 +1813,7 @@ class Orze:
                                              cfg)
                     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                         pass
+                evaled_finished.append((idea_id, gpu))
 
             # 5. Run agent roles (research, documenter, etc.)
             self._run_all_roles()
@@ -1866,9 +1883,9 @@ class Orze:
             write_host_heartbeat(self.results_dir, self.active, free)
             counts = _count_statuses(ideas, self.results_dir)
 
-            # 8a. Notifications (after heartbeat so machine data is fresh)
+            # 8a. Notifications (uses evaled_finished so eval metrics are available)
             self._process_notifications(
-                finished, completed_rows or [], ideas, counts)
+                evaled_finished, completed_rows or [], ideas, counts)
             top_results = []
             if completed_rows:
                 primary = cfg["report"].get("primary_metric",
