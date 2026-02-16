@@ -1112,6 +1112,24 @@ def _notify_send(url: str, payload: dict,
         logger.warning("Notification failed (%s): %s", url[:60], e)
 
 
+def _format_leaderboard(data: dict, bold_fn=str) -> str:
+    """Format top 10 leaderboard lines from data['leaderboard']."""
+    board = data.get("leaderboard", [])
+    if not board:
+        return ""
+    metric = data.get("metric_name", "score")
+    lines = [f"\nTop {len(board)} ({metric}):"]
+    for i, entry in enumerate(board, 1):
+        val = entry.get("value")
+        val_str = f"{val:.4f}" if isinstance(val, float) else str(val)
+        marker = " <-" if entry["id"] == data.get("idea_id") else ""
+        line = f"#{i} {entry['id']}: {val_str} {entry['title'][:30]}{marker}"
+        if i == 1:
+            line = bold_fn(line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _format_slack(event: str, data: dict) -> dict:
     """Format notification for Slack webhook."""
     if event == "new_best":
@@ -1128,6 +1146,7 @@ def _format_slack(event: str, data: dict) -> dict:
                 f"{data['metric_name']}: {data['metric_value']}"
                 f" (rank #{data.get('rank', '?')})"
                 f" in {data.get('training_time', 0):.0f}s")
+    text += _format_leaderboard(data, lambda s: f"*{s}*")
     return {"text": text}
 
 
@@ -1146,6 +1165,7 @@ def _format_discord(event: str, data: dict) -> dict:
                    f"{data['metric_name']}: {data['metric_value']}"
                    f" (rank #{data.get('rank', '?')})"
                    f" in {data.get('training_time', 0):.0f}s")
+    content += _format_leaderboard(data, lambda s: f"**{s}**")
     return {"content": content}
 
 
@@ -1168,6 +1188,7 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
                 f"{data['metric_name']}: {data['metric_value']}"
                 f" (rank #{data.get('rank', '?')})"
                 f" in {data.get('training_time', 0):.0f}s")
+    text += _format_leaderboard(data, lambda s: f"*{s}*")
 
     return url, {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
 
@@ -1307,10 +1328,17 @@ class Orze:
 
             primary = cfg["report"].get("primary_metric", "test_accuracy")
 
-            # Build rank lookup from sorted completed_rows
+            # Build rank lookup and leaderboard from sorted completed_rows
             rank_lookup = {}
+            leaderboard = []
             for rank, r in enumerate(completed_rows, 1):
                 rank_lookup[r["id"]] = rank
+                if rank <= 10:
+                    leaderboard.append({
+                        "id": r["id"],
+                        "title": r.get("title", r["id"]),
+                        "value": r.get("primary_val"),
+                    })
 
             # Notify for each finished experiment
             for idea_id, gpu in finished:
@@ -1332,11 +1360,13 @@ class Orze:
                         "metric_value": m.get(primary),
                         "training_time": m.get("training_time", 0),
                         "rank": rank_lookup.get(idea_id, "?"),
+                        "leaderboard": leaderboard,
                     }, cfg)
                 elif status == "FAILED":
                     notify("failed", {
                         "idea_id": idea_id, "title": title,
                         "error": m.get("error", "unknown"),
+                        "leaderboard": leaderboard,
                     }, cfg)
 
             # New best detection
@@ -1350,6 +1380,7 @@ class Orze:
                         "metric_name": primary,
                         "metric_value": completed_rows[0].get("primary_val"),
                         "prev_best_id": self._best_idea_id,
+                        "leaderboard": leaderboard,
                     }, cfg)
                 self._best_idea_id = current_best
 
