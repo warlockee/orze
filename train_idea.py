@@ -195,9 +195,8 @@ def train(args):
     epochs = train_cfg.get("epochs", 10)
     batch_size = train_cfg.get("batch_size", 128)
     lr = train_cfg.get("lr", 0.001)
-    use_amp = train_cfg.get("mixed_precision", True)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = train_cfg.get("mixed_precision", True) and device.type == "cuda"
     print(f"[{args.idea_id}] Device: {device}")
     print(f"[{args.idea_id}] Config: {json.dumps(cfg, indent=2)}")
 
@@ -220,8 +219,6 @@ def train(args):
     # Cross-process lock for dataset download (prevents corruption when
     # multiple GPUs launch simultaneously on a fresh machine)
     lock_dir = data_dir / ".download_lock"
-    extracted_dir = data_dir / "cifar-10-batches-py"
-    needs_download = not extracted_dir.exists()
 
     marker = data_dir / ".download_complete"
     if not marker.exists():
@@ -288,7 +285,7 @@ def train(args):
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
 
-            with torch.amp.autocast("cuda", enabled=use_amp):
+            with torch.amp.autocast(device.type, enabled=use_amp):
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
 
@@ -313,7 +310,7 @@ def train(args):
         with torch.no_grad():
             for inputs, targets in testloader:
                 inputs, targets = inputs.to(device), targets.to(device)
-                with torch.amp.autocast("cuda", enabled=use_amp):
+                with torch.amp.autocast(device.type, enabled=use_amp):
                     outputs = model(inputs)
                     loss = criterion(outputs, targets)
                 test_loss += loss.item() * inputs.size(0)
