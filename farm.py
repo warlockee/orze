@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import datetime
+import html as html_mod
 import json
 import logging
 import os
@@ -194,7 +195,7 @@ def load_project_config(path: Optional[str]) -> dict:
     cfg["report"] = dict(DEFAULT_CONFIG["report"])
 
     if path and Path(path).exists():
-        raw = yaml.safe_load(Path(path).read_text()) or {}
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         for k, v in raw.items():
             if k == "report" and isinstance(v, dict):
                 cfg["report"] = {**cfg["report"], **v}
@@ -377,14 +378,14 @@ def run_pre_script(idea_id: str, gpu: int, cfg: dict) -> bool:
         return True
 
     python = cfg.get("python", sys.executable)
-    pre_args = cfg.get("pre_args", [])
+    pre_args = cfg.get("pre_args") or []
     pre_timeout = cfg.get("pre_timeout", 3600)
 
     cmd = [python, pre_script]
     cmd.extend(_format_args(pre_args, {"idea_id": idea_id, "gpu": gpu}))
 
     env = os.environ.copy()
-    for k, v in cfg.get("train_extra_env", {}).items():
+    for k, v in (cfg.get("train_extra_env") or {}).items():
         env[k] = str(v)
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
@@ -425,11 +426,11 @@ def launch(idea_id: str, gpu: int, results_dir: Path, cfg: dict) -> TrainingProc
         "--ideas-md", cfg["ideas_file"],
         "--config", cfg["base_config"],
     ]
-    for arg in cfg.get("train_extra_args", []):
+    for arg in (cfg.get("train_extra_args") or []):
         cmd.append(str(arg))
 
     env = os.environ.copy()
-    for k, v in cfg.get("train_extra_env", {}).items():
+    for k, v in (cfg.get("train_extra_env") or {}).items():
         env[k] = str(v)
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
@@ -624,7 +625,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
 
         if ret == 0 and metrics_path.exists():
             try:
-                metrics = json.loads(metrics_path.read_text())
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 metrics = {"status": "UNKNOWN"}
             status = metrics.get("status", "COMPLETED")
@@ -685,7 +686,7 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     metrics_path = results_dir / idea_id / "metrics.json"
     if metrics_path.exists():
         try:
-            metrics = json.loads(metrics_path.read_text())
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             if metrics.get("status") != "COMPLETED":
                 return
         except json.JSONDecodeError:
@@ -694,7 +695,7 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
         return
 
     python = cfg.get("python", sys.executable)
-    eval_args = cfg.get("eval_args", [])
+    eval_args = cfg.get("eval_args") or []
     eval_timeout = cfg.get("eval_timeout", 3600)
 
     cmd = [python, eval_script]
@@ -704,9 +705,9 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     logger.info("Running eval for %s on GPU %d", idea_id, gpu)
 
     try:
-        with open(log_path, "w") as log_fh:
+        with open(log_path, "w", encoding="utf-8") as log_fh:
             env = os.environ.copy()
-            for k, v in cfg.get("train_extra_env", {}).items():
+            for k, v in (cfg.get("train_extra_env") or {}).items():
                 env[k] = str(v)
             env["CUDA_VISIBLE_DEVICES"] = str(gpu)
             result = subprocess.run(
@@ -728,7 +729,7 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
 def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     """Run additional post-training scripts (beyond eval_script).
     Each entry in post_scripts is a dict with: script, args, timeout, output."""
-    post_scripts = cfg.get("post_scripts", [])
+    post_scripts = (cfg.get("post_scripts") or [])
     if not post_scripts:
         return
 
@@ -736,7 +737,7 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     metrics_path = results_dir / idea_id / "metrics.json"
     if metrics_path.exists():
         try:
-            metrics = json.loads(metrics_path.read_text())
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             if metrics.get("status") != "COMPLETED":
                 return
         except json.JSONDecodeError:
@@ -746,7 +747,7 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
 
     python = cfg.get("python", sys.executable)
     env = os.environ.copy()
-    for k, v in cfg.get("train_extra_env", {}).items():
+    for k, v in (cfg.get("train_extra_env") or {}).items():
         env[k] = str(v)
     env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
@@ -764,7 +765,7 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
                              i, idea_id)
                 continue
 
-        args = ps.get("args", [])
+        args = ps.get("args") or []
         timeout = ps.get("timeout", 3600)
         name = ps.get("name", f"post-script-{i}")
 
@@ -775,7 +776,7 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
         logger.info("Running %s for %s", name, idea_id)
 
         try:
-            with open(log_path, "w") as log_fh:
+            with open(log_path, "w", encoding="utf-8") as log_fh:
                 result = subprocess.run(
                     cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
                     timeout=timeout,
@@ -798,10 +799,10 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
 
 def run_cleanup(results_dir: Path, cfg: dict):
     """Run periodic cleanup: delete files matching patterns, run cleanup script."""
-    cleanup_cfg = cfg.get("cleanup", {})
+    cleanup_cfg = cfg.get("cleanup") or {}
 
     # Built-in: delete files matching glob patterns in results dirs
-    patterns = cleanup_cfg.get("patterns", [])
+    patterns = cleanup_cfg.get("patterns") or []
     if patterns:
         deleted = 0
         for d in results_dir.iterdir():
@@ -853,7 +854,7 @@ def _read_metric_value(results_dir: Path, idea_id: str, col: dict) -> Any:
         filepath = results_dir / idea_id / filename
         if filepath.exists():
             try:
-                data = json.loads(filepath.read_text())
+                data = json.loads(filepath.read_text(encoding="utf-8"))
                 return deep_get(data, dotpath)
             except (json.JSONDecodeError, KeyError):
                 return None
@@ -862,7 +863,7 @@ def _read_metric_value(results_dir: Path, idea_id: str, col: dict) -> Any:
     metrics_path = results_dir / idea_id / "metrics.json"
     if metrics_path.exists():
         try:
-            data = json.loads(metrics_path.read_text())
+            data = json.loads(metrics_path.read_text(encoding="utf-8"))
             return deep_get(data, key) if "." in key else data.get(key)
         except json.JSONDecodeError:
             return None
@@ -896,7 +897,7 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
             continue
 
         try:
-            metrics = json.loads(metrics_path.read_text())
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             metrics = {"status": "FAILED", "error": "corrupt metrics.json"}
 
@@ -1013,12 +1014,14 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 def write_host_heartbeat(results_dir: Path,
                          active: Dict[int, TrainingProcess],
                          free_gpus: List[int]):
-    """Write per-host heartbeat file with active processes and free GPUs.
+    """Write per-host+PID heartbeat file with active processes and free GPUs.
     Other hosts read these to build a merged multi-machine view."""
     hostname = socket.gethostname()
+    pid = os.getpid()
     now = time.time()
     heartbeat = {
         "host": hostname,
+        "pid": pid,
         "timestamp": datetime.datetime.now().isoformat(),
         "epoch": now,
         "active": [
@@ -1031,21 +1034,28 @@ def write_host_heartbeat(results_dir: Path,
         ],
         "free_gpus": free_gpus,
     }
-    atomic_write(results_dir / f"_host_{hostname}.json",
+    atomic_write(results_dir / f"_host_{hostname}_{pid}.json",
                  json.dumps(heartbeat, indent=2))
 
 
 def _read_all_heartbeats(results_dir: Path,
                          stale_seconds: float = 300) -> list:
-    """Read all host heartbeat files, filtering out stale ones (>5min)."""
+    """Read all host heartbeat files, filtering out stale ones (>5min).
+    Removes stale heartbeat files to prevent clutter."""
     now = time.time()
     heartbeats = []
     for hb_path in results_dir.glob("_host_*.json"):
         try:
-            hb = json.loads(hb_path.read_text())
+            hb = json.loads(hb_path.read_text(encoding="utf-8"))
             age = now - hb.get("epoch", 0)
             if age <= stale_seconds:
                 heartbeats.append(hb)
+            else:
+                # Clean up stale heartbeat file
+                try:
+                    hb_path.unlink()
+                except OSError:
+                    pass
         except Exception:
             continue
     return heartbeats
@@ -1082,7 +1092,7 @@ def write_status_json(results_dir: Path, iteration: int,
 
     # Build per-role status
     role_states = role_states or {}
-    roles_cfg = cfg.get("roles", {})
+    roles_cfg = cfg.get("roles") or {}
     roles_status = {}
     for rname in roles_cfg:
         rs = role_states.get(rname, {})
@@ -1220,14 +1230,16 @@ def _format_slack(event: str, data: dict) -> dict:
                 f"{data['metric_name']}: *{data['metric_value']}*"
                 f" (was `{prev}`)")
     elif event == "failed":
+        err = str(data.get("error") or "unknown")[:200]
         text = (f":x: *FAILED* `{data['idea_id']}`: {data['title']}\n"
-                f"Error: {data.get('error', 'unknown')[:200]}")
+                f"Error: {err}")
     else:
+        t = data.get("training_time") or 0
         text = (f":white_check_mark: *Completed* `{data['idea_id']}`: "
                 f"{data['title']}\n"
                 f"{data['metric_name']}: {data['metric_value']}"
                 f" (rank #{data.get('rank', '?')})"
-                f" in {data.get('training_time', 0):.0f}s")
+                f" in {t:.0f}s")
     text += _format_leaderboard(data, lambda s: f"*{s}*")
     return {"text": text}
 
@@ -1242,56 +1254,70 @@ def _format_discord(event: str, data: dict) -> dict:
                    f"{data['metric_name']}: **{data['metric_value']}**"
                    f" (was `{prev}`)")
     elif event == "failed":
+        err = str(data.get("error") or "unknown")[:200]
         content = (f"**FAILED** `{data['idea_id']}`: {data['title']}\n"
-                   f"Error: {data.get('error', 'unknown')[:200]}")
+                   f"Error: {err}")
     else:
+        t = data.get("training_time") or 0
         content = (f"**Completed** `{data['idea_id']}`: {data['title']}\n"
                    f"{data['metric_name']}: {data['metric_value']}"
                    f" (rank #{data.get('rank', '?')})"
-                   f" in {data.get('training_time', 0):.0f}s")
+                   f" in {t:.0f}s")
     content += _format_leaderboard(data, lambda s: f"**{s}**")
     return {"content": content}
 
 
 def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
-    """Format notification for Telegram Bot API. Returns (url, payload)."""
+    """Format notification for Telegram Bot API using HTML parse_mode.
+    Returns (url, payload). Uses HTML to avoid MarkdownV2 escaping issues."""
+    esc = html_mod.escape
     token = channel_cfg["bot_token"]
     chat_id = channel_cfg["chat_id"]
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
     if event == "report":
-        text = f"```\n{_format_report_text(data)}\n```"
+        text = f"<pre>\n{esc(_format_report_text(data))}\n</pre>"
         return url, {"chat_id": chat_id, "text": text,
-                     "parse_mode": "Markdown"}
+                     "parse_mode": "HTML"}
+
+    idea_id = esc(str(data.get("idea_id", "")))
+    title = esc(str(data.get("title", "")))
 
     if event == "new_best":
-        prev = data.get("prev_best_id", "none")
-        text = (f"NEW BEST `{data['idea_id']}`: {data['title']}\n"
-                f"{data['metric_name']}: *{data['metric_value']}*"
-                f" (was `{prev}`)")
+        prev = esc(str(data.get("prev_best_id", "none")))
+        metric = esc(str(data.get("metric_name", "")))
+        val = esc(str(data.get("metric_value", "")))
+        text = (f"<b>NEW BEST</b> <code>{idea_id}</code>: {title}\n"
+                f"{metric}: <b>{val}</b>"
+                f" (was <code>{prev}</code>)")
     elif event == "failed":
-        text = (f"FAILED `{data['idea_id']}`: {data['title']}\n"
-                f"Error: {data.get('error', 'unknown')[:200]}")
+        err = esc(str(data.get("error") or "unknown")[:200])
+        text = (f"<b>FAILED</b> <code>{idea_id}</code>: {title}\n"
+                f"Error: {err}")
     else:
-        text = (f"Completed `{data['idea_id']}`: {data['title']}\n"
-                f"{data['metric_name']}: {data['metric_value']}"
-                f" (rank #{data.get('rank', '?')})"
-                f" in {data.get('training_time', 0):.0f}s")
-    text += _format_leaderboard(data, lambda s: f"*{s}*")
+        t = data.get("training_time") or 0
+        metric = esc(str(data.get("metric_name", "")))
+        val = esc(str(data.get("metric_value", "")))
+        rank = esc(str(data.get("rank", "?")))
+        text = (f"<b>Completed</b> <code>{idea_id}</code>: {title}\n"
+                f"{metric}: {val}"
+                f" (rank #{rank})"
+                f" in {t:.0f}s")
+    text += _format_leaderboard(data, lambda s: f"<b>{esc(s)}</b>")
 
-    return url, {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 
 
 def notify(event: str, data: dict, cfg: dict):
     """Send notifications for an event to all configured channels. Never raises."""
     try:
-        ncfg = cfg.get("notifications", {})
+        ncfg = cfg.get("notifications") or {}
         if not ncfg.get("enabled", False):
             return
 
         global_on = ncfg.get("on", ["completed", "failed", "new_best"])
 
-        for ch in ncfg.get("channels", []):
+        for ch in (ncfg.get("channels") or []):
             ch_on = ch.get("on", global_on)
             if event not in ch_on:
                 continue
@@ -1340,7 +1366,7 @@ def load_state(results_dir: Path) -> dict:
 
     if path.exists():
         try:
-            state = json.loads(path.read_text())
+            state = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             logger.warning("Corrupt state file, starting fresh")
             return {"iteration": 0, "failure_counts": {}, "roles": {}}
@@ -1387,15 +1413,19 @@ class Orze:
     def _shutdown(self, signum, frame):
         logger.info("Received signal %d, shutting down gracefully...", signum)
         self.running = False
+        # Terminate all first so they begin clean shutdown
+        for gpu, tp in self.active.items():
+            logger.info("Terminating %s on GPU %d...", tp.idea_id, gpu)
+            tp.process.terminate()
         deadline = time.time() + 300
         for gpu, tp in self.active.items():
-            logger.info("Waiting for %s on GPU %d...", tp.idea_id, gpu)
             remaining = max(1, deadline - time.time())
             try:
                 tp.process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
                 logger.warning("Force killing %s", tp.idea_id)
                 tp.process.kill()
+                tp.process.wait()
             tp.close_log()
         save_state(self.results_dir, {
             "iteration": self.iteration,
@@ -1431,7 +1461,7 @@ class Orze:
         """Fire notifications for finished experiments and new bests. Never raises."""
         try:
             cfg = self.cfg
-            ncfg = cfg.get("notifications", {})
+            ncfg = cfg.get("notifications") or {}
             if not ncfg.get("enabled", False):
                 return
 
@@ -1455,7 +1485,7 @@ class Orze:
                 if not m_path.exists():
                     continue
                 try:
-                    m = json.loads(m_path.read_text())
+                    m = json.loads(m_path.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError):
                     continue
 
@@ -1564,15 +1594,15 @@ class Orze:
         else:
             python = self.cfg.get("python", sys.executable)
             cmd = [python, role_cfg["script"]]
-            cmd.extend(_format_args(role_cfg.get("args", []), template_vars))
+            cmd.extend(_format_args(role_cfg.get("args") or [], template_vars))
 
         # Environment
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)  # Allow nested Claude CLI sessions
         env.pop("CLAUDE_CODE_ENTRYPOINT", None)
-        for k, v in self.cfg.get("train_extra_env", {}).items():
+        for k, v in (self.cfg.get("train_extra_env") or {}).items():
             env[k] = str(v)
-        for k, v in role_cfg.get("env", {}).items():
+        for k, v in (role_cfg.get("env") or {}).items():
             env[k] = str(v)
 
         # Per-role log directory
@@ -1586,7 +1616,7 @@ class Orze:
                      role_name, mode, cycle_num)
 
         try:
-            with open(log_path, "w") as log_fh:
+            with open(log_path, "w", encoding="utf-8") as log_fh:
                 result = subprocess.run(
                     cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
                     timeout=timeout,
@@ -1614,7 +1644,7 @@ class Orze:
 
     def _run_all_roles(self):
         """Run all configured agent roles (each independently rate-limited)."""
-        for role_name, role_cfg in self.cfg.get("roles", {}).items():
+        for role_name, role_cfg in (self.cfg.get("roles") or {}).items():
             if isinstance(role_cfg, dict):
                 self._run_role_step(role_name, role_cfg)
 
@@ -1627,7 +1657,7 @@ class Orze:
             logger.warning("Research rules file not found: %s", rules_file)
             return None
 
-        rules_content = rules_path.read_text()
+        rules_content = rules_path.read_text(encoding="utf-8")
 
         # Substitute template vars using explicit replace (safe with literal {})
         prompt = rules_content
@@ -1652,7 +1682,7 @@ class Orze:
         cmd.extend(["--output-format", output_format])
 
         # Any extra CLI args
-        cmd.extend(_format_args(research_cfg.get("claude_args", []),
+        cmd.extend(_format_args(research_cfg.get("claude_args") or [],
                                 template_vars))
 
         return cmd
@@ -1661,7 +1691,7 @@ class Orze:
     def _count_new_ideas(log_path: Path) -> int:
         """Parse research log to count how many new ideas were generated."""
         try:
-            log_text = log_path.read_text()
+            log_text = log_path.read_text(encoding="utf-8")
             for line in log_text.split("\n"):
                 if "ideas" in line.lower():
                     nums = re.findall(
@@ -1678,7 +1708,7 @@ class Orze:
         logger.info("Ideas: %s | Results: %s | Timeout: %ds | Poll: %ds",
                      cfg["ideas_file"], cfg["results_dir"],
                      cfg["timeout"], cfg["poll"])
-        for rname, rcfg in cfg.get("roles", {}).items():
+        for rname, rcfg in (cfg.get("roles") or {}).items():
             if not isinstance(rcfg, dict):
                 continue
             rmode = rcfg.get("mode", "script")
@@ -1704,7 +1734,7 @@ class Orze:
                     cfg["min_disk_gb"])
 
             # 2. Periodic maintenance (orphans + GC, locked for multi-machine)
-            cleanup_cfg = cfg.get("cleanup", {})
+            cleanup_cfg = cfg.get("cleanup") or {}
             cleanup_interval = cleanup_cfg.get("interval", 100)
             if cleanup_interval > 0 and self.iteration % cleanup_interval == 0:
                 cleanup_lock = self.results_dir / "_cleanup_lock"
@@ -1734,7 +1764,7 @@ class Orze:
                 metrics_path = self.results_dir / idea_id / "metrics.json"
                 if metrics_path.exists():
                     try:
-                        metrics = json.loads(metrics_path.read_text())
+                        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
                         if metrics.get("status") == "COMPLETED":
                             run_eval(idea_id, gpu, self.results_dir, cfg)
                             run_post_scripts(idea_id, gpu, self.results_dir,
@@ -1828,9 +1858,11 @@ class Orze:
                 "iteration": self.iteration,
                 "failure_counts": self.failure_counts,
                 "roles": self.role_states,
+                "best_idea_id": self._best_idea_id,
             })
 
             if self.once:
+                all_once_finished = list(finished)
                 if self.active:
                     logger.info("--once mode: waiting for active training...")
                     while self.active:
@@ -1838,11 +1870,12 @@ class Orze:
                         once_finished = check_active(
                             self.active, self.results_dir,
                             cfg, self.failure_counts)
+                        all_once_finished.extend(once_finished)
                         for idea_id, gpu in once_finished:
                             m_path = self.results_dir / idea_id / "metrics.json"
                             if m_path.exists():
                                 try:
-                                    m = json.loads(m_path.read_text())
+                                    m = json.loads(m_path.read_text(encoding="utf-8"))
                                     if m.get("status") == "COMPLETED":
                                         run_eval(idea_id, gpu,
                                                  self.results_dir, cfg)
@@ -1851,7 +1884,9 @@ class Orze:
                                 except json.JSONDecodeError:
                                     pass
                     ideas = parse_ideas(cfg["ideas_file"])
-                    update_report(self.results_dir, ideas, cfg)
+                    once_rows = update_report(self.results_dir, ideas, cfg)
+                    self._process_notifications(
+                        all_once_finished, once_rows or [], ideas)
                 logger.info("Done.")
                 break
 
@@ -1869,7 +1904,7 @@ def _count_statuses(ideas: Dict[str, dict], results_dir: Path) -> dict:
             counts["QUEUED"] = counts.get("QUEUED", 0) + 1
         elif (idea_dir / "metrics.json").exists():
             try:
-                m = json.loads((idea_dir / "metrics.json").read_text())
+                m = json.loads((idea_dir / "metrics.json").read_text(encoding="utf-8"))
                 st = m.get("status", "UNKNOWN")
             except json.JSONDecodeError:
                 st = "FAILED"
@@ -1970,7 +2005,7 @@ Examples:
     if args.research_only:
         role_only = "research"
     if role_only:
-        roles_cfg = cfg.get("roles", {})
+        roles_cfg = cfg.get("roles") or {}
         role_cfg = roles_cfg.get(role_only)
         if not role_cfg or not isinstance(role_cfg, dict):
             logger.error("No role '%s' configured in orze.yaml", role_only)
