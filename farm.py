@@ -457,6 +457,26 @@ class EvalProcess:
                 pass
 
 
+@dataclass
+class RoleProcess:
+    """Tracks a non-blocking agent role subprocess."""
+    role_name: str
+    process: subprocess.Popen
+    start_time: float
+    log_path: Path
+    timeout: float
+    lock_dir: Path
+    cycle_num: int
+    _log_fh: Any = field(default=None, repr=False)
+
+    def close_log(self):
+        if self._log_fh and not self._log_fh.closed:
+            try:
+                self._log_fh.close()
+            except Exception:
+                pass
+
+
 def run_pre_script(idea_id: str, gpu: int, cfg: dict) -> bool:
     """Run pre-training script if configured. Returns True if OK to proceed."""
     pre_script = cfg.get("pre_script")
@@ -879,6 +899,45 @@ def check_active_evals(active_evals: Dict[int, EvalProcess],
                            ep.idea_id, gpu, ret)
         del active_evals[gpu]
         finished.append((ep.idea_id, gpu))
+
+    return finished
+
+
+def check_active_roles(active_roles: Dict[str, "RoleProcess"]) -> list:
+    """Check running role processes. Returns list of role_names that finished."""
+    finished = []
+    for role_name in list(active_roles.keys()):
+        rp = active_roles[role_name]
+        ret = rp.process.poll()
+        elapsed = time.time() - rp.start_time
+
+        if ret is None:
+            # Still running — check timeout
+            if elapsed > rp.timeout:
+                logger.warning("[ROLE TIMEOUT] %s after %.0fm — killing",
+                               role_name, elapsed / 60)
+                rp.process.terminate()
+                try:
+                    rp.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    rp.process.kill()
+                    rp.process.wait()
+                rp.close_log()
+                _fs_unlock(rp.lock_dir)
+                del active_roles[role_name]
+                finished.append(role_name)
+            continue
+
+        # Process exited
+        rp.close_log()
+        _fs_unlock(rp.lock_dir)
+        if ret == 0:
+            logger.info("%s cycle %d completed", role_name, rp.cycle_num)
+        else:
+            logger.warning("%s cycle %d failed (exit %d), see %s",
+                           role_name, rp.cycle_num, ret, rp.log_path)
+        del active_roles[role_name]
+        finished.append(role_name)
 
     return finished
 
@@ -1586,6 +1645,7 @@ class Orze:
         self.results_dir = Path(cfg["results_dir"])
         self.active: Dict[int, TrainingProcess] = {}
         self.active_evals: Dict[int, EvalProcess] = {}
+        self.active_roles: Dict[str, RoleProcess] = {}
         self.pending_evals: list = []
         self.running = True
 
