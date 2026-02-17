@@ -1995,8 +1995,124 @@ class Orze:
                 cfg.get("max_idea_failures", 0))
             unclaimed = get_unclaimed(ideas, self.results_dir, skipped)
 
-            # 6. TRAINING FIRST — launch training before evals
-            #    Training gets priority to prevent eval starvation.
+            # 6. EVALS FIRST — launch evals before training
+            #    Evals are bottleneck (~30min vs 3min training),
+            #    so they get priority for free GPUs.
+            max_evals = cfg.get("max_concurrent_evals",
+                                 len(self.gpu_ids))
+            for idea_id, gpu in finished:
+                metrics_path = self.results_dir / idea_id / "metrics.json"
+                if metrics_path.exists():
+                    try:
+                        metrics = json.loads(
+                            metrics_path.read_text(encoding="utf-8"))
+                        if metrics.get("status") == "COMPLETED":
+                            if len(self.active_evals) < max_evals:
+                                eval_busy = (set(self.active.keys())
+                                             | set(self.active_evals.keys()))
+                                free_for_eval = [g for g in self.gpu_ids
+                                                 if g not in eval_busy]
+                                if free_for_eval:
+                                    use_gpu = free_for_eval[0]
+                                    ep = launch_eval(
+                                        idea_id, use_gpu,
+                                        self.results_dir, cfg)
+                                    if ep is not None:
+                                        self.active_evals[use_gpu] = ep
+                                    else:
+                                        eval_finished.append(
+                                            (idea_id, use_gpu))
+                                else:
+                                    self.pending_evals.append(
+                                        (idea_id, gpu))
+                            else:
+                                self.pending_evals.append((idea_id, gpu))
+                                eval_finished.append((idea_id, gpu))
+                                logger.info(
+                                    "Eval deferred for %s (limit %d)",
+                                    idea_id, max_evals)
+                        else:
+                            eval_finished.append((idea_id, gpu))
+                    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                        eval_finished.append((idea_id, gpu))
+                else:
+                    eval_finished.append((idea_id, gpu))
+
+            # 6a. Launch pending evals from previous iterations
+            still_pending = []
+            for p_idea, p_gpu in self.pending_evals:
+                if len(self.active_evals) >= max_evals:
+                    still_pending.append((p_idea, p_gpu))
+                    continue
+                eval_busy = (set(self.active.keys())
+                             | set(self.active_evals.keys()))
+                free_for_eval = [g for g in self.gpu_ids
+                                 if g not in eval_busy]
+                if free_for_eval:
+                    use_gpu = free_for_eval[0]
+                    ep = launch_eval(
+                        p_idea, use_gpu, self.results_dir, cfg)
+                    if ep is not None:
+                        self.active_evals[use_gpu] = ep
+                    else:
+                        eval_finished.append((p_idea, use_gpu))
+                else:
+                    still_pending.append((p_idea, p_gpu))
+            self.pending_evals = still_pending
+
+            # 6b. Backlog scan: fill remaining eval slots with
+            #     completed-but-unevaluated ideas (newest first)
+            if len(self.active_evals) < max_evals:
+                eval_output = cfg.get("eval_output",
+                                      "nexar_test_report.json")
+                pending_ids = {pi for pi, _ in self.pending_evals}
+                active_eval_ids = {ep.idea_id
+                                   for ep in self.active_evals.values()}
+                backlog = []
+                for d in self.results_dir.iterdir():
+                    if not d.is_dir() or not d.name.startswith("idea-"):
+                        continue
+                    iid = d.name
+                    if iid in pending_ids or iid in active_eval_ids:
+                        continue
+                    mpath = d / "metrics.json"
+                    rpath = d / eval_output
+                    if mpath.exists() and not rpath.exists():
+                        try:
+                            m = json.loads(
+                                mpath.read_text(encoding="utf-8"))
+                            if m.get("status") == "COMPLETED":
+                                try:
+                                    num = int(iid.split("-", 1)[1])
+                                except (IndexError, ValueError):
+                                    num = 0
+                                backlog.append((num, iid))
+                        except (json.JSONDecodeError, OSError):
+                            pass
+                if backlog:
+                    backlog.sort(reverse=True)
+                    eval_busy = (set(self.active.keys())
+                                 | set(self.active_evals.keys()))
+                    free_for_eval = [g for g in self.gpu_ids
+                                     if g not in eval_busy]
+                    launched_backlog = 0
+                    for _, iid in backlog:
+                        if (len(self.active_evals) >= max_evals
+                                or not free_for_eval):
+                            break
+                        use_gpu = free_for_eval.pop(0)
+                        ep = launch_eval(
+                            iid, use_gpu, self.results_dir, cfg)
+                        if ep is not None:
+                            self.active_evals[use_gpu] = ep
+                            launched_backlog += 1
+                    if launched_backlog:
+                        logger.info(
+                            "Launched %d backlog evals (%d remaining)",
+                            launched_backlog,
+                            len(backlog) - launched_backlog)
+
+            # 7. Launch training on remaining free GPUs
             busy_gpus = set(self.active.keys()) | set(self.active_evals.keys())
             free = [g for g in self.gpu_ids if g not in busy_gpus
                     and (get_gpu_memory_used(g) or 0)
@@ -2048,59 +2164,6 @@ class Orze:
                             "%d eval)",
                             len(unclaimed), len(self.active),
                             len(self.active_evals))
-
-            # 7. THEN launch evals on remaining free GPUs
-            #    Evals only use GPUs not needed for training.
-            for idea_id, gpu in finished:
-                metrics_path = self.results_dir / idea_id / "metrics.json"
-                if metrics_path.exists():
-                    try:
-                        metrics = json.loads(
-                            metrics_path.read_text(encoding="utf-8"))
-                        if metrics.get("status") == "COMPLETED":
-                            # Find a free GPU for eval (not used by training
-                            # or another eval)
-                            eval_busy = (set(self.active.keys())
-                                         | set(self.active_evals.keys()))
-                            free_for_eval = [g for g in self.gpu_ids
-                                             if g not in eval_busy]
-                            if free_for_eval:
-                                use_gpu = free_for_eval[0]
-                                ep = launch_eval(
-                                    idea_id, use_gpu,
-                                    self.results_dir, cfg)
-                                if ep is not None:
-                                    self.active_evals[use_gpu] = ep
-                                else:
-                                    eval_finished.append((idea_id, use_gpu))
-                            else:
-                                # No free GPU — defer eval to next iteration
-                                self.pending_evals.append((idea_id, gpu))
-                        else:
-                            eval_finished.append((idea_id, gpu))
-                    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-                        eval_finished.append((idea_id, gpu))
-                else:
-                    eval_finished.append((idea_id, gpu))
-
-            # 7a. Launch pending evals from previous iterations
-            still_pending = []
-            for p_idea, p_gpu in self.pending_evals:
-                eval_busy = (set(self.active.keys())
-                             | set(self.active_evals.keys()))
-                free_for_eval = [g for g in self.gpu_ids
-                                 if g not in eval_busy]
-                if free_for_eval:
-                    use_gpu = free_for_eval[0]
-                    ep = launch_eval(
-                        p_idea, use_gpu, self.results_dir, cfg)
-                    if ep is not None:
-                        self.active_evals[use_gpu] = ep
-                    else:
-                        eval_finished.append((p_idea, use_gpu))
-                else:
-                    still_pending.append((p_idea, p_gpu))
-            self.pending_evals = still_pending
 
             # 8. Update report
             completed_rows = update_report(self.results_dir, ideas, cfg)
