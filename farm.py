@@ -263,6 +263,9 @@ def parse_ideas(path: str) -> Dict[str, dict]:
             except yaml.YAMLError:
                 pass
 
+        # Sanitize config: replace non-numeric values in numeric fields
+        config = _sanitize_config(config)
+
         ideas[idea_id] = {
             "title": title,
             "priority": priority,
@@ -270,6 +273,57 @@ def parse_ideas(path: str) -> Dict[str, dict]:
             "raw": raw.strip(),
         }
     return ideas
+
+
+def _sanitize_config(config: dict) -> dict:
+    """Sanitize config by replacing invalid numeric values with defaults.
+
+    Handles cases where AI-generated ideas use strings like 'variable' or 'auto'
+    in fields that expect integers (e.g., sequence_length, max_frames).
+    """
+    if not isinstance(config, dict):
+        return config
+
+    # Known numeric fields that should be integers
+    numeric_fields = {
+        ("training", "sequence_length"): 32,
+        ("training", "batch_size"): 16,
+        ("training", "epochs"): 10,
+        ("data", "batch_size"): 16,
+        ("data", "frame_sampling", "max_frames"): 32,
+        ("optimizer", "max_epochs"): 10,
+    }
+
+    def sanitize_value(value, default):
+        """Try to convert to int; if it fails, return default."""
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                logger.warning(f"Replacing invalid numeric value '{value}' with {default}")
+                return default
+        return value
+
+    # Deep copy to avoid modifying original
+    import copy
+    config = copy.deepcopy(config)
+
+    # Sanitize known numeric fields
+    for path, default in numeric_fields.items():
+        current = config
+        for i, key in enumerate(path[:-1]):
+            if key not in current or not isinstance(current[key], dict):
+                break
+            current = current[key]
+        else:
+            # We successfully navigated to the parent dict
+            final_key = path[-1]
+            if final_key in current:
+                current[final_key] = sanitize_value(current[final_key], default)
+
+    return config
 
 
 def get_unclaimed(ideas: Dict[str, dict], results_dir: Path,
