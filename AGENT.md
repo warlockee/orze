@@ -115,6 +115,16 @@ report:
     - {key: "test_accuracy", label: "Accuracy", fmt: ".4f"}
     - {key: "test_loss", label: "Loss", fmt: ".4f"}
     - {key: "training_time", label: "Time(s)", fmt: ".0f"}
+
+# Optional: bug-fixer tuning (defaults shown)
+# bug_fixer:
+#   check_interval: 60
+#   stale_training_min: 45
+#   stale_eval_min: 60
+#   heartbeat_timeout_min: 5
+#   max_fixes_per_hour: 3
+#   stale_claim_min: 120
+#   min_disk_gb: 50
 ```
 
 ### 8. Smoke test, then launch
@@ -123,11 +133,67 @@ report:
 # Test one cycle
 python orze/farm.py -c orze.yaml --once --gpus 0
 
-# If it works, launch the full loop
-python orze/farm.py -c orze.yaml
+# If it works, launch the full system
+# IMPORTANT: Always start both farm.py AND bug_fixer.py together.
+# The bug-fixer runs alongside farm.py as a self-healing watchdog.
+
+nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
+nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 ```
 
-Run the smoke test first. If it fails, fix the issue and retry. Once it passes, launch the full loop.
+Run the smoke test first. If it fails, fix the issue and retry. Once it passes, launch both processes.
+
+## The bug-fixer agent
+
+`orze/bug_fixer.py` is a **lifetime companion process** to `farm.py`. It runs forever alongside the main orchestrator, continuously monitoring for issues and self-healing the system.
+
+### What it does
+
+Runs every 60 seconds (configurable) and checks for:
+- **Orze dead**: farm.py process not running → auto-restarts it
+- **Orze stalled**: log not updating → spawns Claude to diagnose
+- **Zombie processes**: defunct python processes
+- **Stuck training/eval**: processes exceeding timeout with no CPU activity → auto-kills
+- **Stale claims**: ideas claimed but never completed (abandoned by crashed workers)
+- **Low disk space**: below threshold → alerts
+- **farm.py errors**: scans log for errors originating in orze code → spawns Claude to fix
+
+### How it fixes bugs
+
+For errors in `farm.py`, the bug-fixer spawns a Claude CLI session that:
+1. Reads `farm.py` and the recent log
+2. Diagnoses the root cause
+3. Applies a minimal patch (if it's an orze bug)
+4. Commits locally (does NOT push — human reviews)
+5. Reports what it did
+
+**Scope is strictly orze platform only.** It will never modify project scripts, training code, eval scripts, configs, or user files. If an error originates from a user's training script, it reports "not an orze bug" and skips.
+
+### Configuration
+
+Add a `bug_fixer` section to `orze.yaml` to customize (all optional):
+
+```yaml
+bug_fixer:
+  check_interval: 60          # seconds between health checks
+  stale_training_min: 45      # kill training after N idle minutes
+  stale_eval_min: 60           # kill eval after N idle minutes
+  heartbeat_timeout_min: 5     # orze considered stalled after N minutes
+  max_fixes_per_hour: 3        # rate limit on Claude fix sessions
+  stale_claim_min: 120         # flag claims older than N minutes
+  min_disk_gb: 50              # low disk warning threshold
+```
+
+### Always start both
+
+When launching orze, **always start bug_fixer.py alongside farm.py**. They are designed to run as a pair:
+
+```bash
+nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
+nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
+```
+
+If farm.py dies, the bug-fixer will detect it within 60 seconds and restart it. If the bug-fixer itself dies, re-launch it manually. Consider using `supervisord`, `systemd`, or a cron watchdog for both processes in production.
 
 ## Files you create
 
@@ -140,7 +206,12 @@ project/
 ├── configs/base.yaml      # Training defaults
 ├── train.py               # Training script
 ├── orze/                  # Framework (don't edit)
+│   ├── farm.py            # Main orchestrator
+│   └── bug_fixer.py       # Self-healing watchdog
 └── results/               # Auto-generated
+    ├── farm.log            # Orchestrator log
+    ├── bug_fixer.log       # Watchdog log
+    └── bug_fixer_issues/   # Issue audit trail
 ```
 
 **To change research direction:** edit `GOAL.md` and/or `RESEARCH_RULES.md`.
