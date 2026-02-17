@@ -1793,12 +1793,16 @@ class Orze:
             logger.warning("Notification processing error: %s", e)
 
     def _run_role_step(self, role_name: str, role_cfg: dict):
-        """Run an agent role (rate-limited, locked, logged).
+        """Launch agent role if not running and cooldown elapsed (non-blocking).
 
         Supports two modes:
           - mode: script  — run a Python script
           - mode: claude  — run Claude CLI with a rules/prompt file
         """
+        # Skip if already running
+        if role_name in self.active_roles:
+            return
+
         mode = role_cfg.get("mode", "script")
         if mode == "script" and not role_cfg.get("script"):
             return
@@ -1957,35 +1961,36 @@ class Orze:
         logger.info("Running %s [%s] (cycle %d)...",
                      role_name, mode, cycle_num)
 
+        # Launch non-blocking
         try:
-            with open(log_path, "w", encoding="utf-8") as log_fh:
-                result = subprocess.run(
-                    cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
-                    timeout=timeout,
-                )
-
-            role_state["last_run_time"] = time.time()
-            role_state["cycles"] += 1
-
-            if result.returncode == 0:
-                logger.info("%s cycle %d completed", role_name, cycle_num)
-            else:
-                logger.warning(
-                    "%s failed (exit %d), see %s",
-                    role_name, result.returncode, log_path)
-
-        except subprocess.TimeoutExpired:
-            role_state["last_run_time"] = time.time()
-            role_state["cycles"] += 1
-            logger.warning("%s timed out after %ds", role_name, timeout)
+            log_fh = open(log_path, "w", encoding="utf-8")
+            proc = subprocess.Popen(
+                cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+            )
+            self.active_roles[role_name] = RoleProcess(
+                role_name=role_name,
+                process=proc,
+                start_time=time.time(),
+                log_path=log_path,
+                timeout=timeout,
+                lock_dir=lock_dir,
+                cycle_num=cycle_num,
+                _log_fh=log_fh,
+            )
         except Exception as e:
-            role_state["last_run_time"] = time.time()
-            logger.warning("%s error: %s", role_name, e)
-        finally:
+            logger.warning("%s launch error: %s", role_name, e)
             _fs_unlock(lock_dir)
 
     def _run_all_roles(self):
-        """Run all configured agent roles (each independently rate-limited)."""
+        """Check active roles and launch new ones (non-blocking)."""
+        # Check active roles
+        finished = check_active_roles(self.active_roles)
+        for role_name in finished:
+            role_state = self.role_states.get(role_name, {})
+            role_state["last_run_time"] = time.time()
+            role_state["cycles"] = role_state.get("cycles", 0) + 1
+
+        # Launch new roles if not running
         for role_name, role_cfg in (self.cfg.get("roles") or {}).items():
             if isinstance(role_cfg, dict):
                 self._run_role_step(role_name, role_cfg)
