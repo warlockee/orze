@@ -12,7 +12,7 @@ Orze runs the full research loop: **generate ideas → train → evaluate → le
 curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
 ```
 
-This downloads 4 files into `orze/` under your project root. Then tell [claude|gemini|codex|whatever]:
+This downloads 4 files into `orze/` under your project root. Then tell [**claude**|**gemini**|**codex**|whatever]:
 
 ```
 do @orze/AGENT.md
