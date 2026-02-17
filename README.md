@@ -34,7 +34,12 @@ Your LLM will explore your codebase, create the config, write seed ideas, and la
 │         └────────── results/ ◄───────────┘          │
 │                                                     │
 │   ideas.md ◄── research ── report.md                │
-└─────────────────────────────────────────────────────┘
+└──────────────────────┬──────────────────────────────┘
+                       │ monitors & heals
+               ┌───────▼────────┐
+               │  bug_fixer.py  │
+               │   (watchdog)   │
+               └────────────────┘
 ```
 
 The loop:
@@ -61,8 +66,9 @@ cp orze/orze.yaml.example orze.yaml
 # 3. Write seed ideas in ideas.md
 # See orze/RULES.md for the exact format
 
-# 4. Run
-python orze/farm.py -c orze.yaml
+# 4. Run (always start both)
+nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
+nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 ```
 
 ## Key Features
@@ -76,6 +82,7 @@ python orze/farm.py -c orze.yaml
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
+- **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and spawns an LLM to diagnose and patch farm.py bugs in real time
 - **Atomic coordination** — `mkdir` as lock, no race conditions
 
 ## Notifications
@@ -97,6 +104,35 @@ notifications:
 ```
 
 Events: `completed`, `failed`, `new_best`, `report`. Supports per-channel filtering (`on: [new_best, failed]`) and generic webhooks.
+
+## Self-Healing
+
+Orze ships with `bug_fixer.py` — a lifetime watchdog that runs alongside `farm.py` and keeps the system healthy:
+
+- **Auto-restart** — if farm.py dies, the watchdog detects it within 60s and restarts it
+- **Stuck process killer** — training/eval jobs with no CPU activity past timeout get killed automatically
+- **Zombie reaper** — detects and cleans up defunct processes
+- **Stale claim cleanup** — flags ideas claimed but never completed by crashed workers
+- **Disk space monitoring** — alerts when free space drops below threshold
+- **LLM-powered code fixes** — for errors in farm.py itself, spawns a Claude session to diagnose and patch the bug (local commit only, human reviews before push)
+
+The watchdog **only touches orze platform code** (`farm.py`). It never modifies your training scripts, configs, or data.
+
+```bash
+# Always launch both together
+nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
+nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
+```
+
+Optional tuning in `orze.yaml`:
+
+```yaml
+bug_fixer:
+  check_interval: 60        # seconds between checks
+  stale_training_min: 45    # kill idle training after N minutes
+  stale_eval_min: 60        # kill idle eval after N minutes
+  max_fixes_per_hour: 3     # rate limit on LLM fix sessions
+```
 
 ## The Contract
 
