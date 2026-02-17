@@ -294,6 +294,11 @@ def _sanitize_config(config: dict) -> dict:
         ("optimizer", "max_epochs"): 10,
     }
 
+    # Known intermediate fields that must be dicts (not lists/scalars)
+    dict_fields = {
+        ("data", "frame_sampling"): {},
+    }
+
     def sanitize_value(value, default):
         """Try to convert to int; if it fails, return default."""
         if isinstance(value, int):
@@ -309,6 +314,22 @@ def _sanitize_config(config: dict) -> dict:
     # Deep copy to avoid modifying original
     import copy
     config = copy.deepcopy(config)
+
+    # Ensure known intermediate fields are dicts
+    for path, default in dict_fields.items():
+        current = config
+        for key in path[:-1]:
+            if key not in current or not isinstance(current[key], dict):
+                break
+            current = current[key]
+        else:
+            final_key = path[-1]
+            if final_key in current and not isinstance(current[final_key], dict):
+                logger.warning(
+                    f"Replacing non-dict value for '{'.'.join(path)}' "
+                    f"(was {type(current[final_key]).__name__}) with {default}"
+                )
+                current[final_key] = default
 
     # Sanitize known numeric fields
     for path, default in numeric_fields.items():
