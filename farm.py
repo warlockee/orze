@@ -1527,6 +1527,7 @@ class Orze:
         self.results_dir = Path(cfg["results_dir"])
         self.active: Dict[int, TrainingProcess] = {}
         self.active_evals: Dict[int, EvalProcess] = {}
+        self.pending_evals: list = []
         self.running = True
 
         state = load_state(self.results_dir)
@@ -1904,44 +1905,22 @@ class Orze:
                 eval_finished = check_active_evals(
                     self.active_evals, self.results_dir, cfg)
 
-            # 4. Launch evals for newly completed training (non-blocking)
-            for idea_id, gpu in finished:
-                metrics_path = self.results_dir / idea_id / "metrics.json"
-                if metrics_path.exists():
-                    try:
-                        metrics = json.loads(
-                            metrics_path.read_text(encoding="utf-8"))
-                        if metrics.get("status") == "COMPLETED":
-                            ep = launch_eval(
-                                idea_id, gpu, self.results_dir, cfg)
-                            if ep is not None:
-                                self.active_evals[gpu] = ep
-                            else:
-                                # No eval configured or already done
-                                eval_finished.append((idea_id, gpu))
-                        else:
-                            eval_finished.append((idea_id, gpu))
-                    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-                        eval_finished.append((idea_id, gpu))
-                else:
-                    eval_finished.append((idea_id, gpu))
-
-            # 4a. Run post-scripts for evals that just completed
+            # 3b. Run post-scripts for evals that just completed
             for idea_id, gpu in eval_finished:
                 run_post_scripts(idea_id, gpu, self.results_dir, cfg)
 
-            # 5. Run agent roles (research, documenter, etc.)
+            # 4. Run agent roles (research, documenter, etc.)
             self._run_all_roles()
 
-            # 6. Parse ideas and find unclaimed
+            # 5. Parse ideas and find unclaimed
             ideas = parse_ideas(cfg["ideas_file"])
             skipped = get_skipped_ideas(
                 self.failure_counts,
                 cfg.get("max_idea_failures", 0))
             unclaimed = get_unclaimed(ideas, self.results_dir, skipped)
 
-            # 7. Find free GPUs and launch training
-            #    A GPU is free if not running training AND not running eval
+            # 6. TRAINING FIRST — launch training before evals
+            #    Training gets priority to prevent eval starvation.
             busy_gpus = set(self.active.keys()) | set(self.active_evals.keys())
             free = [g for g in self.gpu_ids if g not in busy_gpus
                     and (get_gpu_memory_used(g) or 0)
@@ -1953,9 +1932,7 @@ class Orze:
                     while unclaimed:
                         idea_id = unclaimed.pop(0)
                         if not claim(idea_id, self.results_dir, gpu):
-                            # Another machine claimed it, try next idea
                             continue
-                        # Run pre-script (e.g., feature extraction check)
                         if not run_pre_script(idea_id, gpu, cfg):
                             logger.warning(
                                 "Pre-script failed for %s, marking FAILED",
@@ -1995,6 +1972,59 @@ class Orze:
                             "%d eval)",
                             len(unclaimed), len(self.active),
                             len(self.active_evals))
+
+            # 7. THEN launch evals on remaining free GPUs
+            #    Evals only use GPUs not needed for training.
+            for idea_id, gpu in finished:
+                metrics_path = self.results_dir / idea_id / "metrics.json"
+                if metrics_path.exists():
+                    try:
+                        metrics = json.loads(
+                            metrics_path.read_text(encoding="utf-8"))
+                        if metrics.get("status") == "COMPLETED":
+                            # Find a free GPU for eval (not used by training
+                            # or another eval)
+                            eval_busy = (set(self.active.keys())
+                                         | set(self.active_evals.keys()))
+                            free_for_eval = [g for g in self.gpu_ids
+                                             if g not in eval_busy]
+                            if free_for_eval:
+                                use_gpu = free_for_eval[0]
+                                ep = launch_eval(
+                                    idea_id, use_gpu,
+                                    self.results_dir, cfg)
+                                if ep is not None:
+                                    self.active_evals[use_gpu] = ep
+                                else:
+                                    eval_finished.append((idea_id, use_gpu))
+                            else:
+                                # No free GPU — defer eval to next iteration
+                                self.pending_evals.append((idea_id, gpu))
+                        else:
+                            eval_finished.append((idea_id, gpu))
+                    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                        eval_finished.append((idea_id, gpu))
+                else:
+                    eval_finished.append((idea_id, gpu))
+
+            # 7a. Launch pending evals from previous iterations
+            still_pending = []
+            for p_idea, p_gpu in self.pending_evals:
+                eval_busy = (set(self.active.keys())
+                             | set(self.active_evals.keys()))
+                free_for_eval = [g for g in self.gpu_ids
+                                 if g not in eval_busy]
+                if free_for_eval:
+                    use_gpu = free_for_eval[0]
+                    ep = launch_eval(
+                        p_idea, use_gpu, self.results_dir, cfg)
+                    if ep is not None:
+                        self.active_evals[use_gpu] = ep
+                    else:
+                        eval_finished.append((p_idea, use_gpu))
+                else:
+                    still_pending.append((p_idea, p_gpu))
+            self.pending_evals = still_pending
 
             # 8. Update report
             completed_rows = update_report(self.results_dir, ideas, cfg)
