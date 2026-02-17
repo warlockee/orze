@@ -737,6 +737,11 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             continue
 
         # --- Process exited ---
+        # Reap zombie to prevent accumulation
+        try:
+            tp.process.wait(timeout=1)
+        except Exception:
+            pass
         tp.close_log()
         metrics_path = results_dir / tp.idea_id / "metrics.json"
 
