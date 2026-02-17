@@ -12,13 +12,13 @@ Orze runs the full research loop: **generate ideas → train → evaluate → le
 curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
 ```
 
-This downloads 4 files into `orze/`. Then open [Claude Code](https://claude.ai/claude-code) and say:
+This downloads 4 files into `orze/` under your project root. Then tell [claude|gemini|codex|whatever]:
 
 ```
-@orze/AGENT.md set up and run experiments for this project
+do @orze/AGENT.md
 ```
 
-Claude will explore your codebase, create the config, write seed ideas, and launch the loop. That's it.
+Your LLM will explore your codebase, create the config, write seed ideas, and launch the loop. That's it.
 
 ## How It Works
 
