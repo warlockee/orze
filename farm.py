@@ -1766,12 +1766,34 @@ class Orze:
         if mode == "claude" and not role_cfg.get("rules_file"):
             return
 
-        # Per-role cooldown
+        # Per-role cooldown (with adaptive producer-consumer matching)
         role_state = self.role_states.setdefault(
             role_name, {"cycles": 0, "last_run_time": 0.0})
         cooldown = role_cfg.get("cooldown", 300)
         elapsed = time.time() - role_state["last_run_time"]
-        if elapsed < cooldown:
+
+        # Adaptive cooldown: if queue is nearly empty, skip cooldown to
+        # keep GPUs fed. Only applies to the research role.
+        queue_starving = False
+        if role_name == "research" and elapsed >= 60:
+            try:
+                ideas = parse_ideas(self.cfg["ideas_file"])
+                skipped = get_skipped_ideas(
+                    self.failure_counts,
+                    self.cfg.get("max_idea_failures", 0))
+                n_unclaimed = len(get_unclaimed(
+                    ideas, self.results_dir, skipped))
+                n_gpus = len(self.gpu_ids)
+                # Starving: fewer queued ideas than 2x GPU count
+                if n_unclaimed < n_gpus * 2:
+                    queue_starving = True
+                    logger.info(
+                        "Queue low (%d unclaimed, %d GPUs) — "
+                        "triggering research early", n_unclaimed, n_gpus)
+            except Exception:
+                pass
+
+        if elapsed < cooldown and not queue_starving:
             return
 
         timeout = role_cfg.get("timeout", 600)
