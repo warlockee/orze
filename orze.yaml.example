@@ -1,0 +1,144 @@
+# orze.yaml — Project configuration for orze experiment orchestrator
+# Copy this file to your project root as orze.yaml and customize.
+# See RULES.md for full documentation.
+
+# --- Scripts and paths ---
+train_script: train_idea.py          # your training script
+ideas_file: ideas.md                 # experiment definitions
+base_config: configs/base.yaml      # base config passed to training
+results_dir: results                 # output directory
+python: python3                      # python interpreter (use venv path)
+
+# --- Extra args/env for training script ---
+# Appended to: python train_script --idea-id X --results-dir Y --ideas-md Z --config W
+train_extra_args: []
+#  - "--data-dir"
+#  - "/path/to/data"
+
+train_extra_env: {}
+#  TORCH_HOME: /path/to/cache
+#  HF_HOME: /path/to/hf_cache
+
+# --- Timeouts ---
+timeout: 3600                        # max training time (seconds)
+poll: 30                             # loop interval (seconds)
+gpu_mem_threshold: 2000              # GPU memory (MiB) to consider "in use"
+
+# --- Health monitoring (0 = disabled) ---
+stall_minutes: 0                     # kill if no log growth for N minutes
+max_idea_failures: 0                 # skip idea after N failures
+min_disk_gb: 0                       # pause launches if disk < N GB free
+orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
+
+# --- Pre-training hook (optional) ---
+# Runs before each training launch. Exit 0 = proceed, non-zero = skip idea.
+# Use for: feature extraction check, config validation, disk space check.
+# pre_script: check_features.py
+# pre_args: ["--idea-id", "{idea_id}", "--gpu", "{gpu}"]
+# pre_timeout: 3600
+
+# --- Post-training evaluation (optional) ---
+# eval_script: evaluate.py
+# eval_args: ["--idea-id", "{idea_id}", "--gpu", "{gpu}"]
+# eval_timeout: 3600
+# eval_output: eval_report.json      # skip eval if this file exists
+
+# --- Additional post-training scripts (optional) ---
+# Run after eval. Each entry: {script, args, timeout, output, name}
+# post_scripts:
+#   - name: overlay
+#     script: generate_overlay.py
+#     args: ["--idea-id", "{idea_id}"]
+#     timeout: 1800
+#     output: overlay_done.json       # skip if exists
+#   - name: export
+#     script: export_model.py
+#     args: ["--idea-id", "{idea_id}"]
+#     timeout: 600
+
+# --- Agent roles (optional) ---
+# Each role is an independently scheduled agent that runs alongside training.
+# Each gets its own cooldown, timeout, lock, state, and log directory.
+# Two modes per role: "script" (Python script) or "claude" (Claude CLI).
+#
+# roles:
+#   research:
+#     mode: claude
+#     rules_file: RESEARCH_RULES.md
+#     cooldown: 300
+#     timeout: 600
+#     model: sonnet
+#     allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
+#     log_dir: _research_logs          # relative to results_dir
+#
+#   documenter:
+#     mode: claude
+#     rules_file: DOCUMENTER_RULES.md
+#     cooldown: 600
+#     timeout: 300
+#     model: haiku
+#     log_dir: _documenter_logs
+#
+#   analyzer:
+#     mode: script
+#     script: analysis_agent.py
+#     args: ["--results-dir", "{results_dir}", "--cycle", "{cycle}"]
+#     timeout: 600
+#     cooldown: 300
+#     log_dir: _analyzer_logs
+#     env:
+#       ANTHROPIC_API_KEY: sk-...
+#
+# Legacy: top-level "research:" still works (auto-migrated to roles.research)
+# research:
+#   mode: claude
+#   rules_file: RESEARCH_RULES.md
+#   cooldown: 300
+#   timeout: 600
+
+# --- Notifications (optional) ---
+# Push updates to Telegram, Slack, Discord, or any webhook.
+# notifications:
+#   enabled: true
+#   on: [completed, failed, new_best]  # global event filter
+#   channels:
+#     - type: telegram
+#       bot_token: "123456:ABC-DEF"
+#       chat_id: "-100123456789"
+#     - type: slack
+#       webhook_url: "https://hooks.slack.com/services/T.../B.../xxx"
+#       on: [new_best, failed]         # per-channel override
+#     - type: discord
+#       webhook_url: "https://discord.com/api/webhooks/123/abc"
+#     - type: webhook                  # generic JSON POST
+#       url: "https://example.com/hook"
+#       headers:
+#         Authorization: "Bearer tok"
+
+# --- Telegram command receiver (optional) ---
+# Text back to the Telegram bot to control orze via natural language.
+# Messages are appended to results/user_command.md.
+# The research agent picks them up and executes them.
+# Uses the same bot_token/chat_id from notifications.channels[telegram].
+# No extra config needed — just having a Telegram notification channel enables it.
+
+# --- Garbage collection (optional) ---
+# cleanup:
+#   interval: 100                     # run every N iterations
+#   patterns:                         # glob patterns to delete from result dirs
+#     - "checkpoint_epoch*.pt"
+#     - "*.tmp"
+#   script: scripts/cleanup.py        # custom cleanup script
+#   timeout: 300
+
+# --- Report configuration ---
+report:
+  title: "Orze Report"
+  primary_metric: test_accuracy      # sort leaderboard by this
+  sort: descending                   # or "ascending"
+  columns:
+    - {key: "test_accuracy", label: "Accuracy", fmt: ".4f"}
+    - {key: "test_loss", label: "Loss", fmt: ".4f"}
+    - {key: "training_time", label: "Time(s)", fmt: ".0f"}
+    # Read from other JSON files:
+    # - {key: "auc", label: "AUC", fmt: ".4f", source: "eval.json:metrics.auc"}

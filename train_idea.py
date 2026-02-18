@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import time
 from pathlib import Path
 
@@ -21,6 +22,15 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import yaml
+
+
+def _atomic_write_json(path: Path, data: dict):
+    """Write JSON atomically via tmp+replace to prevent partial reads."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    safe_host = "".join(c if c.isalnum() else "_" for c in socket.gethostname())
+    tmp = path.with_name(f"{path.name}.{safe_host}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +145,10 @@ def build_model(model_cfg: dict) -> nn.Module:
 
 def get_idea_config(ideas_md: str, idea_id: str) -> dict:
     """Extract a single idea's YAML config from ideas.md."""
-    text = Path(ideas_md).read_text()
+    try:
+        text = Path(ideas_md).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
     pattern = re.compile(r"^## (idea-\d+):\s*(.+?)$", re.MULTILINE)
     matches = list(pattern.finditer(text))
 
@@ -162,7 +175,7 @@ def train(args):
     # Load configs: base config merged with idea-specific overrides
     base_cfg = {}
     if Path(args.config).exists():
-        base_cfg = yaml.safe_load(Path(args.config).read_text()) or {}
+        base_cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
 
     idea_cfg = get_idea_config(args.ideas_md, args.idea_id)
 
@@ -174,17 +187,16 @@ def train(args):
         else:
             cfg[key] = idea_cfg[key]
 
-    train_cfg = cfg.get("training", {})
-    data_cfg = cfg.get("data", {})
-    model_cfg = cfg.get("model", {})
-    ckpt_cfg = cfg.get("checkpointing", {})
+    train_cfg = cfg.get("training") or {}
+    data_cfg = cfg.get("data") or {}
+    model_cfg = cfg.get("model") or {}
+    ckpt_cfg = cfg.get("checkpointing") or {}
 
     epochs = train_cfg.get("epochs", 10)
     batch_size = train_cfg.get("batch_size", 128)
     lr = train_cfg.get("lr", 0.001)
-    use_amp = train_cfg.get("mixed_precision", True)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = train_cfg.get("mixed_precision", True) and device.type == "cuda"
     print(f"[{args.idea_id}] Device: {device}")
     print(f"[{args.idea_id}] Config: {json.dumps(cfg, indent=2)}")
 
@@ -200,16 +212,53 @@ def train(args):
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
-    data_dir = data_cfg.get("data_dir", "./data")
+    data_dir = Path(data_cfg.get("data_dir") or "./data")
+    data_dir.mkdir(parents=True, exist_ok=True)
     num_workers = data_cfg.get("num_workers", 2)
 
+    # Cross-process lock for dataset download (prevents corruption when
+    # multiple GPUs launch simultaneously on a fresh machine)
+    lock_dir = data_dir / ".download_lock"
+
+    marker = data_dir / ".download_complete"
+    if not marker.exists():
+        acquired_lock = False
+        while True:
+            try:
+                lock_dir.mkdir(exist_ok=False)
+                acquired_lock = True
+                break
+            except FileExistsError:
+                if marker.exists():
+                    break
+                # Break stale locks (e.g. downloader was SIGKILLed)
+                try:
+                    if time.time() - lock_dir.stat().st_mtime > 300:
+                        lock_dir.rmdir()
+                except OSError:
+                    pass
+                time.sleep(2)
+
+        if acquired_lock:
+            try:
+                if not marker.exists():
+                    torchvision.datasets.CIFAR10(root=str(data_dir), train=True, download=True, transform=transform_train)
+                    torchvision.datasets.CIFAR10(root=str(data_dir), train=False, download=True, transform=transform_test)
+                    marker.touch()
+            finally:
+                if lock_dir.exists():
+                    try:
+                        lock_dir.rmdir()
+                    except Exception:
+                        pass
+
     trainset = torchvision.datasets.CIFAR10(
-        root=data_dir, train=True, download=True, transform=transform_train)
+        root=str(data_dir), train=True, download=False, transform=transform_train)
     trainloader = torch.utils.data.DataLoader(
         trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
     testset = torchvision.datasets.CIFAR10(
-        root=data_dir, train=False, download=True, transform=transform_test)
+        root=str(data_dir), train=False, download=False, transform=transform_test)
     testloader = torch.utils.data.DataLoader(
         testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
@@ -236,7 +285,7 @@ def train(args):
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
 
-            with torch.amp.autocast("cuda", enabled=use_amp):
+            with torch.amp.autocast(device.type, enabled=use_amp):
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
 
@@ -261,7 +310,7 @@ def train(args):
         with torch.no_grad():
             for inputs, targets in testloader:
                 inputs, targets = inputs.to(device), targets.to(device)
-                with torch.amp.autocast("cuda", enabled=use_amp):
+                with torch.amp.autocast(device.type, enabled=use_amp):
                     outputs = model(inputs)
                     loss = criterion(outputs, targets)
                 test_loss += loss.item() * inputs.size(0)
@@ -303,7 +352,7 @@ def train(args):
         "config": cfg,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    (results_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    _atomic_write_json(results_dir / "metrics.json", metrics)
     print(f"[{args.idea_id}] Done! best_acc={best_acc:.4f} in {training_time:.0f}s")
 
 
@@ -327,7 +376,7 @@ def main():
             "idea_id": args.idea_id,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
-        (results_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        _atomic_write_json(results_dir / "metrics.json", metrics)
         print(f"[{args.idea_id}] FAILED: {e}")
         raise
 

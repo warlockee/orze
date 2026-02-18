@@ -1,153 +1,188 @@
 # orze
 
-A minimal GPU experiment orchestrator that uses filesystem coordination. No databases, no message queues — just files.
+Auto-research on autopilot. One script, one config, all GPUs.
 
-Write your experiment ideas in a markdown file, and `farm.py` claims and runs them across your GPUs in parallel. It uses `mkdir` as an atomic lock, so it works across multiple machines with a shared filesystem.
+Orze runs the full research loop: **generate ideas → train → evaluate → learn → repeat**. It coordinates GPUs via filesystem locks (`mkdir`), works across machines, and supports any LLM as the research agent — Claude, GPT, Gemini, local models, or your own script. No databases, no message queues — just files.
 
 **Website:** [orze.ai](https://orze.ai)
+
+## Install
+
+```bash
+curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
+```
+
+This downloads 4 files into `orze/` under your project root. Then tell [**claude**|**gemini**|**codex**|whatever]:
+
+```
+do @orze/AGENT.md
+```
+
+Your LLM will explore your codebase, create the config, write seed ideas, and launch the loop. That's it.
 
 ## How It Works
 
 ```
-                 ideas.md                    results/
-              ┌─────────────┐            ┌──────────────┐
-              │ ## idea-001  │   claim    │ idea-001/    │
-              │ ## idea-002  │──(mkdir)──>│   claim.json │
-              │ ## idea-003  │            │   metrics.json│
-              │ ...          │            │ idea-002/    │
-              └─────────────┘            │   ...        │
-                                         └──────────────┘
-                     │                          ▲
-                     ▼                          │
-              ┌─────────────┐                   │
-              │   farm.py   │───launch──────────┘
-              │             │   (subprocess
-              │  ┌───┐ ┌───┐│   per GPU)
-              │  │GPU│ │GPU││
-              │  │ 0 │ │ 1 ││
-              │  └───┘ └───┘│
-              └─────────────┘
+┌─────────────────────────────────────────────────────┐
+│                      farm.py                        │
+│                                                     │
+│   ┌──────────┐     ┌─────────┐     ┌──────────┐   │
+│   │ Research  │────>│  Train  │────>│ Evaluate │   │
+│   │ (any LLM) │     │ (GPUs)  │     │          │   │
+│   └─────▲────┘     └─────────┘     └──────────┘   │
+│         │                                │          │
+│         └────────── results/ ◄───────────┘          │
+│                                                     │
+│   ideas.md ◄── research ── report.md                │
+└──────────────────────┬──────────────────────────────┘
+                       │ monitors & heals
+               ┌───────▼────────┐
+               │  bug_fixer.py  │
+               │   (watchdog)   │
+               └────────────────┘
 ```
 
 The loop:
-1. Parse `ideas.md` for experiment definitions
-2. Find unclaimed ideas (no `results/{idea_id}/` directory)
-3. Detect free GPUs (low memory usage, no active training)
-4. **Claim** an idea by creating its results directory (`mkdir` — atomic, fails if exists)
-5. **Launch** training as a subprocess with `CUDA_VISIBLE_DEVICES`
-6. **Monitor** running processes, reap completed/timed-out ones
-7. **Report** — generate `results/report.md` leaderboard
-8. Sleep, repeat
+1. **Research** — any LLM (Claude, GPT, Gemini, local) reads results, generates new experiment ideas
+2. **Parse** `ideas.md` for experiment definitions
+3. **Claim** unclaimed ideas via atomic `mkdir`
+4. **Launch** training as subprocesses across free GPUs
+5. **Monitor** health — stalls, OOM, timeouts, disk space
+6. **Evaluate** — run post-training eval scripts (non-blocking)
+7. **Notify** — push updates to Telegram, Slack, Discord
+8. **Report** — update `results/report.md` leaderboard + `status.json`
+9. Sleep, repeat
 
-## The Protocol
+## Manual Setup (without Claude Code)
 
-### ideas.md format
+```bash
+# 1. Install orze
+curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
 
-Each idea is an H2 header with an embedded YAML config block:
+# 2. Create your config (see orze/orze.yaml.example)
+cp orze/orze.yaml.example orze.yaml
+# Edit orze.yaml — set train_script, python path, report columns
 
-~~~markdown
-## idea-001: My Experiment Name
-- **Priority**: high
-- **Category**: architecture
-- **Hypothesis**: Why this might work.
+# 3. Write seed ideas in ideas.md
+# See orze/RULES.md for the exact format
+
+# 4. Run (always start both)
+nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
+nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
+```
+
+## Key Features
+
+- **Agent roles** — multiple agents (research, documenter, analyzer) run alongside training, each with their own cooldown and state
+- **LLM-agnostic** — built-in Claude Code support (`mode: claude`), or bring any LLM via `mode: script` (GPT, Gemini, local models, custom pipelines)
+- **Multi-GPU** — claims and trains across all GPUs in parallel
+- **Parallel eval** — eval scripts launch non-blocking so GPUs stay busy
+- **Health monitoring** — stall detection, OOM detection, disk space checks
+- **Push notifications** — Telegram, Slack, Discord, or any webhook. Every message includes the top 10 leaderboard
+- **Telegram command** — text back to the bot in natural language to control orze from your phone
+- **Configurable report** — custom columns, metrics from any JSON file
+- **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
+- **Failure handling** — auto-skip after N failures, orphan cleanup
+- **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and spawns an LLM to diagnose and patch farm.py bugs in real time
+- **Atomic coordination** — `mkdir` as lock, no race conditions
+
+## Notifications
+
+Get pinged on your phone when experiments complete, fail, or set new bests.
 
 ```yaml
-model:
-  type: simple_cnn
-  channels: [32, 64, 128]
-training:
-  lr: 0.001
-  epochs: 5
+# In orze.yaml
+notifications:
+  enabled: true
+  channels:
+    - type: telegram
+      bot_token: "your-bot-token"
+      chat_id: "your-chat-id"
+    - type: slack
+      webhook_url: "https://hooks.slack.com/services/..."
+    - type: discord
+      webhook_url: "https://discord.com/api/webhooks/..."
 ```
-~~~
 
-Priority controls execution order: `critical` > `high` > `medium` > `low`.
+Events: `completed`, `failed`, `new_best`, `report`. Supports per-channel filtering (`on: [new_best, failed]`) and generic webhooks.
 
-### Claiming (atomic mkdir)
+### Reply to Control
 
-When `farm.py` wants to run an idea, it calls `mkdir(results/idea-001/, exist_ok=False)`. On any POSIX filesystem, only one process can create a directory — the rest get `FileExistsError`. This is the entire coordination mechanism. It works across machines on NFS/EFS/FSx.
+Text back to the Telegram bot in natural language. Your message is appended to `results/user_command.md` and the research agent picks it up on the next cycle (cooldown bypassed for immediate response).
 
-### metrics.json contract
+Examples: "add an idea for wider resnet with dropout", "pause new launches", "what's the best result so far?"
 
-Your training script must write `results/{idea_id}/metrics.json` when done:
+## Self-Healing
+
+Orze ships with `bug_fixer.py` — a lifetime watchdog that runs alongside `farm.py` and keeps the system healthy:
+
+- **Auto-restart** — if farm.py dies, the watchdog detects it within 60s and restarts it
+- **Stuck process killer** — training/eval jobs with no CPU activity past timeout get killed automatically
+- **Zombie reaper** — detects and cleans up defunct processes
+- **Stale claim cleanup** — flags ideas claimed but never completed by crashed workers
+- **Disk space monitoring** — alerts when free space drops below threshold
+- **LLM-powered code fixes** — for errors in farm.py itself, spawns a Claude session to diagnose and patch the bug (local commit only, human reviews before push)
+
+The watchdog **only touches orze platform code** (`farm.py`). It never modifies your training scripts, configs, or data.
+
+```bash
+# Always launch both together
+nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
+nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
+```
+
+Optional tuning in `orze.yaml`:
+
+```yaml
+bug_fixer:
+  check_interval: 60        # seconds between checks
+  stale_training_min: 45    # kill idle training after N minutes
+  stale_eval_min: 60        # kill idle eval after N minutes
+  max_fixes_per_hour: 3     # rate limit on LLM fix sessions
+```
+
+## The Contract
+
+Your training script receives these args from orze:
+
+```
+CUDA_VISIBLE_DEVICES=N python train.py --idea-id idea-001 --results-dir results --ideas-md ideas.md --config base.yaml
+```
+
+Your script must write `results/{idea_id}/metrics.json`:
 
 ```json
-{
-  "status": "COMPLETED",
-  "test_accuracy": 0.9234,
-  "test_loss": 0.2451,
-  "training_time": 142.5
-}
+{"status": "COMPLETED", "test_accuracy": 0.92, "training_time": 142.5}
 ```
 
-Status must be `"COMPLETED"` or `"FAILED"`. Add any other metrics you want — they'll show up in the report.
+That's it. See [RULES.md](RULES.md) for the full specification.
 
-## Quick Start
+## Documentation
 
-```bash
-# 1. Install dependencies
-pip install torch torchvision pyyaml
-
-# 2. Run one cycle (claims and trains the first unclaimed idea)
-python farm.py --once
-
-# 3. Check results
-cat results/report.md
-cat results/idea-001/metrics.json
-
-# 4. Run continuously on GPUs 0 and 1
-python farm.py --gpus 0,1
-```
-
-## Using Your Own Training Script
-
-Replace `train_idea.py` with anything. The contract:
-
-**Input:**
-- `CUDA_VISIBLE_DEVICES` environment variable (set by farm.py)
-- `--idea-id idea-001` — which idea to train
-- `--results-dir results` — where to write output
-- `--ideas-md ideas.md` — path to ideas file (read your config from here)
-- `--config configs/base.yaml` — path to base config
-
-**Output:**
-- `results/{idea_id}/metrics.json` — must contain `{"status": "COMPLETED"|"FAILED", ...}`
-
-**That's it.** Write metrics.json when done. Farm.py handles everything else.
-
-```bash
-python farm.py --train-script my_training.py
-```
-
-## Multi-Machine Setup
-
-If your machines share a filesystem (NFS, EFS, FSx, etc.):
-
-```bash
-# Machine 1
-python farm.py --gpus 0,1,2,3
-
-# Machine 2
-python farm.py --gpus 0,1,2,3
-```
-
-Both instances read the same `ideas.md` and write to the same `results/` directory. The `mkdir` claim prevents duplicate work. Each machine's `claim.json` records which host claimed what.
+| File | For |
+|------|-----|
+| [AGENT.md](AGENT.md) | Claude Code bootstrap — `@orze/AGENT.md` |
+| [RULES.md](RULES.md) | Complete LLM-readable specification |
+| [orze.yaml.example](orze.yaml.example) | All configuration options |
 
 ## CLI Reference
 
 ```
-python farm.py [OPTIONS]
+python orze/farm.py [OPTIONS]
 
-Options:
-  --gpus GPU_IDS        Comma-separated GPU IDs (default: auto-detect all)
-  --timeout SECONDS     Max training time per idea (default: 3600)
-  --poll SECONDS        Seconds between loop iterations (default: 30)
-  --once                Run one cycle and exit
-  --report-only         Only regenerate results/report.md
-  --ideas-md PATH       Path to ideas file (default: ideas.md)
-  --config PATH         Path to base config (default: configs/base.yaml)
-  --results-dir PATH    Results directory (default: results)
-  --train-script PATH   Training script to run (default: train_idea.py)
+  -c, --config-file PATH    Path to orze.yaml
+  --gpus GPU_IDS            Comma-separated GPU IDs (default: all)
+  --once                    Run one cycle and exit
+  --report-only             Only regenerate report.md
+  --role-only NAME          Run a single agent role once and exit
+  --research-only           Alias for --role-only research
+  --timeout SECONDS         Override training timeout
+  --poll SECONDS            Override loop interval
+  --ideas-md PATH           Override ideas file path
+  --base-config PATH        Override base config path
+  --results-dir PATH        Override results directory
+  --train-script PATH       Override training script
+  -v, --verbose             Debug logging
 ```
 
 ## License
