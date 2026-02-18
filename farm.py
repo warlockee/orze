@@ -1927,10 +1927,22 @@ class Orze:
                 title = ideas.get(idea_id, {}).get("title", idea_id)
 
                 if status == "COMPLETED":
-                    # Use primary_val from report rows (reads from
-                    # fedex_test_report.json etc.), fall back to metrics.json
+                    # Use primary_val from report rows, fall back to
+                    # reading eval report directly (for just-completed evals)
                     row = row_lookup.get(idea_id, {})
                     metric_val = row.get("primary_val") or m.get(primary)
+                    if metric_val is None:
+                        # Report rows are stale — read eval output directly
+                        eval_file = cfg.get("eval_output", "eval_report.json")
+                        eval_path = self.results_dir / idea_id / eval_file
+                        if eval_path.exists():
+                            try:
+                                ed = json.loads(eval_path.read_text(
+                                    encoding="utf-8"))
+                                metric_val = deep_get(ed, "metrics.auc_roc")
+                            except (json.JSONDecodeError, OSError,
+                                    KeyError, UnicodeDecodeError):
+                                pass
                     t_time = m.get("training_time") or None
                     notify("completed", {
                         "idea_id": idea_id, "title": title,
