@@ -1779,7 +1779,18 @@ class Orze:
             rp.close_log()
             _fs_unlock(rp.lock_dir)
 
-        # 3. Save state for restart recovery
+        # 3. Write shutdown sentinel (tells bug_fixer not to restart us)
+        sentinel = self.results_dir / ".orze_shutdown"
+        try:
+            sentinel.write_text(
+                f"pid={os.getpid()} iteration={self.iteration} "
+                f"time={datetime.datetime.now().isoformat()}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+        # 4. Save state for restart recovery
         save_state(self.results_dir, {
             "iteration": self.iteration,
             "failure_counts": self.failure_counts,
@@ -1787,7 +1798,7 @@ class Orze:
             "best_idea_id": self._best_idea_id,
         })
 
-        # 4. Notify (best effort)
+        # 5. Notify (best effort)
         try:
             notify("report", {
                 "title": "Orze shutting down",
@@ -1796,6 +1807,9 @@ class Orze:
             }, self.cfg)
         except Exception:
             pass
+
+        # 6. Clean up PID file
+        self._remove_pid_file()
 
         logger.info("Shutdown complete. State saved at iteration %d.",
                      self.iteration)
@@ -2159,9 +2173,28 @@ class Orze:
 
         return cmd
 
+    def _write_pid_file(self):
+        """Write PID file for clean stop via --stop or kill."""
+        self._pid_file = self.results_dir / ".orze.pid"
+        self._pid_file.write_text(str(os.getpid()), encoding="utf-8")
+
+    def _remove_pid_file(self):
+        """Remove PID file on exit."""
+        try:
+            if hasattr(self, "_pid_file") and self._pid_file.exists():
+                self._pid_file.unlink()
+        except Exception:
+            pass
+
     def run(self):
         cfg = self.cfg
-        logger.info("Starting orze v%s on GPUs %s", __version__, self.gpu_ids)
+        self._write_pid_file()
+        # Clear any stale shutdown sentinel from a previous run
+        shutdown_sentinel = self.results_dir / ".orze_shutdown"
+        if shutdown_sentinel.exists():
+            shutdown_sentinel.unlink()
+        logger.info("Starting orze v%s on GPUs %s (PID %d)",
+                     __version__, self.gpu_ids, os.getpid())
         logger.info("Ideas: %s | Results: %s | Timeout: %ds | Poll: %ds",
                      cfg["ideas_file"], cfg["results_dir"],
                      cfg["timeout"], cfg["poll"])
@@ -2499,13 +2532,14 @@ class Orze:
         if self.active or self.active_evals or self.active_roles:
             self._graceful_shutdown()
         else:
-            # Nothing running, just save state
+            # Nothing running, just save state and clean up
             save_state(self.results_dir, {
                 "iteration": self.iteration,
                 "failure_counts": self.failure_counts,
                 "roles": self.role_states,
                 "best_idea_id": self._best_idea_id,
             })
+            self._remove_pid_file()
         logger.info("Exited after %d iterations.", self.iteration)
 
 
@@ -2562,6 +2596,8 @@ Examples:
                         help="Seconds between iterations")
     parser.add_argument("--once", action="store_true",
                         help="Run one cycle and exit")
+    parser.add_argument("--stop", action="store_true",
+                        help="Gracefully stop a running orze instance")
     parser.add_argument("--report-only", action="store_true",
                         help="Only regenerate report")
     parser.add_argument("--role-only", type=str, default=None, metavar="NAME",
@@ -2607,6 +2643,42 @@ Examples:
             logger.error(
                 "No GPUs detected. Use --gpus to specify manually.")
             sys.exit(1)
+
+    # --stop: gracefully stop a running orze instance
+    if args.stop:
+        results_dir = Path(cfg["results_dir"])
+        pid_file = results_dir / ".orze.pid"
+        if not pid_file.exists():
+            logger.error("No PID file found at %s. Is orze running?",
+                         pid_file)
+            sys.exit(1)
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError) as e:
+            logger.error("Cannot read PID file: %s", e)
+            sys.exit(1)
+        # Check if process is actually running
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            logger.error("PID %d not running. Removing stale PID file.", pid)
+            pid_file.unlink(missing_ok=True)
+            sys.exit(1)
+        except PermissionError:
+            pass  # process exists but we can't signal it (shouldn't happen)
+        logger.info("Sending SIGTERM to orze (PID %d)...", pid)
+        os.kill(pid, signal.SIGTERM)
+        # Wait for it to exit
+        for _ in range(60):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                logger.info("Orze stopped.")
+                return
+            time.sleep(1)
+        logger.warning("Orze (PID %d) did not stop within 60s. "
+                       "Send SIGKILL with: kill -9 %d", pid, pid)
+        return
 
     # Report-only mode
     if args.report_only:

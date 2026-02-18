@@ -75,6 +75,13 @@ def check_orze_alive(cfg):
     orze_cfg = cfg["_orze"]
     config_file = cfg.get("_config_file", "orze.yaml")
 
+    # Respect graceful shutdown — don't restart if intentionally stopped
+    results_dir = Path(orze_cfg.get("results_dir", "results"))
+    sentinel = results_dir / ".orze_shutdown"
+    if sentinel.exists():
+        logger.debug("Shutdown sentinel found — orze was stopped intentionally")
+        return issues
+
     rc, out, _ = run_cmd(f"pgrep -f 'farm.py.*{config_file}'")
     if rc != 0 or not out.strip():
         issues.append({
@@ -300,6 +307,14 @@ def restart_orze(cfg):
     project_dir = cfg.get("_project_dir", ".")
     results_dir = Path(cfg["_orze"].get("results_dir", "results"))
     log_file = results_dir / "farm.log"
+
+    # Clear shutdown sentinel so farm.py starts fresh
+    sentinel = results_dir / ".orze_shutdown"
+    if sentinel.exists():
+        try:
+            sentinel.unlink()
+        except Exception:
+            pass
 
     logger.info("Restarting Orze...")
     run_cmd(f"pkill -f 'farm.py.*{config_file}'")

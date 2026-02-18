@@ -189,6 +189,7 @@ python orze/farm.py [OPTIONS]
   -c, --config-file PATH    Path to orze.yaml
   --gpus GPU_IDS            Comma-separated GPU IDs (default: all)
   --once                    Run one cycle and exit
+  --stop                    Gracefully stop a running instance
   --report-only             Only regenerate report.md
   --role-only NAME          Run a single agent role once and exit
   --research-only           Alias for --role-only research
