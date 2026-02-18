@@ -115,13 +115,6 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 #       headers:
 #         Authorization: "Bearer tok"
 
-# --- Telegram command receiver (optional) ---
-# Text back to the Telegram bot to control orze via natural language.
-# Messages are appended to results/user_command.md.
-# The research agent picks them up and executes them.
-# Uses the same bot_token/chat_id from notifications.channels[telegram].
-# No extra config needed — just having a Telegram notification channel enables it.
-
 # --- Garbage collection (optional) ---
 # cleanup:
 #   interval: 100                     # run every N iterations

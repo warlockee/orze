@@ -79,7 +79,6 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Parallel eval** — eval scripts launch non-blocking so GPUs stay busy
 - **Health monitoring** — stall detection, OOM detection, disk space checks
 - **Push notifications** — Telegram, Slack, Discord, or any webhook. Every message includes the top 10 leaderboard
-- **Telegram command** — text back to the bot in natural language to control orze from your phone
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
@@ -105,12 +104,6 @@ notifications:
 ```
 
 Events: `completed`, `failed`, `new_best`, `report`. Supports per-channel filtering (`on: [new_best, failed]`) and generic webhooks.
-
-### Reply to Control
-
-Text back to the Telegram bot in natural language. Your message is appended to `results/user_command.md` and the research agent picks it up on the next cycle (cooldown bypassed for immediate response).
-
-Examples: "add an idea for wider resnet with dropout", "pause new launches", "what's the best result so far?"
 
 ## Self-Healing
 
