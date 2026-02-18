@@ -449,6 +449,18 @@ def get_gpu_memory_used(gpu_id: int) -> Optional[int]:
         return None
 
 
+def _eval_already_running(idea_id: str) -> bool:
+    """Check if an eval process is already running for this idea."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"evaluate_dataset.*{idea_id}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def detect_all_gpus() -> List[int]:
     """Auto-detect available GPU indices."""
     try:
@@ -1780,10 +1792,13 @@ class Orze:
             logger.info("Terminating training %s on GPU %d (PID %d)...",
                         tp.idea_id, gpu, tp.process.pid)
             _kill_pg(tp.process, signal.SIGTERM)
+        # Let eval processes continue running (they'll write reports
+        # and exit on their own).  The backlog scanner checks for
+        # already-running evals before launching duplicates.
         for gpu, ep in self.active_evals.items():
-            logger.info("Terminating eval %s on GPU %d (PID %d)...",
+            logger.info("Detaching eval %s on GPU %d (PID %d) "
+                        "— will finish in background",
                         ep.idea_id, gpu, ep.process.pid)
-            _kill_pg(ep.process, signal.SIGTERM)
         for role_name, rp in self.active_roles.items():
             logger.info("Terminating role '%s' (PID %d)...",
                         role_name, rp.process.pid)
@@ -1804,18 +1819,8 @@ class Orze:
                 except subprocess.TimeoutExpired:
                     logger.error("Failed to reap training %s", tp.idea_id)
             tp.close_log()
+        # Eval processes were detached above — just close our log handles.
         for gpu, ep in self.active_evals.items():
-            remaining = max(1, deadline - time.time())
-            try:
-                ep.process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                logger.warning("Force killing eval %s (PID %d)",
-                               ep.idea_id, ep.process.pid)
-                _kill_pg(ep.process, signal.SIGKILL)
-                try:
-                    ep.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.error("Failed to reap eval %s", ep.idea_id)
             ep.close_log()
         for role_name, rp in self.active_roles.items():
             remaining = max(1, deadline - time.time())
@@ -1946,7 +1951,21 @@ class Orze:
                     if metric_val is None:
                         # Last resort: use training's internal test AUC
                         metric_val = deep_get(m, "test_metrics.auc_roc")
+                    if metric_val is None:
+                        logger.warning(
+                            "Notification for %s has metric_val=None "
+                            "(row_pv=%s, m.get(%s)=%s, eval=%s, test_auc=%s)",
+                            idea_id,
+                            row.get("primary_val"),
+                            primary, m.get(primary),
+                            (self.results_dir / idea_id /
+                             cfg.get("eval_output", "eval_report.json")
+                             ).exists(),
+                            deep_get(m, "test_metrics.auc_roc"))
                     t_time = m.get("training_time") or None
+                    # Format metric to 4 decimal places
+                    if isinstance(metric_val, float):
+                        metric_val = round(metric_val, 4)
                     notify("completed", {
                         "idea_id": idea_id, "title": title,
                         "metric_name": primary,
@@ -1967,11 +1986,14 @@ class Orze:
                 current_best = completed_rows[0]["id"]
                 if (self._best_idea_id is not None
                         and current_best != self._best_idea_id):
+                    best_val = completed_rows[0].get("primary_val")
+                    if isinstance(best_val, float):
+                        best_val = round(best_val, 4)
                     notify("new_best", {
                         "idea_id": current_best,
                         "title": completed_rows[0]["title"],
                         "metric_name": primary,
-                        "metric_value": completed_rows[0].get("primary_val"),
+                        "metric_value": best_val,
                         "prev_best_id": self._best_idea_id,
                         "leaderboard": leaderboard,
                     }, cfg)
@@ -2525,13 +2547,20 @@ class Orze:
                     backlog.sort(reverse=True)
                     eval_busy = (set(self.active.keys())
                                  | set(self.active_evals.keys()))
-                    free_for_eval = [g for g in self.gpu_ids
-                                     if g not in eval_busy]
+                    mem_thresh = cfg.get("gpu_mem_threshold", 2000)
+                    free_for_eval = [
+                        g for g in self.gpu_ids
+                        if g not in eval_busy
+                        and (get_gpu_memory_used(g) or 0) <= mem_thresh
+                    ]
                     launched_backlog = 0
                     for _, iid in backlog:
                         if (len(self.active_evals) >= max_evals
                                 or not free_for_eval):
                             break
+                        # Skip if an orphaned eval is already running
+                        if _eval_already_running(iid):
+                            continue
                         use_gpu = free_for_eval.pop(0)
                         ep = launch_eval(
                             iid, use_gpu, self.results_dir, cfg)
