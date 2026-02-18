@@ -35,11 +35,54 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import atexit
+
 import yaml
 
 __version__ = "1.1.0"
 
 logger = logging.getLogger("orze")
+
+
+# ---------------------------------------------------------------------------
+# Process group helpers — ensures all child processes are killed on shutdown
+# ---------------------------------------------------------------------------
+
+def _new_process_group():
+    """preexec_fn for Popen: put subprocess in its own process group."""
+    os.setsid()
+
+
+def _kill_pg(proc: subprocess.Popen, sig=signal.SIGTERM):
+    """Send a signal to the entire process group of *proc*.
+
+    Falls back to sending directly to the process if the group
+    lookup fails (e.g. process already dead).
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _terminate_and_reap(proc: subprocess.Popen, label: str = "",
+                        timeout: float = 10):
+    """SIGTERM the process group, wait, then SIGKILL if needed."""
+    _kill_pg(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning("Force killing %s (PID %d)", label or "process", proc.pid)
+        _kill_pg(proc, signal.SIGKILL)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.error("Failed to reap %s (PID %d) after SIGKILL",
+                         label or "process", proc.pid)
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +609,7 @@ def launch(idea_id: str, gpu: int, results_dir: Path, cfg: dict) -> TrainingProc
     try:
         proc = subprocess.Popen(
             cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+            preexec_fn=_new_process_group,
         )
     except Exception:
         log_fh.close()
@@ -729,12 +773,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if elapsed > tp.timeout:
                 logger.warning("[TIMEOUT] %s after %.0fm — killing",
                                tp.idea_id, elapsed / 60)
-                tp.process.terminate()
-                try:
-                    tp.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    tp.process.kill()
-                    tp.process.wait(timeout=5)
+                _terminate_and_reap(tp.process, tp.idea_id)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id, "Timed out")
                 _record_failure(failure_counts, tp.idea_id)
@@ -745,12 +784,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if check_stalled(tp, stall_minutes):
                 logger.warning("[STALLED] %s — no log output for %dm, killing",
                                tp.idea_id, stall_minutes)
-                tp.process.terminate()
-                try:
-                    tp.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    tp.process.kill()
-                    tp.process.wait(timeout=5)
+                _terminate_and_reap(tp.process, tp.idea_id)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id,
                                f"Stalled (no output for {stall_minutes}m)")
@@ -762,12 +796,7 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if detect_oom(tp) and tp.process.poll() is None:
                 logger.warning("[OOM] %s — CUDA out of memory detected, killing",
                                tp.idea_id)
-                tp.process.terminate()
-                try:
-                    tp.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    tp.process.kill()
-                    tp.process.wait(timeout=5)
+                _terminate_and_reap(tp.process, tp.idea_id)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id, "CUDA out of memory")
                 _record_failure(failure_counts, tp.idea_id)
@@ -878,6 +907,7 @@ def launch_eval(idea_id: str, gpu: int, results_dir: Path,
         log_fh = open(log_path, "w", encoding="utf-8")
         proc = subprocess.Popen(
             cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+            preexec_fn=_new_process_group,
         )
         return EvalProcess(
             idea_id=idea_id, gpu=gpu, process=proc,
@@ -904,12 +934,7 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     except subprocess.TimeoutExpired:
         logger.warning("Eval timed out for %s after %ds",
                        idea_id, ep.timeout)
-        ep.process.terminate()
-        try:
-            ep.process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            ep.process.kill()
-            ep.process.wait()
+        _terminate_and_reap(ep.process, f"eval {idea_id}")
     except Exception as e:
         logger.warning("Eval error for %s: %s", idea_id, e)
     finally:
@@ -930,12 +955,7 @@ def check_active_evals(active_evals: Dict[int, EvalProcess],
             if elapsed > ep.timeout:
                 logger.warning("[EVAL TIMEOUT] %s after %.0fm — killing",
                                ep.idea_id, elapsed / 60)
-                ep.process.terminate()
-                try:
-                    ep.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    ep.process.kill()
-                    ep.process.wait()
+                _terminate_and_reap(ep.process, f"eval {ep.idea_id}")
                 ep.close_log()
                 del active_evals[gpu]
                 finished.append((ep.idea_id, gpu))
@@ -971,12 +991,7 @@ def check_active_roles(active_roles: Dict[str, "RoleProcess"]) -> list:
             if elapsed > rp.timeout:
                 logger.warning("[ROLE TIMEOUT] %s after %.0fm — killing",
                                role_name, elapsed / 60)
-                rp.process.terminate()
-                try:
-                    rp.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    rp.process.kill()
-                    rp.process.wait()
+                _terminate_and_reap(rp.process, f"role {role_name}")
                 rp.close_log()
                 _fs_unlock(rp.lock_dir)
                 del active_roles[role_name]
@@ -1717,6 +1732,22 @@ class Orze:
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
 
+        # Safety net: atexit kills all children even if signal handler
+        # can't run (e.g. unhandled exception, sys.exit from 2nd signal)
+        atexit.register(self._atexit_cleanup)
+
+    def _atexit_cleanup(self):
+        """Last-resort cleanup: kill all tracked child process groups."""
+        for gpu, tp in list(self.active.items()):
+            _kill_pg(tp.process, signal.SIGKILL)
+            tp.close_log()
+        for gpu, ep in list(self.active_evals.items()):
+            _kill_pg(ep.process, signal.SIGKILL)
+            ep.close_log()
+        for role_name, rp in list(self.active_roles.items()):
+            _kill_pg(rp.process, signal.SIGKILL)
+            rp.close_log()
+
     def _shutdown(self, signum, frame):
         """Signal handler — just sets flag so the main loop exits cleanly."""
         if not self.running:
@@ -1735,18 +1766,19 @@ class Orze:
         """
         logger.info("Shutting down gracefully...")
 
-        # 1. Send SIGTERM to all child processes
+        # 1. Send SIGTERM to all child process groups
         for gpu, tp in self.active.items():
-            logger.info("Terminating training %s on GPU %d...",
-                        tp.idea_id, gpu)
-            tp.process.terminate()
+            logger.info("Terminating training %s on GPU %d (PID %d)...",
+                        tp.idea_id, gpu, tp.process.pid)
+            _kill_pg(tp.process, signal.SIGTERM)
         for gpu, ep in self.active_evals.items():
-            logger.info("Terminating eval %s on GPU %d...",
-                        ep.idea_id, gpu)
-            ep.process.terminate()
+            logger.info("Terminating eval %s on GPU %d (PID %d)...",
+                        ep.idea_id, gpu, ep.process.pid)
+            _kill_pg(ep.process, signal.SIGTERM)
         for role_name, rp in self.active_roles.items():
-            logger.info("Terminating role '%s'...", role_name)
-            rp.process.terminate()
+            logger.info("Terminating role '%s' (PID %d)...",
+                        role_name, rp.process.pid)
+            _kill_pg(rp.process, signal.SIGTERM)
 
         # 2. Wait for graceful exit (up to 30s), then SIGKILL stragglers
         deadline = time.time() + 30
@@ -1755,27 +1787,39 @@ class Orze:
             try:
                 tp.process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
-                logger.warning("Force killing training %s", tp.idea_id)
-                tp.process.kill()
-                tp.process.wait(timeout=5)
+                logger.warning("Force killing training %s (PID %d)",
+                               tp.idea_id, tp.process.pid)
+                _kill_pg(tp.process, signal.SIGKILL)
+                try:
+                    tp.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("Failed to reap training %s", tp.idea_id)
             tp.close_log()
         for gpu, ep in self.active_evals.items():
             remaining = max(1, deadline - time.time())
             try:
                 ep.process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
-                logger.warning("Force killing eval %s", ep.idea_id)
-                ep.process.kill()
-                ep.process.wait(timeout=5)
+                logger.warning("Force killing eval %s (PID %d)",
+                               ep.idea_id, ep.process.pid)
+                _kill_pg(ep.process, signal.SIGKILL)
+                try:
+                    ep.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("Failed to reap eval %s", ep.idea_id)
             ep.close_log()
         for role_name, rp in self.active_roles.items():
             remaining = max(1, deadline - time.time())
             try:
                 rp.process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
-                logger.warning("Force killing role '%s'", role_name)
-                rp.process.kill()
-                rp.process.wait(timeout=5)
+                logger.warning("Force killing role '%s' (PID %d)",
+                               role_name, rp.process.pid)
+                _kill_pg(rp.process, signal.SIGKILL)
+                try:
+                    rp.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("Failed to reap role '%s'", role_name)
             rp.close_log()
             _fs_unlock(rp.lock_dir)
 
@@ -2106,6 +2150,7 @@ class Orze:
             log_fh = open(log_path, "w", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd, env=env, stdout=log_fh, stderr=subprocess.STDOUT,
+                preexec_fn=_new_process_group,
             )
             self.active_roles[role_name] = RoleProcess(
                 role_name=role_name,
@@ -2119,6 +2164,8 @@ class Orze:
             )
         except Exception as e:
             logger.warning("%s launch error: %s", role_name, e)
+            if log_fh and not log_fh.closed:
+                log_fh.close()
             _fs_unlock(lock_dir)
 
     def _run_all_roles(self):
