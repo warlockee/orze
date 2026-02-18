@@ -1544,15 +1544,18 @@ def _format_slack(event: str, data: dict) -> dict:
         text = (f":x: *FAILED* `{data['idea_id']}`: {data['title']}\n"
                 f"Error: {err}")
     else:
+        t_str = ""
         try:
-            t = float(data.get("training_time") or 0)
+            t = data.get("training_time")
+            if t is not None:
+                t_str = f" in {float(t):.0f}s"
         except (ValueError, TypeError):
-            t = 0.0
+            pass
         text = (f":white_check_mark: *Completed* `{data['idea_id']}`: "
                 f"{data['title']}\n"
                 f"{data['metric_name']}: {data['metric_value']}"
                 f" (rank #{data.get('rank', '?')})"
-                f" in {t:.0f}s")
+                f"{t_str}")
     text += _format_leaderboard(data, lambda s: f"*{s}*")
     return {"text": text}
 
@@ -1571,14 +1574,17 @@ def _format_discord(event: str, data: dict) -> dict:
         content = (f"**FAILED** `{data['idea_id']}`: {data['title']}\n"
                    f"Error: {err}")
     else:
+        t_str = ""
         try:
-            t = float(data.get("training_time") or 0)
+            t = data.get("training_time")
+            if t is not None:
+                t_str = f" in {float(t):.0f}s"
         except (ValueError, TypeError):
-            t = 0.0
+            pass
         content = (f"**Completed** `{data['idea_id']}`: {data['title']}\n"
                    f"{data['metric_name']}: {data['metric_value']}"
                    f" (rank #{data.get('rank', '?')})"
-                   f" in {t:.0f}s")
+                   f"{t_str}")
     content += _format_leaderboard(data, lambda s: f"**{s}**")
     return {"content": content}
 
@@ -1611,17 +1617,20 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
         text = (f"<b>FAILED</b> <code>{idea_id}</code>: {title}\n"
                 f"Error: {err}")
     else:
+        t_str = ""
         try:
-            t = float(data.get("training_time") or 0)
+            t = data.get("training_time")
+            if t is not None:
+                t_str = f" in {float(t):.0f}s"
         except (ValueError, TypeError):
-            t = 0.0
+            pass
         metric = esc(str(data.get("metric_name", "")))
         val = esc(str(data.get("metric_value", "")))
         rank = esc(str(data.get("rank", "?")))
         text = (f"<b>Completed</b> <code>{idea_id}</code>: {title}\n"
                 f"{metric}: {val}"
                 f" (rank #{rank})"
-                f" in {t:.0f}s")
+                f"{t_str}")
     text += _format_leaderboard(data, lambda s: f"<b>{s}</b>", escape_fn=esc)
 
     return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -1922,15 +1931,7 @@ class Orze:
                     # fedex_test_report.json etc.), fall back to metrics.json
                     row = row_lookup.get(idea_id, {})
                     metric_val = row.get("primary_val") or m.get(primary)
-                    t_time = m.get("training_time", 0)
-                    if not t_time:
-                        # Fallback: compute from idea dir timestamps
-                        try:
-                            idea_dir = self.results_dir / idea_id
-                            t_time = (m_path.stat().st_mtime
-                                      - idea_dir.stat().st_mtime)
-                        except OSError:
-                            t_time = 0
+                    t_time = m.get("training_time") or None
                     notify("completed", {
                         "idea_id": idea_id, "title": title,
                         "metric_name": primary,
@@ -2436,7 +2437,24 @@ class Orze:
                                     num = int(iid.split("-", 1)[1])
                                 except (IndexError, ValueError):
                                     num = 0
-                                backlog.append((num, iid))
+                                # Prioritize by Nexar AUC if available
+                                # (top Nexar performers most likely to
+                                #  generalise to FedEx)
+                                priority = num
+                                nexar_rp = d / "nexar_test_report.json"
+                                if nexar_rp.exists():
+                                    try:
+                                        nr = json.loads(
+                                            nexar_rp.read_text(
+                                                encoding="utf-8"))
+                                        nauc = nr.get(
+                                            "metrics", {}).get(
+                                            "auc_roc", 0)
+                                        priority = int(nauc * 1_000_000)
+                                    except (json.JSONDecodeError,
+                                            OSError, TypeError):
+                                        pass
+                                backlog.append((priority, iid))
                         except (json.JSONDecodeError, OSError):
                             pass
                 if backlog:
