@@ -9,7 +9,7 @@ DIR="orze"
 mkdir -p "$DIR"
 
 echo "Downloading orze..."
-for f in farm.py AGENT.md RULES.md orze.yaml.example; do
+for f in farm.py bug_fixer.py AGENT.md RULES.md orze.yaml.example; do
   curl -sL "$REPO/$f" -o "$DIR/$f"
 done
 
