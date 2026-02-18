@@ -1527,6 +1527,67 @@ def notify(event: str, data: dict, cfg: dict):
 
 
 # ---------------------------------------------------------------------------
+# Telegram command receiver
+# ---------------------------------------------------------------------------
+
+def _get_telegram_channel(cfg: dict) -> Optional[dict]:
+    """Find first Telegram channel from notifications config. Returns None if absent."""
+    ncfg = cfg.get("notifications") or {}
+    for ch in (ncfg.get("channels") or []):
+        if ch.get("type") == "telegram" and ch.get("bot_token") and ch.get("chat_id"):
+            return ch
+    return None
+
+
+def _telegram_get_updates(token: str, offset: int = 0,
+                          timeout: int = 1) -> list:
+    """Fetch new messages via Telegram getUpdates. Never raises."""
+    try:
+        params = {"offset": offset, "timeout": timeout}
+        url = f"https://api.telegram.org/bot{token}/getUpdates"
+        data = json.dumps(params).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Content-Type": "application/json",
+                     "User-Agent": f"orze/{__version__}"},
+        )
+        resp = urllib.request.urlopen(req, timeout=timeout + 5)
+        result = json.loads(resp.read().decode("utf-8"))
+        if result.get("ok"):
+            return result.get("result", [])
+    except Exception as e:
+        logger.debug("Telegram getUpdates error: %s", e)
+    return []
+
+
+def _telegram_send_reply(token: str, chat_id: str, text: str):
+    """Send a short reply to Telegram. Never raises."""
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text[:4096]}
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Content-Type": "application/json",
+                     "User-Agent": f"orze/{__version__}"},
+        )
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        logger.debug("Telegram send reply error: %s", e)
+
+
+def _append_user_command(cmd_file: Path, text: str):
+    """Append a user command to user_command.md with timestamp."""
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = f"\n## {ts}\n{text}\n"
+    try:
+        with open(cmd_file, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception as e:
+        logger.warning("Failed to append user command: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
 
@@ -1591,8 +1652,19 @@ class Orze:
         # Per-role agent state: {role_name: {"cycles": int, "last_run_time": float}}
         self.role_states: Dict[str, dict] = state.get("roles", {})
         self._best_idea_id: Optional[str] = state.get("best_idea_id")
+        self._telegram_offset: int = state.get("telegram_offset", 0)
+        self._user_cmd_file = self.results_dir / "user_command.md"
 
         self.results_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create user_command.md if it doesn't exist
+        if not self._user_cmd_file.exists():
+            self._user_cmd_file.write_text(
+                "# User Commands\n\n"
+                "Messages from Telegram are appended here.\n"
+                "The research agent checks this file for pending commands.\n",
+                encoding="utf-8",
+            )
 
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
@@ -1631,6 +1703,7 @@ class Orze:
             "failure_counts": self.failure_counts,
             "roles": self.role_states,
             "best_idea_id": self._best_idea_id,
+            "telegram_offset": self._telegram_offset,
         })
         logger.info("Shutdown complete.")
         sys.exit(0)
@@ -1815,6 +1888,7 @@ class Orze:
             "completed": counts.get("COMPLETED", 0),
             "queued": counts.get("QUEUED", 0),
             "role_name": role_name,
+            "user_command_file": str(self._user_cmd_file),
         }
 
         # Build command based on mode
@@ -1879,6 +1953,40 @@ class Orze:
         for role_name, role_cfg in (self.cfg.get("roles") or {}).items():
             if isinstance(role_cfg, dict):
                 self._run_role_step(role_name, role_cfg)
+
+    def _poll_telegram_commands(self) -> bool:
+        """Poll Telegram for new user messages, append to user_command.md.
+
+        Returns True if new commands were received (caller should
+        force-trigger research role).
+        """
+        tg = _get_telegram_channel(self.cfg)
+        if not tg:
+            return False
+
+        token = tg["bot_token"]
+        chat_id = str(tg["chat_id"])
+        updates = _telegram_get_updates(token, offset=self._telegram_offset)
+        new_commands = False
+
+        for update in updates:
+            self._telegram_offset = update.get("update_id", 0) + 1
+            msg = update.get("message") or {}
+            text = (msg.get("text") or "").strip()
+            msg_chat_id = str(msg.get("chat", {}).get("id", ""))
+
+            if not text or msg_chat_id != chat_id:
+                continue
+
+            logger.info("Telegram command from %s: %s",
+                        msg_chat_id, text[:100])
+            _append_user_command(self._user_cmd_file, text)
+            _telegram_send_reply(
+                token, chat_id,
+                f"Received: {text[:200]}\nWill be executed by research agent.")
+            new_commands = True
+
+        return new_commands
 
     def _build_claude_cmd(self, research_cfg: dict,
                           template_vars: dict) -> Optional[List[str]]:
@@ -1984,6 +2092,16 @@ class Orze:
             # 3b. Run post-scripts for evals that just completed
             for idea_id, gpu in eval_finished:
                 run_post_scripts(idea_id, gpu, self.results_dir, cfg)
+
+            # 3c. Poll Telegram for user commands
+            has_new_cmd = self._poll_telegram_commands()
+            if has_new_cmd:
+                # Force-trigger research role immediately (bypass cooldown)
+                research_cfg = (cfg.get("roles") or {}).get("research")
+                if research_cfg and isinstance(research_cfg, dict):
+                    rs = self.role_states.get("research", {})
+                    rs["last_run_time"] = 0  # reset cooldown
+                    logger.info("New user command — triggering research now")
 
             # 4. Run agent roles (research, documenter, etc.)
             self._run_all_roles()
@@ -2199,6 +2317,7 @@ class Orze:
                 "failure_counts": self.failure_counts,
                 "roles": self.role_states,
                 "best_idea_id": self._best_idea_id,
+            "telegram_offset": self._telegram_offset,
             })
 
             if self.once:
@@ -2248,6 +2367,7 @@ class Orze:
                         "failure_counts": self.failure_counts,
                         "roles": self.role_states,
                         "best_idea_id": self._best_idea_id,
+            "telegram_offset": self._telegram_offset,
                     })
                 logger.info("Done.")
                 break
@@ -2391,6 +2511,7 @@ Examples:
             "failure_counts": orze.failure_counts,
             "roles": orze.role_states,
             "best_idea_id": orze._best_idea_id,
+            "telegram_offset": orze._telegram_offset,
         })
         return
 
