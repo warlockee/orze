@@ -2221,25 +2221,45 @@ class Orze:
         return cmd
 
     def _write_pid_file(self):
-        """Write PID file for clean stop via --stop or kill."""
-        self._pid_file = self.results_dir / ".orze.pid"
+        """Write host-specific PID file for clean stop via --stop or kill."""
+        hostname = socket.gethostname()
+        self._pid_file = self.results_dir / f".orze.pid.{hostname}"
         self._pid_file.write_text(str(os.getpid()), encoding="utf-8")
+        # Legacy single PID file (for backward compat)
+        legacy = self.results_dir / ".orze.pid"
+        legacy.write_text(str(os.getpid()), encoding="utf-8")
 
     def _remove_pid_file(self):
-        """Remove PID file on exit."""
-        try:
-            if hasattr(self, "_pid_file") and self._pid_file.exists():
-                self._pid_file.unlink()
-        except Exception:
-            pass
+        """Remove PID files on exit."""
+        for f in [getattr(self, "_pid_file", None),
+                  self.results_dir / ".orze.pid"]:
+            try:
+                if f and f.exists():
+                    f.unlink()
+            except Exception:
+                pass
+
+    def _check_stop_all(self):
+        """Check for filesystem-based stop signal (.orze_stop_all).
+
+        This allows stopping all orze instances across machines
+        that share the same results directory (e.g. on NFS/FSx).
+        """
+        stop_file = self.results_dir / ".orze_stop_all"
+        if stop_file.exists():
+            logger.info("Found .orze_stop_all — shutting down")
+            self.running = False
+            return True
+        return False
 
     def run(self):
         cfg = self.cfg
         self._write_pid_file()
-        # Clear any stale shutdown sentinel from a previous run
-        shutdown_sentinel = self.results_dir / ".orze_shutdown"
-        if shutdown_sentinel.exists():
-            shutdown_sentinel.unlink()
+        # Clear any stale shutdown sentinels from a previous run
+        for sentinel_name in [".orze_shutdown", ".orze_stop_all"]:
+            sentinel = self.results_dir / sentinel_name
+            if sentinel.exists():
+                sentinel.unlink(missing_ok=True)
         logger.info("Starting orze v%s on GPUs %s (PID %d)",
                      __version__, self.gpu_ids, os.getpid())
         logger.info("Ideas: %s | Results: %s | Timeout: %ds | Poll: %ds",
@@ -2261,6 +2281,10 @@ class Orze:
             self.iteration += 1
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             logger.info("--- Iteration %d [%s] ---", self.iteration, ts)
+
+            # 0. Check for filesystem stop signal (multi-machine)
+            if self._check_stop_all():
+                break
 
             # 1. Check disk space (only gates launches, never skips reaping)
             disk_ok = check_disk_space(self.results_dir,
@@ -2691,40 +2715,66 @@ Examples:
                 "No GPUs detected. Use --gpus to specify manually.")
             sys.exit(1)
 
-    # --stop: gracefully stop a running orze instance
+    # --stop: gracefully stop ALL running orze instances (local + remote)
     if args.stop:
         results_dir = Path(cfg["results_dir"])
-        pid_file = results_dir / ".orze.pid"
-        if not pid_file.exists():
-            logger.error("No PID file found at %s. Is orze running?",
-                         pid_file)
-            sys.exit(1)
-        try:
-            pid = int(pid_file.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError) as e:
-            logger.error("Cannot read PID file: %s", e)
-            sys.exit(1)
-        # Check if process is actually running
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            logger.error("PID %d not running. Removing stale PID file.", pid)
-            pid_file.unlink(missing_ok=True)
-            sys.exit(1)
-        except PermissionError:
-            pass  # process exists but we can't signal it (shouldn't happen)
-        logger.info("Sending SIGTERM to orze (PID %d)...", pid)
-        os.kill(pid, signal.SIGTERM)
-        # Wait for it to exit
-        for _ in range(60):
+
+        # 1. Write .orze_stop_all — every instance on shared storage
+        #    checks this file each iteration and shuts down gracefully
+        stop_file = results_dir / ".orze_stop_all"
+        stop_file.write_text(
+            f"stop requested at {datetime.datetime.now().isoformat()} "
+            f"by {socket.gethostname()} PID {os.getpid()}\n",
+            encoding="utf-8",
+        )
+        logger.info("Wrote .orze_stop_all — remote instances will stop "
+                     "within one poll cycle (%ds)",
+                     cfg.get("poll", 30))
+
+        # 2. Also SIGTERM any local orze process (faster than waiting
+        #    for the file check)
+        local_pids = set()
+        for pid_path in sorted(results_dir.glob(".orze.pid*")):
             try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                logger.info("Orze stopped.")
-                return
-            time.sleep(1)
-        logger.warning("Orze (PID %d) did not stop within 60s. "
-                       "Send SIGKILL with: kill -9 %d", pid, pid)
+                pid = int(pid_path.read_text(encoding="utf-8").strip())
+                os.kill(pid, 0)  # check if running locally
+                local_pids.add(pid)
+            except (ValueError, OSError, ProcessLookupError):
+                # Not running locally or stale — clean up
+                try:
+                    pid_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        for pid in local_pids:
+            logger.info("Sending SIGTERM to local orze (PID %d)...", pid)
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
+
+        # 3. Wait for local processes to exit
+        if local_pids:
+            for _ in range(60):
+                still_alive = set()
+                for pid in local_pids:
+                    try:
+                        os.kill(pid, 0)
+                        still_alive.add(pid)
+                    except ProcessLookupError:
+                        logger.info("Local orze (PID %d) stopped.", pid)
+                local_pids = still_alive
+                if not local_pids:
+                    break
+                time.sleep(1)
+            for pid in local_pids:
+                logger.warning("Local orze (PID %d) did not stop within 60s. "
+                               "Send SIGKILL with: kill -9 %d", pid, pid)
+
+        # NOTE: .orze_stop_all is NOT deleted here — remote instances
+        # need time to see it. It gets cleaned up on next run() start.
+        logger.info("Stop complete. Remote instances will stop within "
+                     "one poll cycle.")
         return
 
     # Report-only mode
