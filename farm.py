@@ -2238,6 +2238,55 @@ class Orze:
 
         return cmd
 
+    def _kill_orphans(self):
+        """Kill orphaned train/eval processes from a previous Orze instance.
+
+        On startup, scan for processes that match our command patterns
+        (train_idea.py, evaluate_dataset.py) with our results dir in their
+        cmdline, but whose parent is init (PPID=1) — i.e. orphans.
+        Kill their entire process groups.
+        """
+        my_pid = os.getpid()
+        results_str = str(self.results_dir)
+        patterns = ["train_idea.py", "evaluate_dataset.py",
+                     "evaluate_nexar_test.py"]
+        killed = 0
+
+        try:
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                pid = int(entry)
+                if pid == my_pid:
+                    continue
+                try:
+                    stat = Path(f"/proc/{pid}/stat").read_text()
+                    ppid = int(stat.split(")")[1].split()[1])
+                    if ppid != 1:
+                        continue  # Not an orphan
+                    cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+                    cmdline_str = cmdline.decode("utf-8", errors="replace")
+                    # Check it matches our patterns AND our results dir
+                    if (results_str in cmdline_str and
+                            any(p in cmdline_str for p in patterns)):
+                        # Kill the entire process group
+                        try:
+                            pgid = os.getpgid(pid)
+                            os.killpg(pgid, signal.SIGKILL)
+                            killed += 1
+                            logger.info("Killed orphan process group %d "
+                                        "(leader PID %d)", pgid, pid)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+                except (FileNotFoundError, ValueError, IndexError,
+                        PermissionError, OSError):
+                    continue
+        except OSError:
+            pass
+
+        if killed:
+            logger.info("Cleaned up %d orphaned process group(s)", killed)
+
     def _write_pid_file(self):
         """Write host-specific PID file for clean stop via --stop or kill."""
         hostname = socket.gethostname()
@@ -2273,6 +2322,7 @@ class Orze:
     def run(self):
         cfg = self.cfg
         self._write_pid_file()
+        self._kill_orphans()
         # Clear any stale shutdown sentinels from a previous run
         for sentinel_name in [".orze_shutdown", ".orze_stop_all"]:
             sentinel = self.results_dir / sentinel_name
