@@ -1943,6 +1943,9 @@ class Orze:
                             except (json.JSONDecodeError, OSError,
                                     KeyError, UnicodeDecodeError):
                                 pass
+                    if metric_val is None:
+                        # Last resort: use training's internal test AUC
+                        metric_val = deep_get(m, "test_metrics.auc_roc")
                     t_time = m.get("training_time") or None
                     notify("completed", {
                         "idea_id": idea_id, "title": title,
@@ -2440,7 +2443,6 @@ class Orze:
                                         (idea_id, gpu))
                             else:
                                 self.pending_evals.append((idea_id, gpu))
-                                eval_finished.append((idea_id, gpu))
                                 logger.info(
                                     "Eval deferred for %s (limit %d)",
                                     idea_id, max_evals)
