@@ -1964,12 +1964,13 @@ class Orze:
                             deep_get(m, "test_metrics.auc_roc"))
                     t_time = m.get("training_time") or None
                     # Format metric to 4 decimal places
-                    if isinstance(metric_val, float):
-                        metric_val = round(metric_val, 4)
+                    fmt_val = (f"{metric_val:.4f}"
+                               if isinstance(metric_val, (int, float))
+                               else metric_val)
                     notify("completed", {
                         "idea_id": idea_id, "title": title,
                         "metric_name": primary,
-                        "metric_value": metric_val,
+                        "metric_value": fmt_val,
                         "training_time": t_time,
                         "rank": rank_lookup.get(idea_id, "?"),
                         "leaderboard": leaderboard,
@@ -1987,13 +1988,14 @@ class Orze:
                 if (self._best_idea_id is not None
                         and current_best != self._best_idea_id):
                     best_val = completed_rows[0].get("primary_val")
-                    if isinstance(best_val, float):
-                        best_val = round(best_val, 4)
+                    fmt_best = (f"{best_val:.4f}"
+                                if isinstance(best_val, (int, float))
+                                else best_val)
                     notify("new_best", {
                         "idea_id": current_best,
                         "title": completed_rows[0]["title"],
                         "metric_name": primary,
-                        "metric_value": best_val,
+                        "metric_value": fmt_best,
                         "prev_best_id": self._best_idea_id,
                         "leaderboard": leaderboard,
                     }, cfg)
