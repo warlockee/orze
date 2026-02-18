@@ -2101,7 +2101,7 @@ class Orze:
             cmd.extend(["--model", model])
 
         # --allowedTools (default: let Claude read/write files)
-        allowed_tools = research_cfg.get("allowed_tools") or "Read,Write,Edit,Glob,Grep,Bash"
+        allowed_tools = research_cfg.get("allowed_tools") or "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
         cmd.extend(["--allowedTools", str(allowed_tools)])
 
         # --output-format
