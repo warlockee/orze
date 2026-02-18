@@ -1919,13 +1919,18 @@ class Orze:
 
                 if status == "COMPLETED":
                     # Use primary_val from report rows (reads from
-                    # nexar_test_report.json etc.), fall back to metrics.json
+                    # fedex_test_report.json etc.), fall back to metrics.json
                     row = row_lookup.get(idea_id, {})
                     metric_val = row.get("primary_val") or m.get(primary)
                     t_time = m.get("training_time", 0)
                     if not t_time:
-                        t_time = m.get("training_log_summary", {}).get(
-                            "total_training_time", 0)
+                        # Fallback: compute from idea dir timestamps
+                        try:
+                            idea_dir = self.results_dir / idea_id
+                            t_time = (m_path.stat().st_mtime
+                                      - idea_dir.stat().st_mtime)
+                        except OSError:
+                            t_time = 0
                     notify("completed", {
                         "idea_id": idea_id, "title": title,
                         "metric_name": primary,
