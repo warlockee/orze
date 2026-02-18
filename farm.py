@@ -640,12 +640,43 @@ def cleanup_orphans(results_dir: Path, hours: float) -> int:
 # Process checking (with health monitoring)
 # ---------------------------------------------------------------------------
 
+def _adaptive_stall_minutes(results_dir: Path, configured: int) -> int:
+    """Compute adaptive stall timeout: min(configured, max(5, 2x median training time)).
+    Falls back to configured value if not enough data."""
+    if configured <= 0:
+        return 0
+    times = []
+    try:
+        for d in results_dir.iterdir():
+            if not d.is_dir() or not d.name.startswith("idea-"):
+                continue
+            mp = d / "metrics.json"
+            if not mp.exists():
+                continue
+            m = json.loads(mp.read_text(encoding="utf-8"))
+            if m.get("status") == "COMPLETED" and m.get("training_time"):
+                times.append(m["training_time"])
+    except Exception:
+        pass
+    if len(times) < 3:
+        return configured
+    times.sort()
+    median_min = times[len(times) // 2] / 60.0
+    adaptive = max(5, int(median_min * 2 + 0.5))
+    effective = min(configured, adaptive)
+    if effective != configured:
+        logger.debug("Adaptive stall: median=%.1fm → effective=%dm (configured=%dm)",
+                     median_min, effective, configured)
+    return effective
+
+
 def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                  cfg: dict, failure_counts: dict) -> list:
     """Check running processes. Reap completed/timed-out/stalled/OOM.
     Returns list of (idea_id, gpu) tuples for finished ideas."""
     finished = []
-    stall_minutes = cfg.get("stall_minutes", 0)
+    stall_minutes = _adaptive_stall_minutes(
+        results_dir, cfg.get("stall_minutes", 0))
 
     for gpu in list(active.keys()):
         tp = active[gpu]
@@ -870,8 +901,11 @@ def check_active_evals(active_evals: Dict[int, EvalProcess],
             logger.info("[EVAL OK] %s on GPU %d in %.1fm",
                         ep.idea_id, gpu, elapsed / 60)
         else:
-            logger.warning("[EVAL FAILED] %s on GPU %d — exit %d",
-                           ep.idea_id, gpu, ret)
+            # Log tail of eval output for diagnosis
+            eval_tail = tail_file(ep.log_path, 2048).strip()
+            logger.warning("[EVAL FAILED] %s on GPU %d — exit %d\n%s",
+                           ep.idea_id, gpu, ret,
+                           eval_tail[-500:] if eval_tail else "(no output)")
         del active_evals[gpu]
         finished.append((ep.idea_id, gpu))
 
@@ -1527,67 +1561,6 @@ def notify(event: str, data: dict, cfg: dict):
 
 
 # ---------------------------------------------------------------------------
-# Telegram command receiver
-# ---------------------------------------------------------------------------
-
-def _get_telegram_channel(cfg: dict) -> Optional[dict]:
-    """Find first Telegram channel from notifications config. Returns None if absent."""
-    ncfg = cfg.get("notifications") or {}
-    for ch in (ncfg.get("channels") or []):
-        if ch.get("type") == "telegram" and ch.get("bot_token") and ch.get("chat_id"):
-            return ch
-    return None
-
-
-def _telegram_get_updates(token: str, offset: int = 0,
-                          timeout: int = 1) -> list:
-    """Fetch new messages via Telegram getUpdates. Never raises."""
-    try:
-        params = {"offset": offset, "timeout": timeout}
-        url = f"https://api.telegram.org/bot{token}/getUpdates"
-        data = json.dumps(params).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, method="POST",
-            headers={"Content-Type": "application/json",
-                     "User-Agent": f"orze/{__version__}"},
-        )
-        resp = urllib.request.urlopen(req, timeout=timeout + 5)
-        result = json.loads(resp.read().decode("utf-8"))
-        if result.get("ok"):
-            return result.get("result", [])
-    except Exception as e:
-        logger.debug("Telegram getUpdates error: %s", e)
-    return []
-
-
-def _telegram_send_reply(token: str, chat_id: str, text: str):
-    """Send a short reply to Telegram. Never raises."""
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text[:4096]}
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, method="POST",
-            headers={"Content-Type": "application/json",
-                     "User-Agent": f"orze/{__version__}"},
-        )
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as e:
-        logger.debug("Telegram send reply error: %s", e)
-
-
-def _append_user_command(cmd_file: Path, text: str):
-    """Append a user command to user_command.md with timestamp."""
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    entry = f"\n## {ts}\n{text}\n"
-    try:
-        with open(cmd_file, "a", encoding="utf-8") as f:
-            f.write(entry)
-    except Exception as e:
-        logger.warning("Failed to append user command: %s", e)
-
-
-# ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
 
@@ -1652,19 +1625,8 @@ class Orze:
         # Per-role agent state: {role_name: {"cycles": int, "last_run_time": float}}
         self.role_states: Dict[str, dict] = state.get("roles", {})
         self._best_idea_id: Optional[str] = state.get("best_idea_id")
-        self._telegram_offset: int = state.get("telegram_offset", 0)
-        self._user_cmd_file = self.results_dir / "user_command.md"
 
         self.results_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create user_command.md if it doesn't exist
-        if not self._user_cmd_file.exists():
-            self._user_cmd_file.write_text(
-                "# User Commands\n\n"
-                "Messages from Telegram are appended here.\n"
-                "The research agent checks this file for pending commands.\n",
-                encoding="utf-8",
-            )
 
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
@@ -1703,7 +1665,6 @@ class Orze:
             "failure_counts": self.failure_counts,
             "roles": self.role_states,
             "best_idea_id": self._best_idea_id,
-            "telegram_offset": self._telegram_offset,
         })
         logger.info("Shutdown complete.")
         sys.exit(0)
@@ -1857,12 +1818,83 @@ class Orze:
                 n_unclaimed = len(get_unclaimed(
                     ideas, self.results_dir, skipped))
                 n_gpus = len(self.gpu_ids)
-                # Starving: fewer queued ideas than 2x GPU count
+
+                # --- Adaptive cooldown: scale with queue depth ---
+                # When queue is deep, slow down to save API costs.
+                # When shallow, keep configured cooldown or trigger early.
                 if n_unclaimed < n_gpus * 2:
                     queue_starving = True
                     logger.info(
                         "Queue low (%d unclaimed, %d GPUs) — "
                         "triggering research early", n_unclaimed, n_gpus)
+                elif n_unclaimed > n_gpus * 8:
+                    # Queue is deep — double the cooldown
+                    cooldown = cooldown * 2
+                    logger.debug(
+                        "Queue deep (%d unclaimed, %d GPUs) — "
+                        "cooldown extended to %ds", n_unclaimed, n_gpus,
+                        cooldown)
+
+                # --- Convergence slowdown ---
+                # If primary metric hasn't improved in N completed ideas,
+                # multiply cooldown. Uses completed count as a stable
+                # monotonic signal (not wall-clock time).
+                patience = self.cfg.get("convergence_patience", 0)
+                if patience > 0:
+                    best_val = role_state.get("_best_metric_val")
+                    best_at = role_state.get("_best_metric_at", 0)
+                    counts = _count_statuses(ideas, self.results_dir)
+                    n_completed = counts.get("COMPLETED", 0)
+
+                    # Read current best from completed rows
+                    primary = self.cfg["report"].get(
+                        "primary_metric", "test_accuracy")
+                    sort_desc = self.cfg["report"].get(
+                        "sort", "descending") == "descending"
+                    cur_best = None
+                    for d in self.results_dir.iterdir():
+                        if not d.is_dir() or not d.name.startswith("idea-"):
+                            continue
+                        mp = d / "metrics.json"
+                        if not mp.exists():
+                            continue
+                        try:
+                            m = json.loads(
+                                mp.read_text(encoding="utf-8"))
+                            if m.get("status") != "COMPLETED":
+                                continue
+                            v = m.get(primary)
+                            if v is None:
+                                continue
+                            if cur_best is None:
+                                cur_best = v
+                            elif sort_desc and v > cur_best:
+                                cur_best = v
+                            elif not sort_desc and v < cur_best:
+                                cur_best = v
+                        except Exception:
+                            continue
+
+                    if cur_best is not None:
+                        improved = False
+                        if best_val is None:
+                            improved = True
+                        elif sort_desc and cur_best > best_val:
+                            improved = True
+                        elif not sort_desc and cur_best < best_val:
+                            improved = True
+
+                        if improved:
+                            role_state["_best_metric_val"] = cur_best
+                            role_state["_best_metric_at"] = n_completed
+                        elif n_completed - best_at >= patience:
+                            stale = n_completed - best_at
+                            multiplier = 1 + (stale // patience)
+                            cooldown = int(cooldown * multiplier)
+                            logger.info(
+                                "Convergence: no improvement in %d ideas "
+                                "(best=%s at %d) — cooldown %ds",
+                                stale, best_val, best_at, cooldown)
             except Exception:
                 pass
 
@@ -1888,7 +1920,6 @@ class Orze:
             "completed": counts.get("COMPLETED", 0),
             "queued": counts.get("QUEUED", 0),
             "role_name": role_name,
-            "user_command_file": str(self._user_cmd_file),
         }
 
         # Build command based on mode
@@ -1953,40 +1984,6 @@ class Orze:
         for role_name, role_cfg in (self.cfg.get("roles") or {}).items():
             if isinstance(role_cfg, dict):
                 self._run_role_step(role_name, role_cfg)
-
-    def _poll_telegram_commands(self) -> bool:
-        """Poll Telegram for new user messages, append to user_command.md.
-
-        Returns True if new commands were received (caller should
-        force-trigger research role).
-        """
-        tg = _get_telegram_channel(self.cfg)
-        if not tg:
-            return False
-
-        token = tg["bot_token"]
-        chat_id = str(tg["chat_id"])
-        updates = _telegram_get_updates(token, offset=self._telegram_offset)
-        new_commands = False
-
-        for update in updates:
-            self._telegram_offset = update.get("update_id", 0) + 1
-            msg = update.get("message") or {}
-            text = (msg.get("text") or "").strip()
-            msg_chat_id = str(msg.get("chat", {}).get("id", ""))
-
-            if not text or msg_chat_id != chat_id:
-                continue
-
-            logger.info("Telegram command from %s: %s",
-                        msg_chat_id, text[:100])
-            _append_user_command(self._user_cmd_file, text)
-            _telegram_send_reply(
-                token, chat_id,
-                f"Received: {text[:200]}\nWill be executed by research agent.")
-            new_commands = True
-
-        return new_commands
 
     def _build_claude_cmd(self, research_cfg: dict,
                           template_vars: dict) -> Optional[List[str]]:
@@ -2092,16 +2089,6 @@ class Orze:
             # 3b. Run post-scripts for evals that just completed
             for idea_id, gpu in eval_finished:
                 run_post_scripts(idea_id, gpu, self.results_dir, cfg)
-
-            # 3c. Poll Telegram for user commands
-            has_new_cmd = self._poll_telegram_commands()
-            if has_new_cmd:
-                # Force-trigger research role immediately (bypass cooldown)
-                research_cfg = (cfg.get("roles") or {}).get("research")
-                if research_cfg and isinstance(research_cfg, dict):
-                    rs = self.role_states.get("research", {})
-                    rs["last_run_time"] = 0  # reset cooldown
-                    logger.info("New user command — triggering research now")
 
             # 4. Run agent roles (research, documenter, etc.)
             self._run_all_roles()
@@ -2317,7 +2304,6 @@ class Orze:
                 "failure_counts": self.failure_counts,
                 "roles": self.role_states,
                 "best_idea_id": self._best_idea_id,
-            "telegram_offset": self._telegram_offset,
             })
 
             if self.once:
@@ -2367,7 +2353,6 @@ class Orze:
                         "failure_counts": self.failure_counts,
                         "roles": self.role_states,
                         "best_idea_id": self._best_idea_id,
-            "telegram_offset": self._telegram_offset,
                     })
                 logger.info("Done.")
                 break
@@ -2511,7 +2496,6 @@ Examples:
             "failure_counts": orze.failure_counts,
             "roles": orze.role_states,
             "best_idea_id": orze._best_idea_id,
-            "telegram_offset": orze._telegram_offset,
         })
         return
 
