@@ -12,7 +12,7 @@ Orze runs the full research loop: **generate ideas → train → evaluate → le
 curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
 ```
 
-This downloads 4 files into `orze/` under your project root. Then tell [**claude**|**gemini**|**codex**|whatever]:
+This downloads the orze files into `orze/` under your project root. Then tell [**claude**|**gemini**|**codex**|whatever]:
 
 ```
 do @orze/AGENT.md
@@ -79,6 +79,7 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Parallel eval** — eval scripts launch non-blocking so GPUs stay busy
 - **Health monitoring** — stall detection, OOM detection, disk space checks
 - **Push notifications** — Telegram, Slack, Discord, or any webhook. Every message includes the top 10 leaderboard
+- **Telegram bot** — text back to the bot in natural language to check status, query results, or add ideas from your phone
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
@@ -105,6 +106,27 @@ notifications:
 
 Events: `completed`, `failed`, `new_best`, `report`. Supports per-channel filtering (`on: [new_best, failed]`) and generic webhooks.
 
+### Telegram Bot
+
+Text back to the Telegram bot in natural language. The companion `bot.py` process receives your messages and routes them to an LLM that has full context of your orze system.
+
+Built-in commands respond instantly (no LLM): `/status`, `/top`, `/help`, `/ping`. Everything else goes to the LLM agent.
+
+```bash
+# Start alongside farm.py
+nohup python orze/bot.py -c orze.yaml >> results/bot.log 2>&1 &
+```
+
+Uses the same `bot_token`/`chat_id` from your notifications config. Optional dedicated config:
+
+```yaml
+telegram_bot:
+  mode: claude              # or "script" for GPT/Gemini/local
+  model: sonnet
+  timeout: 120
+  rate_limit: 10            # max messages per minute
+```
+
 ## Self-Healing
 
 Orze ships with `bug_fixer.py` — a lifetime watchdog that runs alongside `farm.py` and keeps the system healthy:
@@ -119,9 +141,10 @@ Orze ships with `bug_fixer.py` — a lifetime watchdog that runs alongside `farm
 The watchdog **only touches orze platform code** (`farm.py`). It never modifies your training scripts, configs, or data.
 
 ```bash
-# Always launch both together
+# Launch all companions together
 nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
 nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
+nohup python orze/bot.py -c orze.yaml >> results/bot.log 2>&1 &  # optional
 ```
 
 Optional tuning in `orze.yaml`:
