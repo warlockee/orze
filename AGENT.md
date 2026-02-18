@@ -139,9 +139,10 @@ python orze/farm.py -c orze.yaml --once --gpus 0
 
 nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
 nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
+nohup python orze/bot.py -c orze.yaml >> results/bot.log 2>&1 &  # optional, if Telegram configured
 ```
 
-Run the smoke test first. If it fails, fix the issue and retry. Once it passes, launch both processes.
+Run the smoke test first. If it fails, fix the issue and retry. Once it passes, launch all processes.
 
 ## The bug-fixer agent
 
@@ -191,6 +192,7 @@ When launching orze, **always start bug_fixer.py alongside farm.py**. They are d
 ```bash
 nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
 nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
+nohup python orze/bot.py -c orze.yaml >> results/bot.log 2>&1 &  # optional
 ```
 
 If farm.py dies, the bug-fixer will detect it within 60 seconds and restart it. If the bug-fixer itself dies, re-launch it manually. Consider using `supervisord`, `systemd`, or a cron watchdog for both processes in production.
@@ -207,10 +209,12 @@ project/
 ├── train.py               # Training script
 ├── orze/                  # Framework (don't edit)
 │   ├── farm.py            # Main orchestrator
-│   └── bug_fixer.py       # Self-healing watchdog
+│   ├── bug_fixer.py       # Self-healing watchdog
+│   └── bot.py             # Telegram bot (optional)
 └── results/               # Auto-generated
     ├── farm.log            # Orchestrator log
     ├── bug_fixer.log       # Watchdog log
+    ├── bot.log             # Telegram bot log
     └── bug_fixer_issues/   # Issue audit trail
 ```
 

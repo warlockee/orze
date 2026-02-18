@@ -115,6 +115,25 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 #       headers:
 #         Authorization: "Bearer tok"
 
+# --- Telegram bot (optional) ---
+# Bidirectional companion: text back to the Telegram bot in natural language.
+# Runs as a separate process: python orze/bot.py -c orze.yaml
+# Uses bot_token/chat_id from notifications.channels[telegram] by default.
+# telegram_bot:
+#   mode: claude              # or "script" for GPT/Gemini/local
+#   model: sonnet             # claude model
+#   allowed_tools: "Read,Glob,Grep,Bash"
+#   timeout: 120              # max LLM response time (seconds)
+#   rate_limit: 10            # max messages per minute
+#   poll_timeout: 30          # getUpdates long-poll seconds
+#   # bot_token: "..."        # override (falls back to notifications config)
+#   # chat_id: "..."          # override; also used for auth
+#   # For mode: script
+#   # script: my_bot_handler.py
+#   # args: ["--message", "{message}"]
+#   # env:
+#   #   OPENAI_API_KEY: sk-...
+
 # --- Garbage collection (optional) ---
 # cleanup:
 #   interval: 100                     # run every N iterations
