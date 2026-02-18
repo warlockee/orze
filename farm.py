@@ -1718,23 +1718,44 @@ class Orze:
         signal.signal(signal.SIGTERM, self._shutdown)
 
     def _shutdown(self, signum, frame):
-        logger.info("Received signal %d, shutting down gracefully...", signum)
+        """Signal handler — just sets flag so the main loop exits cleanly."""
+        if not self.running:
+            # Second signal = force exit
+            logger.warning("Forced exit (second signal).")
+            sys.exit(1)
+        logger.info("Received signal %d, will shut down after current step...",
+                     signum)
         self.running = False
-        # Terminate all training processes first
+
+    def _graceful_shutdown(self):
+        """Terminate all child processes, save state, and clean up.
+
+        Called from the main loop after self.running becomes False,
+        NOT from the signal handler (avoids re-entrancy issues).
+        """
+        logger.info("Shutting down gracefully...")
+
+        # 1. Send SIGTERM to all child processes
         for gpu, tp in self.active.items():
-            logger.info("Terminating %s on GPU %d...", tp.idea_id, gpu)
+            logger.info("Terminating training %s on GPU %d...",
+                        tp.idea_id, gpu)
             tp.process.terminate()
-        # Terminate all eval processes
         for gpu, ep in self.active_evals.items():
-            logger.info("Terminating eval %s on GPU %d...", ep.idea_id, gpu)
+            logger.info("Terminating eval %s on GPU %d...",
+                        ep.idea_id, gpu)
             ep.process.terminate()
-        deadline = time.time() + 300
+        for role_name, rp in self.active_roles.items():
+            logger.info("Terminating role '%s'...", role_name)
+            rp.process.terminate()
+
+        # 2. Wait for graceful exit (up to 30s), then SIGKILL stragglers
+        deadline = time.time() + 30
         for gpu, tp in self.active.items():
             remaining = max(1, deadline - time.time())
             try:
                 tp.process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
-                logger.warning("Force killing %s", tp.idea_id)
+                logger.warning("Force killing training %s", tp.idea_id)
                 tp.process.kill()
                 tp.process.wait(timeout=5)
             tp.close_log()
@@ -1743,17 +1764,41 @@ class Orze:
             try:
                 ep.process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
+                logger.warning("Force killing eval %s", ep.idea_id)
                 ep.process.kill()
-                ep.process.wait()
+                ep.process.wait(timeout=5)
             ep.close_log()
+        for role_name, rp in self.active_roles.items():
+            remaining = max(1, deadline - time.time())
+            try:
+                rp.process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                logger.warning("Force killing role '%s'", role_name)
+                rp.process.kill()
+                rp.process.wait(timeout=5)
+            rp.close_log()
+            _fs_unlock(rp.lock_dir)
+
+        # 3. Save state for restart recovery
         save_state(self.results_dir, {
             "iteration": self.iteration,
             "failure_counts": self.failure_counts,
             "roles": self.role_states,
             "best_idea_id": self._best_idea_id,
         })
-        logger.info("Shutdown complete.")
-        sys.exit(0)
+
+        # 4. Notify (best effort)
+        try:
+            notify("report", {
+                "title": "Orze shutting down",
+                "message": (f"Graceful shutdown after iteration "
+                            f"{self.iteration}"),
+            }, self.cfg)
+        except Exception:
+            pass
+
+        logger.info("Shutdown complete. State saved at iteration %d.",
+                     self.iteration)
 
     def _build_machine_status(self) -> list:
         """Build machine status from heartbeats for report notifications."""
@@ -2450,6 +2495,17 @@ class Orze:
 
             time.sleep(cfg["poll"])
 
+        # Main loop exited (signal received or --once finished)
+        if self.active or self.active_evals or self.active_roles:
+            self._graceful_shutdown()
+        else:
+            # Nothing running, just save state
+            save_state(self.results_dir, {
+                "iteration": self.iteration,
+                "failure_counts": self.failure_counts,
+                "roles": self.role_states,
+                "best_idea_id": self._best_idea_id,
+            })
         logger.info("Exited after %d iterations.", self.iteration)
 
 
