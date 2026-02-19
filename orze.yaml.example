@@ -134,9 +134,26 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 
 # --- Notifications (optional) ---
 # Push updates to Telegram, Slack, Discord, or any webhook.
+#
+# Events:
+#   completed      — experiment finished successfully
+#   failed         — experiment failed
+#   new_best       — new leaderboard #1
+#   report         — periodic leaderboard summary
+#   started        — orze started (always delivered)
+#   shutdown       — orze shutting down (always delivered)
+#   heartbeat      — periodic status pulse (always delivered)
+#   milestone      — every N completions (always delivered)
+#   disk_warning   — low disk space (always delivered)
+#   stall          — training timeout/stall/OOM (always delivered)
+#   role_summary   — research agent finished (always delivered)
+#
 # notifications:
 #   enabled: true
 #   on: [completed, failed, new_best]  # global event filter
+#   heartbeat_interval: 1800           # seconds between heartbeats (0=off)
+#   milestone_every: 100               # notify every N completions (0=off)
+#   report_interval: 0                 # seconds between report summaries (0=off)
 #   channels:
 #     - type: telegram
 #       bot_token: "123456:ABC-DEF"
