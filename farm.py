@@ -39,7 +39,7 @@ import atexit
 
 import yaml
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 logger = logging.getLogger("orze")
 
@@ -851,6 +851,8 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if elapsed > tp.timeout:
                 logger.warning("[TIMEOUT] %s after %.0fm — killing",
                                tp.idea_id, elapsed / 60)
+                notify("stall", {"idea_id": tp.idea_id, "gpu": gpu,
+                                 "reason": f"Timeout after {elapsed / 60:.0f}m"}, cfg)
                 _terminate_and_reap(tp.process, tp.idea_id)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id, "Timed out")
@@ -862,6 +864,8 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if check_stalled(tp, stall_minutes):
                 logger.warning("[STALLED] %s — no log output for %dm, killing",
                                tp.idea_id, stall_minutes)
+                notify("stall", {"idea_id": tp.idea_id, "gpu": gpu,
+                                 "reason": f"Stalled ({stall_minutes}m no output)"}, cfg)
                 _terminate_and_reap(tp.process, tp.idea_id)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id,
@@ -874,6 +878,8 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
             if detect_oom(tp) and tp.process.poll() is None:
                 logger.warning("[OOM] %s — CUDA out of memory detected, killing",
                                tp.idea_id)
+                notify("stall", {"idea_id": tp.idea_id, "gpu": gpu,
+                                 "reason": "CUDA out of memory"}, cfg)
                 _terminate_and_reap(tp.process, tp.idea_id)
                 tp.close_log()
                 _write_failure(results_dir / tp.idea_id, "CUDA out of memory")
@@ -1610,8 +1616,31 @@ def _format_report_text(data: dict, monospace: bool = False) -> str:
 def _format_slack(event: str, data: dict) -> dict:
     """Format notification for Slack webhook."""
     if event == "report":
-        text = f"```\n{_format_report_text(data)}\n```"
-        return {"text": text}
+        return {"text": f"```\n{_format_report_text(data)}\n```"}
+    if event in ("started", "shutdown"):
+        icon = ":arrow_forward:" if event == "started" else ":stop_button:"
+        host = data.get("host", socket.gethostname())
+        return {"text": f"{icon} *Orze {event}* on `{host}`\n{data.get('message', '')}"}
+    if event == "heartbeat":
+        host = data.get("host", socket.gethostname())
+        return {"text": (f":green_heart: *Heartbeat* on `{host}` | "
+                         f"Iter {data.get('iteration', '?')} | "
+                         f"Up {data.get('uptime', '?')} | "
+                         f"{data.get('training', 0)}T/{data.get('eval', 0)}E/"
+                         f"{data.get('free', 0)}F GPUs | "
+                         f"Done {data.get('completed', 0)} | "
+                         f"Q {data.get('queued', 0)}")}
+    if event == "milestone":
+        return {"text": f":dart: *Milestone: {data.get('count', '?')} experiments completed!*"}
+    if event == "disk_warning":
+        return {"text": f":warning: *Low disk* on `{data.get('host', socket.gethostname())}` — "
+                        f"only {data.get('free_gb', '?')}GB free"}
+    if event == "stall":
+        return {"text": f":rotating_light: *{data.get('reason', 'Stalled')}*: "
+                        f"`{data.get('idea_id', '?')}` on GPU {data.get('gpu', '?')}"}
+    if event == "role_summary":
+        return {"text": f":test_tube: *{data.get('role', '?')}* finished | "
+                        f"{data.get('new_ideas', 0)} new ideas | {data.get('queued', '?')} queued"}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         text = (f":trophy: *NEW BEST* `{data['idea_id']}`: {data['title']}\n"
@@ -1642,6 +1671,29 @@ def _format_discord(event: str, data: dict) -> dict:
     """Format notification for Discord webhook."""
     if event == "report":
         return {"content": f"```\n{_format_report_text(data)}\n```"}
+    if event in ("started", "shutdown"):
+        icon = "\u25b6\ufe0f" if event == "started" else "\u23f9\ufe0f"
+        host = data.get("host", socket.gethostname())
+        return {"content": f"{icon} **Orze {event}** on `{host}`\n{data.get('message', '')}"}
+    if event == "heartbeat":
+        host = data.get("host", socket.gethostname())
+        return {"content": (f"\U0001f49a **Heartbeat** on `{host}` | "
+                            f"Iter {data.get('iteration', '?')} | "
+                            f"Up {data.get('uptime', '?')} | "
+                            f"{data.get('training', 0)}T/{data.get('eval', 0)}E/"
+                            f"{data.get('free', 0)}F GPUs | "
+                            f"Done {data.get('completed', 0)} | Q {data.get('queued', 0)}")}
+    if event == "milestone":
+        return {"content": f"\U0001f3af **Milestone: {data.get('count', '?')} experiments completed!**"}
+    if event == "disk_warning":
+        return {"content": f"\u26a0\ufe0f **Low disk** on `{data.get('host', socket.gethostname())}` — "
+                           f"only {data.get('free_gb', '?')}GB free"}
+    if event == "stall":
+        return {"content": f"\U0001f6a8 **{data.get('reason', 'Stalled')}**: "
+                           f"`{data.get('idea_id', '?')}` on GPU {data.get('gpu', '?')}"}
+    if event == "role_summary":
+        return {"content": f"\U0001f9ea **{data.get('role', '?')}** finished | "
+                           f"{data.get('new_ideas', 0)} new ideas | {data.get('queued', '?')} queued"}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         content = (f"**NEW BEST** `{data['idea_id']}`: {data['title']}\n"
@@ -1687,6 +1739,48 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
         text = f"{icon} <b>Orze {event}</b> on <code>{host}</code>\n{msg}"
         return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 
+    if event == "heartbeat":
+        host = esc(data.get("host", socket.gethostname()))
+        lines = [f"\U0001f49a <b>Heartbeat</b> on <code>{host}</code>"]
+        lines.append(f"Iter {data.get('iteration', '?')} | "
+                      f"Up {esc(str(data.get('uptime', '?')))} | "
+                      f"GPUs {data.get('training', 0)}T/{data.get('eval', 0)}E/"
+                      f"{data.get('free', 0)}F")
+        lines.append(f"Completed {data.get('completed', 0)} | "
+                      f"Queued {data.get('queued', 0)} | "
+                      f"Failed {data.get('failed', 0)}")
+        if data.get("eval_backlog"):
+            lines.append(f"Eval backlog: {data['eval_backlog']}")
+        if data.get("rate"):
+            lines.append(f"Rate: {data['rate']}")
+        return url, {"chat_id": chat_id, "text": "\n".join(lines),
+                     "parse_mode": "HTML"}
+
+    if event == "milestone":
+        text = (f"\U0001f3af <b>Milestone: {esc(str(data.get('count', '?')))} "
+                f"experiments completed!</b>")
+        return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+
+    if event == "disk_warning":
+        text = (f"\u26a0\ufe0f <b>Low disk</b> on <code>"
+                f"{esc(data.get('host', socket.gethostname()))}</code>\n"
+                f"Only {data.get('free_gb', '?')}GB free")
+        return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+
+    if event == "stall":
+        reason = esc(str(data.get("reason", "stalled")))
+        text = (f"\U0001f6a8 <b>{reason}</b>: <code>"
+                f"{esc(str(data.get('idea_id', '?')))}</code> on GPU "
+                f"{data.get('gpu', '?')}")
+        return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+
+    if event == "role_summary":
+        role = esc(str(data.get("role", "?")))
+        text = (f"\U0001f9ea <b>{role}</b> finished | "
+                f"{data.get('new_ideas', 0)} new ideas | "
+                f"{data.get('queued', '?')} queued")
+        return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+
     idea_id = esc(str(data.get("idea_id", "")))
     title = esc(str(data.get("title", "")))
 
@@ -1729,8 +1823,9 @@ def notify(event: str, data: dict, cfg: dict):
             return
 
         global_on = ncfg.get("on") or ["completed", "failed", "new_best"]
-        # Lifecycle events always delivered (not filtered)
-        lifecycle = {"started", "shutdown"}
+        # Lifecycle/system events always delivered (not filtered)
+        lifecycle = {"started", "shutdown", "heartbeat", "milestone",
+                     "disk_warning", "stall", "role_summary"}
 
         for ch in (ncfg.get("channels") or []):
             ch_on = ch.get("on") or global_on
@@ -1829,6 +1924,11 @@ class Orze:
         # Per-role agent state: {role_name: {"cycles": int, "last_run_time": float}}
         self.role_states: Dict[str, dict] = state.get("roles", {})
         self._best_idea_id: Optional[str] = state.get("best_idea_id")
+        self._start_time: float = time.time()
+        self._last_heartbeat: float = 0.0
+        self._hb_completed_count: int = 0  # for heartbeat rate calc
+        self._last_milestone: int = 0      # last milestone boundary hit
+        self._last_disk_warning: float = 0.0
 
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2313,14 +2413,28 @@ class Orze:
                 role_state["consecutive_failures"] = 0
                 # Output validation: warn if ideas file wasn't modified
                 ideas_file = Path(self.cfg.get("ideas_file", "ideas.md"))
+                ideas_modified = False
                 if ideas_file.exists():
                     ideas_age = time.time() - ideas_file.stat().st_mtime
                     role_timeout = (self.cfg.get("roles") or {}).get(
                         role_name, {}).get("timeout", 600)
-                    if ideas_age > role_timeout:
+                    ideas_modified = ideas_age <= role_timeout
+                    if not ideas_modified:
                         logger.warning("%s completed successfully but ideas file "
                                        "was not modified (last change %.0fs ago)",
                                        role_name, ideas_age)
+                # Role summary notification
+                if ideas_modified:
+                    ideas_now = parse_ideas(self.cfg["ideas_file"])
+                    n_queued = len(get_unclaimed(ideas_now, self.results_dir, set()))
+                    prev_count = role_state.get("_prev_idea_count", 0)
+                    new_ideas = max(0, len(ideas_now) - prev_count)
+                    role_state["_prev_idea_count"] = len(ideas_now)
+                    notify("role_summary", {
+                        "role": role_name,
+                        "new_ideas": new_ideas,
+                        "queued": n_queued,
+                    }, self.cfg)
             else:
                 consec = role_state.get("consecutive_failures", 0) + 1
                 role_state["consecutive_failures"] = consec
@@ -2542,6 +2656,20 @@ class Orze:
                         f"{n_roles} roles | pid {os.getpid()}"),
         }, cfg)
 
+        # Initialize milestone from current state (avoid spurious on restart)
+        try:
+            init_ideas = parse_ideas(cfg["ideas_file"])
+            init_counts = _count_statuses(init_ideas, self.results_dir)
+            milestone_every = (cfg.get("notifications") or {}).get(
+                "milestone_every", 100)
+            if milestone_every > 0:
+                self._last_milestone = (
+                    init_counts.get("COMPLETED", 0) // milestone_every
+                ) * milestone_every
+                self._hb_completed_count = init_counts.get("COMPLETED", 0)
+        except Exception:
+            pass
+
         while self.running:
             self.iteration += 1
             ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -2671,6 +2799,7 @@ class Orze:
 
             # 6b. Backlog scan: fill remaining eval slots with
             #     completed-but-unevaluated ideas (newest first)
+            backlog = []
             if len(self.active_evals) < max_evals:
                 eval_output = cfg.get("eval_output",
                                       "nexar_test_report.json")
@@ -2808,6 +2937,59 @@ class Orze:
             # 8a. Notifications (fires for eval-finished ideas, metrics available)
             self._process_notifications(
                 eval_finished, completed_rows or [], ideas, counts)
+
+            # 8b. Heartbeat (rate-controlled, default 1800s = 30 min)
+            heartbeat_interval = (cfg.get("notifications") or {}).get(
+                "heartbeat_interval", 1800)
+            if heartbeat_interval > 0:
+                now_hb = time.time()
+                if now_hb - self._last_heartbeat >= heartbeat_interval:
+                    uptime_s = int(now_hb - self._start_time)
+                    h, rem = divmod(uptime_s, 3600)
+                    m = rem // 60
+                    uptime_str = f"{h}h{m:02d}m" if h else f"{m}m"
+                    busy_set = set(self.active.keys()) | set(self.active_evals.keys())
+                    n_free = len([g for g in self.gpu_ids if g not in busy_set])
+                    notify("heartbeat", {
+                        "host": socket.gethostname(),
+                        "iteration": self.iteration,
+                        "uptime": uptime_str,
+                        "training": len(self.active),
+                        "eval": len(self.active_evals),
+                        "free": n_free,
+                        "completed": counts.get("COMPLETED", 0),
+                        "queued": counts.get("QUEUED", 0),
+                        "failed": counts.get("FAILED", 0),
+                        "eval_backlog": len(backlog),
+                        "rate": (f"{counts.get('COMPLETED', 0) - self._hb_completed_count}"
+                                 f" since last heartbeat"),
+                    }, cfg)
+                    self._last_heartbeat = now_hb
+                    self._hb_completed_count = counts.get("COMPLETED", 0)
+
+            # 8c. Milestone (every N completions, default 100)
+            milestone_every = (cfg.get("notifications") or {}).get(
+                "milestone_every", 100)
+            if milestone_every > 0:
+                completed_now = counts.get("COMPLETED", 0)
+                curr_milestone = (completed_now // milestone_every) * milestone_every
+                if curr_milestone > self._last_milestone and curr_milestone > 0:
+                    notify("milestone", {"count": curr_milestone}, cfg)
+                    self._last_milestone = curr_milestone
+
+            # 8d. Disk warning (at most once per 30 min)
+            if not disk_ok and time.time() - self._last_disk_warning > 1800:
+                try:
+                    usage = shutil.disk_usage(self.results_dir)
+                    free_gb = usage.free / (1024 ** 3)
+                except Exception:
+                    free_gb = "?"
+                notify("disk_warning", {
+                    "host": socket.gethostname(),
+                    "free_gb": f"{free_gb:.1f}" if isinstance(free_gb, float) else free_gb,
+                }, cfg)
+                self._last_disk_warning = time.time()
+
             top_results = []
             if completed_rows:
                 primary = cfg["report"].get("primary_metric",
