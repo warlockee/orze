@@ -73,8 +73,9 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 
 ## Key Features
 
-- **Agent roles** — multiple agents (research, documenter, analyzer) run alongside training, each with their own cooldown and state
+- **Multi-LLM research army** — run Claude, Gemini, GPT, and local models as parallel research agents, each generating ideas independently. Just add role entries to `orze.yaml`
 - **LLM-agnostic** — built-in Claude Code support (`mode: claude`), or bring any LLM via `mode: script` (GPT, Gemini, local models, custom pipelines)
+- **Agent roles** — unlimited concurrent agents (research, documenter, analyzer) run alongside training, each with their own cooldown, state, and logs
 - **Multi-GPU** — claims and trains across all GPUs in parallel
 - **Parallel eval** — eval scripts launch non-blocking so GPUs stay busy
 - **Health monitoring** — stall detection, OOM detection, disk space checks
@@ -156,6 +157,56 @@ bug_fixer:
   stale_eval_min: 60        # kill idle eval after N minutes
   max_fixes_per_hour: 3     # rate limit on LLM fix sessions
 ```
+
+## Multi-LLM Research Army
+
+Run multiple LLMs as parallel research agents. Orze **auto-discovers API keys** from your environment — no config needed:
+
+```bash
+# Just export your keys and start orze
+export GEMINI_API_KEY="..."
+export OPENAI_API_KEY="sk-..."
+python orze/farm.py -c orze.yaml
+# → "Auto-discovered research backends: gemini (GEMINI_API_KEY), openai (OPENAI_API_KEY)"
+```
+
+That's it. Orze detects `GEMINI_API_KEY`, `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY` in the environment and automatically spins up research agents for each one. No YAML needed.
+
+For explicit control, add role entries to `orze.yaml`:
+
+```yaml
+roles:
+  # Claude — web search + code-aware idea generation
+  research:
+    mode: claude
+    rules_file: RESEARCH_RULES.md
+    model: sonnet
+    allowed_tools: "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
+
+  # Gemini
+  research_gemini:
+    mode: research
+    backend: gemini
+    env:
+      GEMINI_API_KEY: "your-key"
+
+  # GPT
+  research_gpt:
+    mode: research
+    backend: openai
+    env:
+      OPENAI_API_KEY: "sk-..."
+
+  # Local Ollama — free, no API key
+  research_local:
+    mode: research
+    backend: ollama
+    model: llama3
+```
+
+That's it. Each agent automatically reads your results, builds context from the leaderboard, generates ideas, and appends them to `ideas.md`. Supported backends: `gemini`, `openai`, `anthropic`, `ollama`, `custom` (any OpenAI-compatible endpoint).
+
+Optional settings per role: `model`, `endpoint`, `num_ideas`, `rules_file` (project-specific guidance), `cooldown`, `timeout`.
 
 ## The Contract
 

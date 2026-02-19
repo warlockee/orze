@@ -314,6 +314,12 @@ def restart_orze(cfg):
     results_dir = Path(cfg["_orze"].get("results_dir", "results"))
     log_file = results_dir / "farm.log"
 
+    # Respect persistent disable flag — never restart if disabled
+    disabled_file = results_dir / ".orze_disabled"
+    if disabled_file.exists():
+        logger.info("Orze is disabled (.orze_disabled exists) — will not restart")
+        return False
+
     # Clear shutdown sentinel so farm.py starts fresh
     sentinel = results_dir / ".orze_shutdown"
     if sentinel.exists():

@@ -59,35 +59,71 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 # --- Agent roles (optional) ---
 # Each role is an independently scheduled agent that runs alongside training.
 # Each gets its own cooldown, timeout, lock, state, and log directory.
-# Two modes per role: "script" (Python script) or "claude" (Claude CLI).
+# Two modes: "claude" (Claude CLI) or "script" (any Python script / LLM API).
+#
+# You can run MULTIPLE research agents in parallel using different LLMs.
+# Each reads the same results/ and ideas.md — orze trains everything they produce.
 #
 # roles:
-#   research:
+#
+#   # --- Multi-LLM research army ---
+#   # ZERO CONFIG: If you don't configure any research roles below, orze
+#   # auto-discovers API keys from environment (GEMINI_API_KEY, OPENAI_API_KEY,
+#   # ANTHROPIC_API_KEY) and creates research agents automatically.
+#   #
+#   # For explicit control, use mode: research with a backend name.
+#   # Supported backends: gemini, openai, anthropic, ollama, custom
+#
+#   research:                            # Claude — web search + code generation
 #     mode: claude
 #     rules_file: RESEARCH_RULES.md
+#     model: sonnet                      # sonnet, opus, haiku
 #     cooldown: 300
 #     timeout: 600
-#     model: sonnet
-#     allowed_tools: "Read,Write,Edit,Glob,Grep,Bash"
-#     log_dir: _research_logs          # relative to results_dir
+#     allowed_tools: "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
 #
-#   documenter:
+#   research_gemini:                     # Gemini
+#     mode: research
+#     backend: gemini
+#     env:
+#       GEMINI_API_KEY: "your-key"
+#
+#   research_gpt:                        # GPT
+#     mode: research
+#     backend: openai
+#     model: gpt-4o                      # optional, defaults to gpt-4o
+#     env:
+#       OPENAI_API_KEY: "sk-..."
+#
+#   research_local:                      # Local Ollama — free, no API key
+#     mode: research
+#     backend: ollama
+#     model: llama3
+#     cooldown: 120
+#
+#   # Optional mode: research settings:
+#   #   model: "model-name"             # override default model
+#   #   endpoint: "http://..."          # for ollama/custom backends
+#   #   num_ideas: 5                    # ideas per cycle (default: 5)
+#   #   rules_file: RESEARCH_RULES.md  # project-specific guidance
+#
+#   # --- Other agent types ---
+#
+#   documenter:                          # auto-generate docs from results
 #     mode: claude
 #     rules_file: DOCUMENTER_RULES.md
 #     cooldown: 600
 #     timeout: 300
 #     model: haiku
-#     log_dir: _documenter_logs
 #
-#   analyzer:
+#   analyzer:                            # custom analysis script
 #     mode: script
 #     script: analysis_agent.py
 #     args: ["--results-dir", "{results_dir}", "--cycle", "{cycle}"]
 #     timeout: 600
 #     cooldown: 300
-#     log_dir: _analyzer_logs
-#     env:
-#       ANTHROPIC_API_KEY: sk-...
+#
+# Template variables available in args: {cycle}, {ideas_file}, {results_dir}
 #
 # Legacy: top-level "research:" still works (auto-migrated to roles.research)
 # research:
