@@ -190,6 +190,8 @@ python orze/farm.py [OPTIONS]
   --gpus GPU_IDS            Comma-separated GPU IDs (default: all)
   --once                    Run one cycle and exit
   --stop                    Gracefully stop a running instance
+  --disable                 Stop and persistently disable Orze (survives restarts)
+  --enable                  Remove persistent disable flag to allow Orze to run
   --report-only             Only regenerate report.md
   --role-only NAME          Run a single agent role once and exit
   --research-only           Alias for --role-only research
@@ -201,6 +203,31 @@ python orze/farm.py [OPTIONS]
   --train-script PATH       Override training script
   -v, --verbose             Debug logging
 ```
+
+## Stopping Orze
+
+Three levels of stopping, from temporary to persistent:
+
+```bash
+# 1. Stop running instances (one-time, cleared on next startup)
+python orze/farm.py -c orze.yaml --stop
+
+# 2. Disable persistently (survives restarts, blocks bug_fixer auto-restart)
+python orze/farm.py -c orze.yaml --disable
+
+# 3. Re-enable after disable
+python orze/farm.py -c orze.yaml --enable
+```
+
+**How it works across machines:**
+
+| Command | Mechanism | Scope | Persists? |
+|---------|-----------|-------|-----------|
+| `--stop` | Writes `.orze_stop_all` + SIGTERM local PIDs | All machines on shared FS | No — cleared on next startup |
+| `--disable` | Writes `.orze_disabled` + `.orze_stop_all` | All machines on shared FS | Yes — must `--enable` to remove |
+| `Ctrl+C` / `kill -15` | Signal handler | Local machine only | No |
+
+The shared filesystem (NFS/EFS/FSx) is the coordination layer. Running instances poll for stop/disable files every `poll` seconds (default 30s). `bug_fixer.py` also respects `.orze_disabled` and will not auto-restart a disabled Orze.
 
 ## License
 

@@ -2346,10 +2346,29 @@ class Orze:
             return True
         return False
 
+    def _check_disabled(self):
+        """Check for persistent disable flag (.orze_disabled).
+
+        Unlike .orze_stop_all (cleared on startup), this file persists
+        and prevents Orze from starting at all. Must be manually removed
+        to re-enable:  rm results/.orze_disabled
+        """
+        disabled_file = self.results_dir / ".orze_disabled"
+        if disabled_file.exists():
+            msg = disabled_file.read_text().strip()
+            logger.error("Orze is DISABLED: %s", msg)
+            logger.error("Remove %s to re-enable", disabled_file)
+            return True
+        return False
+
     def run(self):
         cfg = self.cfg
         self._write_pid_file()
         self._kill_orphans()
+        # Check persistent disable flag (never auto-deleted)
+        if self._check_disabled():
+            logger.error("Exiting — Orze is disabled")
+            return
         # Clear any stale shutdown sentinels from a previous run
         for sentinel_name in [".orze_shutdown", ".orze_stop_all"]:
             sentinel = self.results_dir / sentinel_name
@@ -2377,8 +2396,8 @@ class Orze:
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             logger.info("--- Iteration %d [%s] ---", self.iteration, ts)
 
-            # 0. Check for filesystem stop signal (multi-machine)
-            if self._check_stop_all():
+            # 0. Check for filesystem stop/disable signals (multi-machine)
+            if self._check_stop_all() or self._check_disabled():
                 break
 
             # 1. Check disk space (only gates launches, never skips reaping)
@@ -2787,6 +2806,10 @@ Examples:
                         help="Run one cycle and exit")
     parser.add_argument("--stop", action="store_true",
                         help="Gracefully stop a running orze instance")
+    parser.add_argument("--disable", action="store_true",
+                        help="Stop and persistently disable Orze (survives restarts)")
+    parser.add_argument("--enable", action="store_true",
+                        help="Remove persistent disable flag to allow Orze to run")
     parser.add_argument("--report-only", action="store_true",
                         help="Only regenerate report")
     parser.add_argument("--role-only", type=str, default=None, metavar="NAME",
@@ -2893,6 +2916,38 @@ Examples:
         # need time to see it. It gets cleaned up on next run() start.
         logger.info("Stop complete. Remote instances will stop within "
                      "one poll cycle.")
+        return
+
+    # --disable: stop + persistently prevent Orze from starting
+    if args.disable:
+        results_dir = Path(cfg["results_dir"])
+        disabled_file = results_dir / ".orze_disabled"
+        disabled_file.write_text(
+            f"disabled at {datetime.datetime.now().isoformat()} "
+            f"by {socket.gethostname()} PID {os.getpid()}\n",
+            encoding="utf-8",
+        )
+        logger.info("Wrote .orze_disabled — Orze will refuse to start on any machine")
+        # Also trigger a normal stop for any currently running instances
+        stop_file = results_dir / ".orze_stop_all"
+        stop_file.write_text(
+            f"stop requested at {datetime.datetime.now().isoformat()} "
+            f"by {socket.gethostname()} PID {os.getpid()}\n",
+            encoding="utf-8",
+        )
+        logger.info("Also wrote .orze_stop_all for running instances")
+        logger.info("To re-enable: python orze/farm.py -c orze.yaml --enable")
+        return
+
+    # --enable: remove persistent disable flag
+    if args.enable:
+        results_dir = Path(cfg["results_dir"])
+        disabled_file = results_dir / ".orze_disabled"
+        if disabled_file.exists():
+            disabled_file.unlink()
+            logger.info("Removed .orze_disabled — Orze can now start")
+        else:
+            logger.info("Orze was not disabled (no .orze_disabled found)")
         return
 
     # Report-only mode
