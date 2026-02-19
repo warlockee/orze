@@ -39,7 +39,7 @@ import atexit
 
 import yaml
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 logger = logging.getLogger("orze")
 
@@ -1680,6 +1680,13 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
         return url, {"chat_id": chat_id, "text": text,
                      "parse_mode": "HTML"}
 
+    if event in ("started", "shutdown"):
+        host = esc(data.get("host", socket.gethostname()))
+        msg = esc(str(data.get("message", "")))
+        icon = "\u25b6\ufe0f" if event == "started" else "\u23f9\ufe0f"
+        text = f"{icon} <b>Orze {event}</b> on <code>{host}</code>\n{msg}"
+        return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+
     idea_id = esc(str(data.get("idea_id", "")))
     title = esc(str(data.get("title", "")))
 
@@ -1722,10 +1729,12 @@ def notify(event: str, data: dict, cfg: dict):
             return
 
         global_on = ncfg.get("on") or ["completed", "failed", "new_best"]
+        # Lifecycle events always delivered (not filtered)
+        lifecycle = {"started", "shutdown"}
 
         for ch in (ncfg.get("channels") or []):
             ch_on = ch.get("on") or global_on
-            if event not in ch_on:
+            if event not in lifecycle and event not in ch_on:
                 continue
 
             ch_type = ch.get("type", "webhook")
@@ -1931,8 +1940,8 @@ class Orze:
 
         # 5. Notify (best effort)
         try:
-            notify("report", {
-                "title": "Orze shutting down",
+            notify("shutdown", {
+                "host": socket.gethostname(),
                 "message": (f"Graceful shutdown after iteration "
                             f"{self.iteration}"),
             }, self.cfg)
@@ -2523,6 +2532,15 @@ class Orze:
                             rname, rmode, rtarget,
                             rcfg.get("cooldown", 300),
                             rcfg.get("timeout", 600))
+
+        # Lifecycle notification: started
+        n_roles = len([r for r in (cfg.get("roles") or {}).values()
+                       if isinstance(r, dict)])
+        notify("started", {
+            "host": socket.gethostname(),
+            "message": (f"v{__version__} | {len(self.gpu_ids)} GPUs | "
+                        f"{n_roles} roles | pid {os.getpid()}"),
+        }, cfg)
 
         while self.running:
             self.iteration += 1
