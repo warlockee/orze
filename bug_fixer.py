@@ -75,8 +75,14 @@ def check_orze_alive(cfg):
     orze_cfg = cfg["_orze"]
     config_file = cfg.get("_config_file", "orze.yaml")
 
-    # Respect graceful shutdown — don't restart if intentionally stopped
+    # Respect persistent disable flag — never restart if disabled
     results_dir = Path(orze_cfg.get("results_dir", "results"))
+    disabled_file = results_dir / ".orze_disabled"
+    if disabled_file.exists():
+        logger.debug("Orze is disabled (.orze_disabled exists) — will not restart")
+        return issues
+
+    # Respect graceful shutdown — don't restart if intentionally stopped
     sentinel = results_dir / ".orze_shutdown"
     if sentinel.exists():
         logger.debug("Shutdown sentinel found — orze was stopped intentionally")
