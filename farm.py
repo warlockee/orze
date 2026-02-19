@@ -263,12 +263,78 @@ def load_project_config(path: Optional[str]) -> dict:
 
     # Migrate legacy research: into roles: dict
     if "research" in cfg and isinstance(cfg["research"], dict):
+        logger.warning("Migrating legacy 'research:' config to 'roles: {research: ...}'. "
+                        "Update orze.yaml to use the 'roles:' format directly.")
         if not cfg.get("roles"):
             cfg["roles"] = {"research": cfg["research"]}
         elif "research" not in cfg["roles"]:
             cfg["roles"]["research"] = cfg["research"]
 
+    # Auto-discover research backends from environment API keys.
+    # Only activates if no research roles are explicitly configured.
+    roles = cfg.get("roles") or {}
+    has_research_role = any(
+        isinstance(rc, dict) and rc.get("mode") in ("claude", "research")
+        for rc in roles.values()
+    )
+    if not has_research_role:
+        _AUTO_BACKENDS = [
+            ("GEMINI_API_KEY", "gemini", "gemini-2.5-flash"),
+            ("OPENAI_API_KEY", "openai", "gpt-4o"),
+            ("ANTHROPIC_API_KEY", "anthropic", None),
+        ]
+        discovered = []
+        for env_var, backend, default_model in _AUTO_BACKENDS:
+            if os.environ.get(env_var):
+                role_name = f"research_{backend}"
+                role_cfg = {"mode": "research", "backend": backend}
+                if default_model:
+                    role_cfg["model"] = default_model
+                if "roles" not in cfg:
+                    cfg["roles"] = {}
+                cfg["roles"][role_name] = role_cfg
+                discovered.append(f"{backend} ({env_var})")
+        if discovered:
+            logger.info("Auto-discovered research backends: %s",
+                        ", ".join(discovered))
+
     return cfg
+
+
+def _validate_config(cfg: dict) -> list:
+    """Validate orze config on startup. Returns list of error strings."""
+    errors = []
+
+    # Validate roles
+    roles = cfg.get("roles")
+    if roles and isinstance(roles, dict):
+        for rname, rcfg in roles.items():
+            if not isinstance(rcfg, dict):
+                errors.append(f"roles.{rname}: expected dict, got {type(rcfg).__name__}")
+                continue
+            mode = rcfg.get("mode", "script")
+            if mode not in ("script", "claude", "research"):
+                errors.append(f"roles.{rname}.mode: '{mode}' is invalid "
+                              f"(expected 'script', 'claude', or 'research')")
+            if mode == "claude" and not rcfg.get("rules_file"):
+                errors.append(f"roles.{rname}: mode 'claude' requires 'rules_file'")
+            if mode == "script" and not rcfg.get("script"):
+                errors.append(f"roles.{rname}: mode 'script' requires 'script'")
+            if mode == "research" and not rcfg.get("backend"):
+                errors.append(f"roles.{rname}: mode 'research' requires 'backend' "
+                              f"(gemini, openai, anthropic, ollama, custom)")
+
+    # Validate numeric fields
+    for key in ("timeout", "poll", "eval_timeout", "stall_minutes"):
+        val = cfg.get(key)
+        if val is not None and (not isinstance(val, (int, float)) or val <= 0):
+            errors.append(f"{key}: must be a positive number, got {val!r}")
+
+    # Validate eval config consistency
+    if cfg.get("eval_script") and not cfg.get("eval_output"):
+        errors.append("eval_script is set but eval_output is missing")
+
+    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -1019,7 +1085,7 @@ def check_active_roles(active_roles: Dict[str, "RoleProcess"]) -> list:
             logger.warning("%s cycle %d failed (exit %d), see %s",
                            role_name, rp.cycle_num, ret, rp.log_path)
         del active_roles[role_name]
-        finished.append(role_name)
+        finished.append((role_name, ret == 0))
 
     return finished
 
@@ -1740,6 +1806,13 @@ class Orze:
         self.pending_evals: list = []
         self.running = True
 
+        # Validate config on startup
+        config_errors = _validate_config(cfg)
+        for err in config_errors:
+            logger.error("Config error: %s", err)
+        if config_errors:
+            raise SystemExit(f"Invalid config: {len(config_errors)} error(s) — see log above")
+
         state = load_state(self.results_dir)
         self.iteration = state.get("iteration", 0)
         self.failure_counts = state.get("failure_counts", {})
@@ -2037,6 +2110,8 @@ class Orze:
             return
         if mode == "claude" and not role_cfg.get("rules_file"):
             return
+        if mode == "research" and not role_cfg.get("backend"):
+            return
 
         # Per-role cooldown (with adaptive producer-consumer matching)
         role_state = self.role_states.setdefault(
@@ -2166,6 +2241,8 @@ class Orze:
             if not cmd:
                 _fs_unlock(lock_dir)
                 return
+        elif mode == "research":
+            cmd = self._build_research_cmd(role_cfg, template_vars)
         else:
             python = self.cfg.get("python", sys.executable)
             cmd = [python, role_cfg["script"]]
@@ -2217,10 +2294,30 @@ class Orze:
         """Check active roles and launch new ones (non-blocking)."""
         # Check active roles
         finished = check_active_roles(self.active_roles)
-        for role_name in finished:
-            role_state = self.role_states.get(role_name, {})
+        for role_name, success in finished:
+            role_state = self.role_states.setdefault(
+                role_name, {"cycles": 0, "last_run_time": 0.0})
             role_state["last_run_time"] = time.time()
             role_state["cycles"] = role_state.get("cycles", 0) + 1
+
+            if success:
+                role_state["consecutive_failures"] = 0
+                # Output validation: warn if ideas file wasn't modified
+                ideas_file = Path(self.cfg.get("ideas_file", "ideas.md"))
+                if ideas_file.exists():
+                    ideas_age = time.time() - ideas_file.stat().st_mtime
+                    role_timeout = (self.cfg.get("roles") or {}).get(
+                        role_name, {}).get("timeout", 600)
+                    if ideas_age > role_timeout:
+                        logger.warning("%s completed successfully but ideas file "
+                                       "was not modified (last change %.0fs ago)",
+                                       role_name, ideas_age)
+            else:
+                consec = role_state.get("consecutive_failures", 0) + 1
+                role_state["consecutive_failures"] = consec
+                if consec >= 3:
+                    logger.error("%s has failed %d consecutive times — "
+                                 "check config or script", role_name, consec)
 
         # Launch new roles if not running
         for role_name, role_cfg in (self.cfg.get("roles") or {}).items():
@@ -2251,8 +2348,8 @@ class Orze:
         if model:
             cmd.extend(["--model", model])
 
-        # --allowedTools (default: let Claude read/write files)
-        allowed_tools = research_cfg.get("allowed_tools") or "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
+        # --allowedTools (default: local tools only — add WebSearch,WebFetch in config if needed)
+        allowed_tools = research_cfg.get("allowed_tools") or "Read,Write,Edit,Glob,Grep,Bash"
         cmd.extend(["--allowedTools", str(allowed_tools)])
 
         # --output-format
@@ -2262,6 +2359,42 @@ class Orze:
         # Any extra CLI args
         cmd.extend(_format_args(research_cfg.get("claude_args") or [],
                                 template_vars))
+
+        return cmd
+
+    def _build_research_cmd(self, role_cfg: dict,
+                            template_vars: dict) -> List[str]:
+        """Build command for mode: research (built-in LLM research agent).
+
+        Minimal config:
+            research_gemini:
+              mode: research
+              backend: gemini       # gemini, openai, anthropic, ollama, custom
+              model: gemini-2.5-flash  # optional
+              endpoint: http://...  # optional, for ollama/custom
+              rules_file: RULES.md  # optional, project-specific guidance
+              env:
+                GEMINI_API_KEY: "..."
+        """
+        python = self.cfg.get("python", sys.executable)
+        # research_agent.py lives next to farm.py in the orze directory
+        agent_script = Path(__file__).parent / "research_agent.py"
+
+        cmd = [python, str(agent_script)]
+        cmd.extend(["-c", str(self.cfg.get("_config_path", "orze.yaml"))])
+        cmd.extend(["--backend", role_cfg["backend"]])
+        cmd.extend(["--cycle", str(template_vars["cycle"])])
+        cmd.extend(["--ideas-md", str(template_vars["ideas_file"])])
+        cmd.extend(["--results-dir", str(template_vars["results_dir"])])
+
+        if role_cfg.get("model"):
+            cmd.extend(["--model", str(role_cfg["model"])])
+        if role_cfg.get("endpoint"):
+            cmd.extend(["--endpoint", str(role_cfg["endpoint"])])
+        if role_cfg.get("num_ideas"):
+            cmd.extend(["--num-ideas", str(role_cfg["num_ideas"])])
+        if role_cfg.get("rules_file"):
+            cmd.extend(["--rules-file", str(role_cfg["rules_file"])])
 
         return cmd
 
@@ -2832,6 +2965,7 @@ Examples:
 
     # Load project config, then apply CLI overrides
     cfg = load_project_config(args.config_file)
+    cfg["_config_path"] = args.config_file  # stored for mode: research
 
     if args.timeout is not None:
         cfg["timeout"] = args.timeout
@@ -2967,12 +3101,15 @@ Examples:
             logger.error("No role '%s' configured in orze.yaml", role_only)
             sys.exit(1)
         mode = role_cfg.get("mode", "script")
-        has_target = (role_cfg.get("rules_file") if mode == "claude"
-                      else role_cfg.get("script"))
+        if mode == "claude":
+            has_target = role_cfg.get("rules_file")
+        elif mode == "research":
+            has_target = role_cfg.get("backend")
+        else:
+            has_target = role_cfg.get("script")
         if not has_target:
-            logger.error("No %s.%s configured in orze.yaml",
-                         role_only,
-                         "rules_file" if mode == "claude" else "script")
+            target_key = {"claude": "rules_file", "research": "backend"}.get(mode, "script")
+            logger.error("No %s.%s configured in orze.yaml", role_only, target_key)
             sys.exit(1)
         orze = Orze(gpu_ids, cfg, once=True)
         # Force immediate run by zeroing cooldown
