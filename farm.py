@@ -39,7 +39,7 @@ import atexit
 
 import yaml
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 logger = logging.getLogger("orze")
 
@@ -96,6 +96,15 @@ def atomic_write(path: Path, content: str):
     tmp = path.with_name(f"{path.name}.{safe_host}.{os.getpid()}.tmp")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
+
+
+def _get_checkpoint_dir(cfg: dict) -> Optional[Path]:
+    """Extract --checkpoint-dir from train_extra_args."""
+    args = cfg.get("train_extra_args") or []
+    for i, arg in enumerate(args):
+        if str(arg) == "--checkpoint-dir" and i + 1 < len(args):
+            return Path(str(args[i + 1]))
+    return None
 
 
 def tail_file(path: Path, n_bytes: int = 4096) -> str:
@@ -257,6 +266,13 @@ def load_project_config(path: Optional[str]) -> dict:
                 cfg["report"] = {**cfg["report"], **v}
             else:
                 cfg[k] = v
+        # Fix YAML 'on:' boolean parsing — YAML interprets 'on' as True
+        # so notifications.on becomes notifications[True] instead of notifications["on"]
+        ncfg = cfg.get("notifications")
+        if isinstance(ncfg, dict) and True in ncfg and "on" not in ncfg:
+            ncfg["on"] = ncfg.pop(True)
+            logger.info("Fixed YAML 'on:' boolean key in notifications config")
+
         logger.info("Loaded config from %s", path)
     elif path:
         logger.warning("Config file %s not found, using defaults", path)
@@ -344,10 +360,22 @@ def _validate_config(cfg: dict) -> list:
 PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
+_parse_ideas_cache: Dict[str, Any] = {"mtime": 0.0, "result": {}, "path": ""}
+
+
 def parse_ideas(path: str) -> Dict[str, dict]:
-    """Parse ideas.md into {idea_id: {title, priority, config, raw}}."""
+    """Parse ideas.md into {idea_id: {title, priority, config, raw}}.
+
+    Results are cached by file mtime to avoid re-parsing on every iteration.
+    """
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        p = Path(path)
+        mtime = p.stat().st_mtime
+        if (mtime == _parse_ideas_cache["mtime"]
+                and path == _parse_ideas_cache["path"]
+                and _parse_ideas_cache["result"]):
+            return _parse_ideas_cache["result"]
+        text = p.read_text(encoding="utf-8")
     except OSError:
         return {}
     ideas = {}
@@ -381,6 +409,9 @@ def parse_ideas(path: str) -> Dict[str, dict]:
             "config": config,
             "raw": raw.strip(),
         }
+    _parse_ideas_cache["mtime"] = mtime
+    _parse_ideas_cache["path"] = path
+    _parse_ideas_cache["result"] = ideas
     return ideas
 
 
@@ -610,6 +641,8 @@ class RoleProcess:
     lock_dir: Path
     cycle_num: int
     _log_fh: Any = field(default=None, repr=False)
+    ideas_pre_size: int = 0  # ideas.md size before role started
+    ideas_pre_count: int = 0  # idea count before role started
 
     def close_log(self):
         if self._log_fh and not self._log_fh.closed:
@@ -1008,26 +1041,53 @@ def run_eval(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
     ep = launch_eval(idea_id, gpu, results_dir, cfg)
     if ep is None:
         return
+    eval_output = cfg.get("eval_output") or "eval_report.json"
+    reason = ""
     try:
         ep.process.wait(timeout=ep.timeout)
         if ep.process.returncode == 0:
             logger.info("Eval completed for %s", idea_id)
         else:
+            reason = f"Exit code {ep.process.returncode}"
             logger.warning("Eval failed for %s (exit %d)",
                            idea_id, ep.process.returncode)
     except subprocess.TimeoutExpired:
+        reason = f"Timed out after {ep.timeout}s"
         logger.warning("Eval timed out for %s after %ds",
                        idea_id, ep.timeout)
         _terminate_and_reap(ep.process, f"eval {idea_id}")
     except Exception as e:
+        reason = str(e)
         logger.warning("Eval error for %s: %s", idea_id, e)
     finally:
         ep.close_log()
+        if reason:
+            _write_eval_failure_marker(results_dir, idea_id, eval_output, reason)
+
+
+def _write_eval_failure_marker(results_dir: Path, idea_id: str,
+                               eval_output: str, reason: str) -> None:
+    """Safety net: write failure marker if eval process died without one.
+
+    The marker file is the eval_output itself so the backlog scanner
+    won't re-queue this idea.  The eval script is responsible for
+    writing domain-specific reports; this is a generic fallback.
+    """
+    report_path = results_dir / idea_id / eval_output
+    if report_path.exists():
+        return  # Script already wrote a report
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps({
+        "status": "FAILED",
+        "reason": reason[:500],
+    }, indent=2))
+    logger.info("Wrote eval failure marker for %s", idea_id)
 
 
 def check_active_evals(active_evals: Dict[int, EvalProcess],
                        results_dir: Path, cfg: dict) -> list:
     """Check running eval processes. Returns list of (idea_id, gpu) for finished evals."""
+    eval_output = cfg.get("eval_output") or "eval_report.json"
     finished = []
     for gpu in list(active_evals.keys()):
         ep = active_evals[gpu]
@@ -1041,6 +1101,9 @@ def check_active_evals(active_evals: Dict[int, EvalProcess],
                                ep.idea_id, elapsed / 60)
                 _terminate_and_reap(ep.process, f"eval {ep.idea_id}")
                 ep.close_log()
+                _write_eval_failure_marker(
+                    results_dir, ep.idea_id, eval_output,
+                    f"Timed out after {elapsed/60:.0f}m")
                 del active_evals[gpu]
                 finished.append((ep.idea_id, gpu))
             continue
@@ -1056,14 +1119,18 @@ def check_active_evals(active_evals: Dict[int, EvalProcess],
             logger.warning("[EVAL FAILED] %s on GPU %d — exit %d\n%s",
                            ep.idea_id, gpu, ret,
                            eval_tail[-500:] if eval_tail else "(no output)")
+            _write_eval_failure_marker(
+                results_dir, ep.idea_id, eval_output,
+                f"Exit code {ret}: {eval_tail[-300:] if eval_tail else 'no output'}")
         del active_evals[gpu]
         finished.append((ep.idea_id, gpu))
 
     return finished
 
 
-def check_active_roles(active_roles: Dict[str, "RoleProcess"]) -> list:
-    """Check running role processes. Returns list of role_names that finished."""
+def check_active_roles(active_roles: Dict[str, "RoleProcess"],
+                       ideas_file: str = "ideas.md") -> list:
+    """Check running role processes. Returns list of (role_name, success) tuples."""
     finished = []
     for role_name in list(active_roles.keys()):
         rp = active_roles[role_name]
@@ -1079,7 +1146,7 @@ def check_active_roles(active_roles: Dict[str, "RoleProcess"]) -> list:
                 rp.close_log()
                 _fs_unlock(rp.lock_dir)
                 del active_roles[role_name]
-                finished.append(role_name)
+                finished.append((role_name, False))
             continue
 
         # Process exited
@@ -1090,10 +1157,74 @@ def check_active_roles(active_roles: Dict[str, "RoleProcess"]) -> list:
         else:
             logger.warning("%s cycle %d failed (exit %d), see %s",
                            role_name, rp.cycle_num, ret, rp.log_path)
+
+        # CORRUPTION GUARD: check if ideas.md was truncated by the role
+        _check_ideas_integrity(ideas_file, rp)
+
         del active_roles[role_name]
         finished.append((role_name, ret == 0))
 
     return finished
+
+
+def _check_ideas_integrity(ideas_file: str, rp: "RoleProcess"):
+    """Detect and auto-restore ideas.md if a role truncated/corrupted it.
+
+    Compares current file size and idea count against pre-role snapshot.
+    If file shrunk by >10% or lost ideas, restore from the .safe backup.
+    """
+    ideas_path = Path(ideas_file)
+    if not ideas_path.exists() or rp.ideas_pre_size == 0:
+        return
+
+    current_size = ideas_path.stat().st_size
+    # Quick check: if file grew or stayed same, it's fine
+    if current_size >= rp.ideas_pre_size:
+        return
+
+    # File shrunk — check idea count to confirm corruption
+    try:
+        current_text = ideas_path.read_text(encoding="utf-8")
+        current_count = len(re.findall(r"^## idea-\d+:", current_text,
+                                       re.MULTILINE))
+    except OSError:
+        current_count = 0
+
+    if current_count >= rp.ideas_pre_count:
+        return  # Count OK despite smaller size (unlikely but possible)
+
+    # CORRUPTION DETECTED
+    shrink_pct = (1 - current_size / rp.ideas_pre_size) * 100
+    lost_ideas = rp.ideas_pre_count - current_count
+    logger.error(
+        "IDEAS.MD CORRUPTION DETECTED after %s cycle %d! "
+        "File shrunk %.0f%% (%d→%d bytes), lost %d ideas (%d→%d). "
+        "Restoring from backup.",
+        rp.role_name, rp.cycle_num, shrink_pct,
+        rp.ideas_pre_size, current_size,
+        lost_ideas, rp.ideas_pre_count, current_count)
+
+    # Restore from .safe backup
+    backup_path = ideas_path.with_suffix(".md.safe")
+    if backup_path.exists():
+        backup_size = backup_path.stat().st_size
+        if backup_size >= rp.ideas_pre_size * 0.9:
+            # Save the corrupted file for forensics
+            corrupt_path = ideas_path.with_suffix(
+                f".md.corrupt.{int(time.time())}")
+            import shutil
+            shutil.copy2(str(ideas_path), str(corrupt_path))
+            # Restore
+            shutil.copy2(str(backup_path), str(ideas_path))
+            logger.info("Restored ideas.md from backup (%d bytes). "
+                        "Corrupted version saved to %s",
+                        backup_size, corrupt_path)
+        else:
+            logger.error("Backup also looks corrupted (%d bytes vs "
+                         "expected %d). NOT restoring.",
+                         backup_size, rp.ideas_pre_size)
+    else:
+        logger.error("No backup found at %s — cannot restore!", backup_path)
 
 
 def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
@@ -1930,6 +2061,16 @@ class Orze:
         self._last_milestone: int = 0      # last milestone boundary hit
         self._last_disk_warning: float = 0.0
 
+        # Initialize Idea Lake for archival
+        try:
+            from idea_lake import IdeaLake
+            lake_path = Path(cfg.get("ideas_file", "ideas.md")).parent / "idea_lake.db"
+            self.lake = IdeaLake(str(lake_path))
+            logger.info("Idea Lake initialized: %d archived ideas", self.lake.count())
+        except Exception as exc:
+            logger.warning("Idea Lake not available: %s", exc)
+            self.lake = None
+
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
         signal.signal(signal.SIGINT, self._shutdown)
@@ -2081,7 +2222,14 @@ class Orze:
             cfg = self.cfg
             ncfg = cfg.get("notifications") or {}
             if not ncfg.get("enabled", False):
+                logger.debug("Notifications disabled")
                 return
+
+            if not finished:
+                return
+
+            logger.info("Processing notifications for %d finished items",
+                        len(finished))
 
             primary = cfg["report"].get("primary_metric", "test_accuracy")
 
@@ -2164,6 +2312,42 @@ class Orze:
                         "leaderboard": leaderboard,
                     }, cfg)
 
+                # Auto-archive to Idea Lake
+                if self.lake and status in ("COMPLETED", "FAILED"):
+                    try:
+                        idea_data = ideas.get(idea_id, {})
+                        config_yaml = ""
+                        raw_md = idea_data.get("raw", "")
+                        if idea_data.get("config"):
+                            import io
+                            config_yaml = yaml.dump(idea_data["config"],
+                                                    default_flow_style=False)
+                        metrics_for_lake = {
+                            "status": status.lower(),
+                            "priority": idea_data.get("priority", "medium"),
+                        }
+                        # Load eval metrics if available
+                        eval_file = cfg.get("eval_output", "eval_report.json")
+                        eval_path = self.results_dir / idea_id / eval_file
+                        if eval_path.exists():
+                            try:
+                                ed = json.loads(eval_path.read_text())
+                                em = ed.get("metrics", {})
+                                metrics_for_lake["fedex_auc"] = em.get("auc_roc")
+                                metrics_for_lake["fedex_f1"] = em.get("f1_score")
+                                metrics_for_lake["fedex_fpr"] = em.get("fpr")
+                                metrics_for_lake["fedex_fp"] = em.get("fp")
+                                metrics_for_lake["fedex_fn"] = em.get("fn")
+                            except (json.JSONDecodeError, OSError):
+                                pass
+                        self.lake.insert(
+                            idea_id, title, config_yaml, raw_md,
+                            metrics=metrics_for_lake, status=status.lower(),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to archive %s to lake: %s",
+                                       idea_id, exc)
+
             # New best detection
             if completed_rows:
                 current_best = completed_rows[0]["id"]
@@ -2240,6 +2424,14 @@ class Orze:
                 n_unclaimed = len(get_unclaimed(
                     ideas, self.results_dir, skipped))
                 n_gpus = len(self.gpu_ids)
+
+                # --- Hard queue cap: skip research entirely ---
+                max_queue = self.cfg.get("max_queue_size", 500)
+                if n_unclaimed > max_queue:
+                    logger.info(
+                        "Queue full (%d > %d) — skipping research",
+                        n_unclaimed, max_queue)
+                    return
 
                 # --- Adaptive cooldown: scale with queue depth ---
                 # When queue is deep, slow down to save API costs.
@@ -2376,6 +2568,29 @@ class Orze:
         logger.info("Running %s [%s] (cycle %d)...",
                      role_name, mode, cycle_num)
 
+        # Protect ideas.md: snapshot size before research role runs
+        ideas_file = Path(self.cfg.get("ideas_file", "ideas.md"))
+        ideas_pre_size = 0
+        ideas_pre_count = 0
+        if ideas_file.exists():
+            ideas_pre_size = ideas_file.stat().st_size
+            ideas_pre_count = len(re.findall(
+                r"^## idea-\d+:", ideas_file.read_text(encoding="utf-8"),
+                re.MULTILINE))
+            # Rotate backups: keep last 3
+            backup_base = ideas_file.with_suffix(".md.safe")
+            for i in range(2, 0, -1):
+                src = Path(f"{backup_base}.{i}")
+                dst = Path(f"{backup_base}.{i + 1}")
+                if src.exists():
+                    src.rename(dst)
+            if backup_base.exists():
+                backup_base.rename(Path(f"{backup_base}.1"))
+            import shutil
+            shutil.copy2(str(ideas_file), str(backup_base))
+            logger.debug("ideas.md backup: %d bytes, %d ideas",
+                         ideas_pre_size, ideas_pre_count)
+
         # Launch non-blocking
         try:
             log_fh = open(log_path, "w", encoding="utf-8")
@@ -2392,6 +2607,8 @@ class Orze:
                 lock_dir=lock_dir,
                 cycle_num=cycle_num,
                 _log_fh=log_fh,
+                ideas_pre_size=ideas_pre_size,
+                ideas_pre_count=ideas_pre_count,
             )
         except Exception as e:
             logger.warning("%s launch error: %s", role_name, e)
@@ -2402,7 +2619,9 @@ class Orze:
     def _run_all_roles(self):
         """Check active roles and launch new ones (non-blocking)."""
         # Check active roles
-        finished = check_active_roles(self.active_roles)
+        finished = check_active_roles(
+            self.active_roles,
+            ideas_file=self.cfg.get("ideas_file", "ideas.md"))
         for role_name, success in finished:
             role_state = self.role_states.setdefault(
                 role_name, {"cycles": 0, "last_run_time": 0.0})
@@ -2724,7 +2943,10 @@ class Orze:
                 run_post_scripts(idea_id, gpu, self.results_dir, cfg)
 
             # 4. Run agent roles (research, documenter, etc.)
-            self._run_all_roles()
+            try:
+                self._run_all_roles()
+            except Exception as e:
+                logger.error("Error in _run_all_roles: %s — continuing", e)
 
             # 5. Parse ideas and find unclaimed
             ideas = parse_ideas(cfg["ideas_file"])
@@ -2806,6 +3028,8 @@ class Orze:
                 pending_ids = {pi for pi, _ in self.pending_evals}
                 active_eval_ids = {ep.idea_id
                                    for ep in self.active_evals.values()}
+                ckpt_dir = _get_checkpoint_dir(cfg)
+                known_ideas = set(ideas.keys())
                 backlog = []
                 for d in self.results_dir.iterdir():
                     if not d.is_dir() or not d.name.startswith("idea-"):
@@ -2816,6 +3040,13 @@ class Orze:
                     mpath = d / "metrics.json"
                     rpath = d / eval_output
                     if mpath.exists() and not rpath.exists():
+                        # Skip ideas without checkpoints
+                        if ckpt_dir and not (
+                                ckpt_dir / iid / "best.pt").exists():
+                            continue
+                        # Only eval ideas we have configs for
+                        if iid not in known_ideas:
+                            continue
                         try:
                             m = json.loads(
                                 mpath.read_text(encoding="utf-8"))
@@ -2824,24 +3055,7 @@ class Orze:
                                     num = int(iid.split("-", 1)[1])
                                 except (IndexError, ValueError):
                                     num = 0
-                                # Prioritize by Nexar AUC if available
-                                # (top Nexar performers most likely to
-                                #  generalise to FedEx)
-                                priority = num
-                                nexar_rp = d / "nexar_test_report.json"
-                                if nexar_rp.exists():
-                                    try:
-                                        nr = json.loads(
-                                            nexar_rp.read_text(
-                                                encoding="utf-8"))
-                                        nauc = nr.get(
-                                            "metrics", {}).get(
-                                            "auc_roc", 0)
-                                        priority = int(nauc * 1_000_000)
-                                    except (json.JSONDecodeError,
-                                            OSError, TypeError):
-                                        pass
-                                backlog.append((priority, iid))
+                                backlog.append((num, iid))
                         except (json.JSONDecodeError, OSError):
                             pass
                 if backlog:
