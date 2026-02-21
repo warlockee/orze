@@ -85,6 +85,9 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
 - **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and spawns an LLM to diagnose and patch farm.py bugs in real time
+- **Idea Lake** — SQLite-backed archive for completed/failed experiments with transparent fallback (training and eval scripts check the lake when an idea isn't in ideas.md)
+- **Corruption guard** — detects if a research agent truncates ideas.md and auto-restores from rotating `.safe` backups
+- **Eval failure markers** — writes generic FAILED reports for crashed evals so the backlog scanner doesn't re-queue them forever
 - **Atomic coordination** — `mkdir` as lock, no race conditions
 
 ## Notifications
@@ -105,7 +108,14 @@ notifications:
       webhook_url: "https://discord.com/api/webhooks/..."
 ```
 
-Events: `completed`, `failed`, `new_best`, `report`. Supports per-channel filtering (`on: [new_best, failed]`) and generic webhooks.
+Events: `completed`, `failed`, `new_best`, `report`, `started`, `shutdown`, `heartbeat`, `milestone`, `disk_warning`, `stall`, `role_summary`. Supports per-channel filtering (`on: [new_best, failed]`) and generic webhooks. System events (`heartbeat`, `milestone`, `disk_warning`, `stall`, `role_summary`, `started`, `shutdown`) are always delivered regardless of filters.
+
+```yaml
+# Notification tuning
+notifications:
+  heartbeat_interval: 1800  # seconds between status pulses (0=off)
+  milestone_every: 100      # notify every N completions (0=off)
+```
 
 ### Telegram Bot
 
