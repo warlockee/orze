@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-__version__ = "1.1.0"
+__version__ = "1.7.0"
 
 logging.basicConfig(
     level=logging.INFO,
