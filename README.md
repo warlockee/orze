@@ -85,7 +85,7 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
 - **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and spawns an LLM to diagnose and patch farm.py bugs in real time
-- **Idea Lake** — SQLite-backed archive for completed/failed experiments with transparent fallback (training and eval scripts check the lake when an idea isn't in ideas.md)
+- **Idea Lake** — SQLite-backed archive for completed/failed experiments. Metrics stored as generic JSON blobs (no project-specific schema). Training and eval scripts check the lake when an idea isn't in ideas.md
 - **Corruption guard** — detects if a research agent truncates ideas.md and auto-restores from rotating `.safe` backups
 - **Eval failure markers** — writes generic FAILED reports for crashed evals so the backlog scanner doesn't re-queue them forever
 - **Atomic coordination** — `mkdir` as lock, no race conditions
