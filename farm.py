@@ -149,6 +149,26 @@ def deep_get(obj: dict, dotpath: str, default=None):
     return obj
 
 
+def _resolve_primary_metric(eval_data: dict, cfg: dict,
+                            eval_file: str) -> Any:
+    """Extract the primary metric value from eval report data.
+
+    Looks up the primary_metric key in report.columns to find the
+    source path, then extracts the value from eval_data.
+    """
+    primary = cfg.get("report", {}).get("primary_metric", "test_accuracy")
+    columns = cfg.get("report", {}).get("columns", [])
+    for col in columns:
+        if col.get("key") == primary:
+            src = col.get("source", "")
+            if ":" in src:
+                src_file, json_path = src.split(":", 1)
+                if src_file == eval_file:
+                    return deep_get(eval_data, json_path)
+    # Fallback: try metrics.{primary} directly
+    return deep_get(eval_data, f"metrics.{primary}")
+
+
 # ---------------------------------------------------------------------------
 # Filesystem locks (mkdir-based, works across machines on shared FS)
 # ---------------------------------------------------------------------------
@@ -2274,13 +2294,17 @@ class Orze:
                             try:
                                 ed = json.loads(eval_path.read_text(
                                     encoding="utf-8"))
-                                metric_val = deep_get(ed, "metrics.auc_roc")
+                                # Derive metric path from report columns config
+                                metric_val = _resolve_primary_metric(
+                                    ed, cfg, eval_file)
                             except (json.JSONDecodeError, OSError,
                                     KeyError, UnicodeDecodeError):
                                 pass
                     if metric_val is None:
-                        # Last resort: use training's internal test AUC
-                        metric_val = deep_get(m, "test_metrics.auc_roc")
+                        # Last resort: use training's internal metric
+                        metric_val = deep_get(
+                            m, f"test_metrics.{primary}"
+                        ) or m.get(primary)
                     if metric_val is None:
                         logger.warning(
                             "Notification for %s has metric_val=None "
@@ -2291,7 +2315,7 @@ class Orze:
                             (self.results_dir / idea_id /
                              cfg.get("eval_output", "eval_report.json")
                              ).exists(),
-                            deep_get(m, "test_metrics.auc_roc"))
+                            m.get(primary))
                     t_time = m.get("training_time") or None
                     # Format metric to 4 decimal places
                     fmt_val = (f"{metric_val:.4f}"
@@ -2322,27 +2346,35 @@ class Orze:
                             import io
                             config_yaml = yaml.dump(idea_data["config"],
                                                     default_flow_style=False)
-                        metrics_for_lake = {
-                            "status": status.lower(),
-                            "priority": idea_data.get("priority", "medium"),
-                        }
                         # Load eval metrics if available
+                        eval_metrics = {}
                         eval_file = cfg.get("eval_output", "eval_report.json")
                         eval_path = self.results_dir / idea_id / eval_file
                         if eval_path.exists():
                             try:
                                 ed = json.loads(eval_path.read_text())
                                 em = ed.get("metrics", {})
-                                metrics_for_lake["fedex_auc"] = em.get("auc_roc")
-                                metrics_for_lake["fedex_f1"] = em.get("f1_score")
-                                metrics_for_lake["fedex_fpr"] = em.get("fpr")
-                                metrics_for_lake["fedex_fp"] = em.get("fp")
-                                metrics_for_lake["fedex_fn"] = em.get("fn")
+                                # Store all report column metrics dynamically
+                                report_cols = cfg.get("report", {}).get(
+                                    "columns", [])
+                                for col in report_cols:
+                                    src = col.get("source", "")
+                                    key = col.get("key", "")
+                                    if ":" in src:
+                                        src_file, json_path = src.split(":", 1)
+                                        if src_file == eval_file:
+                                            val = deep_get(ed, json_path)
+                                            if val is not None:
+                                                eval_metrics[key] = val
+                                    elif key and key in em:
+                                        eval_metrics[key] = em[key]
                             except (json.JSONDecodeError, OSError):
                                 pass
                         self.lake.insert(
                             idea_id, title, config_yaml, raw_md,
-                            metrics=metrics_for_lake, status=status.lower(),
+                            eval_metrics=eval_metrics or None,
+                            status=status.lower(),
+                            priority=idea_data.get("priority", "medium"),
                         )
                     except Exception as exc:
                         logger.warning("Failed to archive %s to lake: %s",
@@ -2750,8 +2782,10 @@ class Orze:
         """
         my_pid = os.getpid()
         results_str = str(self.results_dir)
-        patterns = ["train_idea.py", "evaluate_dataset.py",
-                     "evaluate_nexar_test.py"]
+        cfg = self.cfg
+        patterns = [Path(cfg.get("train_script", "train_idea.py")).name]
+        if cfg.get("eval_script"):
+            patterns.append(Path(cfg["eval_script"]).name)
         killed = 0
 
         try:
@@ -3024,7 +3058,7 @@ class Orze:
             backlog = []
             if len(self.active_evals) < max_evals:
                 eval_output = cfg.get("eval_output",
-                                      "nexar_test_report.json")
+                                      "eval_report.json")
                 pending_ids = {pi for pi, _ in self.pending_evals}
                 active_eval_ids = {ep.idea_id
                                    for ep in self.active_evals.values()}

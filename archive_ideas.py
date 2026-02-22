@@ -7,6 +7,7 @@ All archived ideas remain queryable via IdeaLake.
 Usage:
     python orze/archive_ideas.py --ideas-md ideas.md --results-dir results --db idea_lake.db
     python orze/archive_ideas.py --ideas-md ideas.md --results-dir results --db idea_lake.db --dry-run
+    python orze/archive_ideas.py --ideas-md ideas.md --results-dir results --db idea_lake.db --config orze.yaml
 """
 
 import argparse
@@ -76,8 +77,26 @@ def parse_all_ideas(text: str):
     return ideas
 
 
-def load_metrics(results_dir: Path, idea_id: str) -> dict:
-    """Load metrics from result dir files for an idea."""
+def _deep_get(obj, dotpath, default=None):
+    """Get nested dict value by dot path: 'a.b.c' -> obj[a][b][c]."""
+    for k in dotpath.split("."):
+        if isinstance(obj, dict):
+            obj = obj.get(k, default)
+        else:
+            return default
+    return obj
+
+
+def load_metrics(results_dir: Path, idea_id: str,
+                 eval_reports: list, report_columns: list) -> dict:
+    """Load metrics from result dir files for an idea.
+
+    Args:
+        eval_reports: list of eval report filenames to scan,
+                      e.g. ["eval_report.json"]
+        report_columns: list of column dicts from report config,
+                        e.g. [{"key": "auc", "source": "report.json:metrics.auc_roc"}]
+    """
     idea_dir = results_dir / idea_id
     metrics = {}
 
@@ -94,27 +113,22 @@ def load_metrics(results_dir: Path, idea_id: str) -> dict:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # fedex_test_report.json
-    fedex_path = idea_dir / "fedex_test_report.json"
-    if fedex_path.exists():
+    # Eval reports — extract metrics dynamically from config columns
+    for report_file in eval_reports:
+        report_path = idea_dir / report_file
+        if not report_path.exists():
+            continue
         try:
-            r = json.loads(fedex_path.read_text())
-            m = r.get("metrics", {})
-            metrics["fedex_auc"] = m.get("auc_roc")
-            metrics["fedex_f1"] = m.get("f1_score")
-            metrics["fedex_fpr"] = m.get("fpr")
-            metrics["fedex_fp"] = m.get("fp")
-            metrics["fedex_fn"] = m.get("fn")
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # nexar_test_report.json
-    nexar_path = idea_dir / "nexar_test_report.json"
-    if nexar_path.exists():
-        try:
-            r = json.loads(nexar_path.read_text())
-            m = r.get("metrics", {})
-            metrics["nexar_auc"] = m.get("auc_roc")
+            r = json.loads(report_path.read_text())
+            for col in report_columns:
+                key = col.get("key", "")
+                src = col.get("source", "")
+                if ":" in src:
+                    src_file, json_path = src.split(":", 1)
+                    if src_file == report_file:
+                        val = _deep_get(r, json_path)
+                        if val is not None:
+                            metrics[key] = val
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -126,13 +140,28 @@ def main():
     parser.add_argument("--ideas-md", default="ideas.md", help="Path to ideas.md")
     parser.add_argument("--results-dir", default="results", help="Path to results dir")
     parser.add_argument("--db", default="idea_lake.db", help="SQLite database path")
+    parser.add_argument("--config", default=None, help="Path to orze.yaml for report column config")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
     parser.add_argument("--keep-top", type=int, default=0,
-                        help="Also keep top N ideas by FedEx AUC in ideas.md (0=only unclaimed)")
+                        help="Also keep top N ideas in ideas.md (0=only unclaimed)")
     args = parser.parse_args()
 
     ideas_path = Path(args.ideas_md)
     results_dir = Path(args.results_dir)
+
+    # Load config for eval report names and column definitions
+    eval_reports = []
+    report_columns = []
+    if args.config and Path(args.config).exists():
+        try:
+            cfg = yaml.safe_load(Path(args.config).read_text())
+            eval_output = cfg.get("eval_output", "eval_report.json")
+            eval_reports.append(eval_output)
+            report_columns = cfg.get("report", {}).get("columns", [])
+        except (yaml.YAMLError, OSError):
+            pass
+    if not eval_reports:
+        eval_reports = ["eval_report.json"]
 
     logger.info("Reading %s...", ideas_path)
     text = ideas_path.read_text(encoding="utf-8")
@@ -150,7 +179,8 @@ def main():
     for idea in ideas:
         idea_dir = results_dir / idea["idea_id"]
         if idea_dir.exists():
-            metrics = load_metrics(results_dir, idea["idea_id"])
+            metrics = load_metrics(results_dir, idea["idea_id"],
+                                   eval_reports, report_columns)
             idea["metrics"] = metrics
             idea["status"] = metrics.get("status", "archived").lower()
             to_archive.append(idea)
@@ -170,9 +200,10 @@ def main():
     for s, c in sorted(statuses.items()):
         logger.info("  %s: %d", s, c)
 
-    with_fedex = sum(1 for i in to_archive if i["metrics"].get("fedex_auc") is not None)
-    with_nexar = sum(1 for i in to_archive if i["metrics"].get("nexar_auc") is not None)
-    logger.info("  With FedEx eval: %d, With Nexar eval: %d", with_fedex, with_nexar)
+    with_eval = sum(1 for i in to_archive
+                    if any(i["metrics"].get(col.get("key"))
+                           is not None for col in report_columns))
+    logger.info("  With eval metrics: %d", with_eval)
 
     if args.dry_run:
         logger.info("DRY RUN — no changes made")
@@ -189,6 +220,10 @@ def main():
     # Bulk insert
     bulk_data = []
     for idea in to_archive:
+        # Separate eval metrics from meta fields
+        all_metrics = idea.get("metrics", {})
+        eval_metrics = {k: v for k, v in all_metrics.items()
+                        if k not in ("status", "training_time", "created_at")}
         bulk_data.append({
             "idea_id": idea["idea_id"],
             "title": idea["title"],
@@ -199,7 +234,7 @@ def main():
             "config_yaml": idea["config_yaml"],
             "raw_markdown": idea["raw_block"],
             "status": idea["status"],
-            "metrics": idea["metrics"],
+            "eval_metrics": eval_metrics or None,
         })
     lake.bulk_insert(bulk_data)
 
