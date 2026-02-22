@@ -78,13 +78,13 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Agent roles** — unlimited concurrent agents (research, documenter, analyzer) run alongside training, each with their own cooldown, state, and logs
 - **Multi-GPU** — claims and trains across all GPUs in parallel
 - **Parallel eval** — eval scripts launch non-blocking so GPUs stay busy
-- **Health monitoring** — stall detection, OOM detection, disk space checks
+- **Health monitoring** — stall detection, generic traceback detection, disk space checks
 - **Push notifications** — Telegram, Slack, Discord, or any webhook. Every message includes the top 10 leaderboard
 - **Telegram bot** — text back to the bot in natural language to check status, query results, or add ideas from your phone
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
-- **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and spawns an LLM to diagnose and patch farm.py bugs in real time
+- **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and delegates all error diagnosis to an LLM agent (no hardcoded error patterns)
 - **Idea Lake** — SQLite-backed archive for completed/failed experiments. Metrics stored as generic JSON blobs (no project-specific schema). Training and eval scripts check the lake when an idea isn't in ideas.md
 - **Corruption guard** — detects if a research agent truncates ideas.md and auto-restores from rotating `.safe` backups
 - **Eval failure markers** — writes generic FAILED reports for crashed evals so the backlog scanner doesn't re-queue them forever
@@ -147,7 +147,7 @@ Orze ships with `bug_fixer.py` — a lifetime watchdog that runs alongside `farm
 - **Zombie reaper** — detects and cleans up defunct processes
 - **Stale claim cleanup** — flags ideas claimed but never completed by crashed workers
 - **Disk space monitoring** — alerts when free space drops below threshold
-- **LLM-powered code fixes** — for errors in farm.py itself, spawns a Claude session to diagnose and patch the bug (local commit only, human reviews before push)
+- **LLM-delegated diagnosis** — all error classification and fix decisions are delegated to an LLM agent. No hardcoded regex patterns or if/else routing — the agent reads raw logs, decides what's wrong, and takes appropriate action (fix code, kill stuck process, or just report)
 
 The watchdog **only touches orze platform code** (`farm.py`). It never modifies your training scripts, configs, or data.
 

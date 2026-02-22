@@ -229,7 +229,7 @@ def check_stale_claims(cfg):
 
 
 def check_orze_errors(cfg):
-    """Scan orze log for errors originating in farm.py (not subprocess scripts)."""
+    """Scan orze log for errors originating in farm.py."""
     issues = []
     results_dir = Path(cfg["_orze"].get("results_dir", "results"))
     log_file = results_dir / "farm.log"
@@ -238,28 +238,25 @@ def check_orze_errors(cfg):
     if not log_file.exists():
         return issues
 
-    # Only look for errors in farm.py itself, not in subprocess output
+    # Grab recent ERROR/CRITICAL lines — don't classify them here,
+    # the LLM agent will read the log and decide what to do.
     rc, out, _ = run_cmd(
-        f"tail -300 {log_file} | grep -E '\\[ERROR\\]|\\[CRITICAL\\]|Traceback.*farm\\.py' | tail -10"
+        f"tail -300 {log_file} | grep -E '\\[ERROR\\]|\\[CRITICAL\\]|Traceback' | tail -10"
     )
     if rc == 0 and out.strip():
+        # Deduplicate by exact line to avoid flooding
         seen = set()
         for line in out.strip().split("\n"):
-            err_match = re.search(
-                r"(KeyError|TypeError|AttributeError|RuntimeError|"
-                r"ValueError|OSError|FileNotFoundError|deadlock|"
-                r"CRITICAL|Traceback)", line, re.I
-            )
-            if err_match:
-                err_type = err_match.group(1)
-                if err_type not in seen:
-                    seen.add(err_type)
-                    issues.append({
-                        "type": "orze_error",
-                        "severity": "high",
-                        "message": f"farm.py error: {err_type}",
-                        "details": line[:300],
-                    })
+            line_key = line.strip()[:100]
+            if line_key not in seen:
+                seen.add(line_key)
+                issues.append({
+                    "type": "orze_error",
+                    "severity": "high",
+                    "message": f"farm.py error detected",
+                    "details": line[:300],
+                    "log_file": str(log_file),
+                })
     return issues
 
 
@@ -362,13 +359,21 @@ def spawn_claude_fix(issue, cfg):
 
     rc, log_tail, _ = run_cmd(f"tail -200 {log_file}")
 
+    # Include PID info if available (for stuck processes)
+    pid_info = ""
+    if issue.get("pid"):
+        pid_info = f"\n- **PID**: {issue['pid']} (you may kill it with `kill {issue['pid']}` if needed)"
+
     prompt = f"""You are the Orze platform bug-fixer. An issue was detected in the running Orze system.
 
 ## Issue
 - **Type**: {issue['type']}
 - **Severity**: {issue['severity']}
 - **Message**: {issue['message']}
-- **Details**: {issue.get('details', 'N/A')}
+- **Details**: {issue.get('details', 'N/A')}{pid_info}
+
+## Log file
+{issue.get('log_file', log_file)}
 
 ## Recent Orze Log
 ```
@@ -376,10 +381,15 @@ def spawn_claude_fix(issue, cfg):
 ```
 
 ## Your Task
-1. Read `{orze_dir}/farm.py` and diagnose the root cause
-2. If it's a bug in farm.py, fix it with a minimal, targeted patch
-3. If it's an operational issue (stuck process, resource exhaustion), report it but do NOT change code
-4. If the error comes from a user's training/eval script (not farm.py), report "Not an orze bug" and skip
+1. Read the log file and diagnose what happened.
+2. Decide the appropriate action:
+   a) **Code bug in farm.py** → fix it with a minimal patch
+   b) **Stuck/hung process** → kill the PID if one is provided and it looks genuinely stuck
+      (check with `ps -p PID -o pid,etimes,%cpu` first — only kill if CPU is near zero
+      for a long time, not if it's legitimately working)
+   c) **Operational issue** (disk, network, transient error) → just report, don't change code
+   d) **Error from user's training script** (not farm.py) → report "Not an orze bug" and exit
+3. Explain your reasoning briefly.
 
 ## CRITICAL RULES
 - You may ONLY modify `{orze_dir}/farm.py` — this is the orze platform
@@ -441,19 +451,24 @@ def run_all_checks(cfg):
 
 
 def handle_issue(issue, cfg):
+    """Route an issue to the appropriate action.
+
+    Only two actions are taken without LLM involvement:
+      - ``orze_dead`` → restart (binary: either farm.py is running or not)
+      - everything else → delegate to Claude for diagnosis + action
+
+    The LLM agent decides whether to kill a process, fix code, or just log.
+    """
     itype = issue["type"]
 
-    if itype in ("stuck_training", "stuck_eval") and issue.get("pid"):
-        kill_process(issue["pid"])
-        save_issue({**issue, "action": "auto_killed"}, cfg)
-        return
-
+    # Orze dead is unambiguous — restart it.
     if itype == "orze_dead":
         restart_orze(cfg)
         save_issue({**issue, "action": "auto_restarted"}, cfg)
         return
 
-    if itype in ("orze_error", "orze_stalled") and should_fix(issue, cfg):
+    # Everything else: delegate to LLM agent for diagnosis.
+    if should_fix(issue, cfg):
         spawn_claude_fix(issue, cfg)
         return
 

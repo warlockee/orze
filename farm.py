@@ -39,7 +39,7 @@ import atexit
 
 import yaml
 
-__version__ = "1.4.0"
+__version__ = "1.6.0"
 
 logger = logging.getLogger("orze")
 
@@ -795,16 +795,32 @@ def check_stalled(tp: TrainingProcess, stall_minutes: int) -> bool:
     return False
 
 
-def detect_oom(tp: TrainingProcess) -> bool:
-    """Check log tail for OOM indicators."""
-    tail = tail_file(tp.log_path, 4096)
-    oom_patterns = [
-        "CUDA out of memory",
-        "OutOfMemoryError",
-        "torch.cuda.OutOfMemoryError",
-        "CUDA error: out of memory",
-    ]
-    return any(p in tail for p in oom_patterns)
+def detect_fatal_in_log(tp: TrainingProcess) -> Optional[str]:
+    """Check log tail for fatal errors in a still-running process.
+
+    Returns the matched error snippet if found, else None.
+    The process may hang after printing a fatal error (e.g. OOM, NCCL
+    timeout, segfault message) without exiting.  Rather than hardcoding
+    a fixed pattern list, we look for any Python exception that was
+    printed but the process is still alive — a sign it's hung.
+    """
+    tail = tail_file(tp.log_path, 8192)
+    if not tail:
+        return None
+    # Look for a Python traceback followed by no further progress
+    # (the traceback itself is in the last 8KB of the log)
+    tb_idx = tail.rfind("Traceback (most recent call last)")
+    if tb_idx == -1:
+        return None
+    # Extract from the traceback to the end
+    snippet = tail[tb_idx:]
+    # Only flag if there's very little output after the traceback
+    # (< 200 chars — just the error message, no further training output)
+    lines_after_tb = snippet.split("\n")
+    if len(lines_after_tb) > 15:
+        # Lots of output after the traceback — process recovered
+        return None
+    return snippet[:500]
 
 
 def check_disk_space(path: Path, min_gb: float) -> bool:
@@ -928,14 +944,17 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                 finished.append((tp.idea_id, gpu))
                 continue
 
-            if detect_oom(tp) and tp.process.poll() is None:
-                logger.warning("[OOM] %s — CUDA out of memory detected, killing",
-                               tp.idea_id)
+            fatal = detect_fatal_in_log(tp)
+            if fatal and tp.process.poll() is None:
+                logger.warning("[FATAL-HUNG] %s — fatal error in log but "
+                               "process still alive, killing:\n%s",
+                               tp.idea_id, fatal[:200])
                 notify("stall", {"idea_id": tp.idea_id, "gpu": gpu,
-                                 "reason": "CUDA out of memory"}, cfg)
+                                 "reason": f"Fatal error (hung): {fatal[:100]}"}, cfg)
                 _terminate_and_reap(tp.process, tp.idea_id)
                 tp.close_log()
-                _write_failure(results_dir / tp.idea_id, "CUDA out of memory")
+                _write_failure(results_dir / tp.idea_id,
+                               f"Process hung after fatal error:\n{fatal[:500]}")
                 _record_failure(failure_counts, tp.idea_id)
                 del active[gpu]
                 finished.append((tp.idea_id, gpu))
@@ -1224,11 +1243,17 @@ def _check_ideas_integrity(ideas_file: str, rp: "RoleProcess"):
         rp.ideas_pre_size, current_size,
         lost_ideas, rp.ideas_pre_count, current_count)
 
-    # Restore from .safe backup
+    # Restore from .safe backup — validate by idea count, not byte size
     backup_path = ideas_path.with_suffix(".md.safe")
     if backup_path.exists():
-        backup_size = backup_path.stat().st_size
-        if backup_size >= rp.ideas_pre_size * 0.9:
+        try:
+            backup_text = backup_path.read_text(encoding="utf-8")
+            backup_count = len(re.findall(r"^## idea-\d+:", backup_text,
+                                          re.MULTILINE))
+        except OSError:
+            backup_count = 0
+
+        if backup_count >= rp.ideas_pre_count:
             # Save the corrupted file for forensics
             corrupt_path = ideas_path.with_suffix(
                 f".md.corrupt.{int(time.time())}")
@@ -1236,13 +1261,13 @@ def _check_ideas_integrity(ideas_file: str, rp: "RoleProcess"):
             shutil.copy2(str(ideas_path), str(corrupt_path))
             # Restore
             shutil.copy2(str(backup_path), str(ideas_path))
-            logger.info("Restored ideas.md from backup (%d bytes). "
+            logger.info("Restored ideas.md from backup (%d ideas). "
                         "Corrupted version saved to %s",
-                        backup_size, corrupt_path)
+                        backup_count, corrupt_path)
         else:
-            logger.error("Backup also looks corrupted (%d bytes vs "
-                         "expected %d). NOT restoring.",
-                         backup_size, rp.ideas_pre_size)
+            logger.error("Backup also has fewer ideas (%d vs expected %d). "
+                         "NOT restoring.",
+                         backup_count, rp.ideas_pre_count)
     else:
         logger.error("No backup found at %s — cannot restore!", backup_path)
 
