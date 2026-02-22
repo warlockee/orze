@@ -35,11 +35,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import copy
+
 import atexit
 
 import yaml
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 logger = logging.getLogger("orze")
 
@@ -472,7 +474,6 @@ def _sanitize_config(config: dict) -> dict:
         return value
 
     # Deep copy to avoid modifying original
-    import copy
     config = copy.deepcopy(config)
 
     # Ensure known intermediate fields are dicts
@@ -566,11 +567,16 @@ def get_gpu_memory_used(gpu_id: int) -> Optional[int]:
         return None
 
 
-def _eval_already_running(idea_id: str) -> bool:
+def _eval_already_running(idea_id: str, cfg: dict = None) -> bool:
     """Check if an eval process is already running for this idea."""
+    eval_script = "eval"
+    if cfg:
+        script_path = cfg.get("eval_script", "")
+        if script_path:
+            eval_script = Path(script_path).stem
     try:
         result = subprocess.run(
-            ["pgrep", "-f", f"evaluate_dataset.*{idea_id}"],
+            ["pgrep", "-f", f"{eval_script}.*{idea_id}"],
             capture_output=True, text=True, timeout=5,
         )
         return result.returncode == 0
@@ -3133,7 +3139,7 @@ class Orze:
                                 or not free_for_eval):
                             break
                         # Skip if an orphaned eval is already running
-                        if _eval_already_running(iid):
+                        if _eval_already_running(iid, cfg):
                             continue
                         use_gpu = free_for_eval.pop(0)
                         ep = launch_eval(

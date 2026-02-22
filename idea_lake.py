@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS id_sequence (
 );
 """
 
-# Old columns from the pre-generic schema that need migration
+# Legacy columns from pre-1.5 schema (auto-migrated to generic JSON on first access).
+# Kept only for backward-compatible migration of old .db files.
 _OLD_METRIC_COLS = [
     "fedex_auc", "fedex_f1", "fedex_fpr", "fedex_fp", "fedex_fn", "nexar_auc",
 ]
