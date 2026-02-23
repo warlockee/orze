@@ -11,6 +11,10 @@ dist/
 build/
 src/
 
+# Admin UI exceptions
+!admin/ui/src/
+!admin/ui/dist/
+
 # Config (may contain secrets)
 orze.yaml
 .env
@@ -28,6 +32,9 @@ Thumbs.db
 # Virtual environments
 venv/
 .venv/
+
+# Node
+node_modules/
 
 # Misc
 *.tmp
