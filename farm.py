@@ -1062,6 +1062,12 @@ def check_active(active: Dict[int, TrainingProcess], results_dir: Path,
                 finished.append((tp.idea_id, gpu))
                 continue
 
+            kill_file = results_dir / tp.idea_id / ".kill"
+            if kill_file.exists():
+                logger.info("Admin kill signal for %s — terminating", tp.idea_id)
+                tp.process.terminate()
+                kill_file.unlink(missing_ok=True)
+
             continue
 
         # --- Process exited ---
@@ -3298,11 +3304,24 @@ class Orze:
                     and (get_gpu_memory_used(g) or 0)
                     <= cfg.get("gpu_mem_threshold", 2000)]
 
+            # Limit concurrent sweep variants per base idea
+            max_sweep_concurrent = cfg.get("sweep", {}).get(
+                "max_concurrent", 3)
+            sweep_counts: Dict[str, int] = {}
+            for tp in self.active.values():
+                base = tp.idea_id.split("~")[0]
+                sweep_counts[base] = sweep_counts.get(base, 0) + 1
+
             if unclaimed and free and disk_ok:
                 for gpu in free:
                     launched = False
                     while unclaimed:
                         idea_id = unclaimed.pop(0)
+                        # Enforce per-idea sweep concurrency limit
+                        if "~" in idea_id:
+                            base = idea_id.split("~")[0]
+                            if sweep_counts.get(base, 0) >= max_sweep_concurrent:
+                                continue
                         if not claim(idea_id, self.results_dir, gpu):
                             continue
                         # Write sweep config for sub-runs
@@ -3333,6 +3352,9 @@ class Orze:
                             _record_failure(self.failure_counts, idea_id)
                             continue
                         self.active[gpu] = tp
+                        if "~" in idea_id:
+                            base = idea_id.split("~")[0]
+                            sweep_counts[base] = sweep_counts.get(base, 0) + 1
                         launched = True
                         break
                     if not launched:
@@ -3581,6 +3603,8 @@ Examples:
                         help="Directory for results")
     parser.add_argument("--train-script", type=str, default=None,
                         help="Training script to run per idea")
+    parser.add_argument("--admin", action="store_true",
+                        help="Launch admin panel instead of farm loop")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
     args = parser.parse_args()
@@ -3590,6 +3614,11 @@ Examples:
     # Load project config, then apply CLI overrides
     cfg = load_project_config(args.config_file)
     cfg["_config_path"] = args.config_file  # stored for mode: research
+
+    if args.admin:
+        from orze.admin.server import run_admin
+        run_admin(cfg)
+        return
 
     if args.timeout is not None:
         cfg["timeout"] = args.timeout
