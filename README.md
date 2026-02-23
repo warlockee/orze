@@ -86,6 +86,7 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
 - **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and delegates all error diagnosis to an LLM agent (no hardcoded error patterns)
+- **Admin panel** — web dashboard at `:8787` with real-time overview, fleet status, run management, paginated queue browser with HuggingFace model info, leaderboard, and alerts. Kill runs or stop all from the UI
 - **Model discovery** — `hf_discover.py` queries HuggingFace for trending models by task/tag. Use it in a `mode: script` role to auto-discover new SOTA backbones without manual work
 - **Idea Lake** — SQLite-backed archive for completed/failed experiments. Metrics stored as generic JSON blobs (no project-specific schema). Training and eval scripts check the lake when an idea isn't in ideas.md
 - **Corruption guard** — detects if a research agent truncates ideas.md and auto-restores from rotating `.safe` backups
@@ -180,6 +181,7 @@ The watchdog **only touches orze platform code** (`farm.py`). It never modifies 
 # Launch all companions together
 nohup python orze/farm.py -c orze.yaml >> results/farm.log 2>&1 &
 nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
+nohup python -m orze.admin.server -c orze.yaml >> results/admin.log 2>&1 &  # optional — web UI at :8787
 nohup python orze/bot.py -c orze.yaml >> results/bot.log 2>&1 &  # optional
 ```
 
@@ -267,6 +269,28 @@ That's it. See [RULES.md](RULES.md) for the full specification.
 | [RULES.md](RULES.md) | Complete LLM-readable specification |
 | [orze.yaml.example](orze.yaml.example) | All configuration options |
 | [hf_discover.py](hf_discover.py) | HuggingFace model discovery utility |
+| [admin/server.py](admin/server.py) | Admin panel (web dashboard at :8787) |
+
+## Admin Panel
+
+Web dashboard for monitoring and controlling your orze cluster.
+
+```bash
+# Start alongside farm.py
+nohup python -m orze.admin.server -c orze.yaml &
+# → http://localhost:8787
+```
+
+Tabs:
+- **Overview** — GPU utilization, VRAM, queue depth, active runs, top results
+- **Fleet** — per-host heartbeat status, GPU cards with temp/util/VRAM bars
+- **Runs** — active + recent runs with log viewer, kill individual runs
+- **Queue** — paginated browser (50/page) with status/text filters, priority badges, sweep grouping, expandable config + hypothesis, HuggingFace model links
+- **Leaderboard** — top models ranked by primary metric
+- **Alerts** — recent failures, stale hosts, low disk warnings
+- **Settings** — live view of orze.yaml (secrets masked)
+
+Actions: **Stop All** (writes stop sentinel) and **Kill Run** (per-idea `.kill` file) directly from the UI.
 
 ## CLI Reference
 
