@@ -508,6 +508,102 @@ def _sanitize_config(config: dict) -> dict:
     return config
 
 
+# ---------------------------------------------------------------------------
+# HP Sweep expansion
+# ---------------------------------------------------------------------------
+
+# Keys whose list values are structural (not sweep candidates)
+_SWEEP_BLOCKLIST = frozenset({
+    "betas", "split_ratio", "stack_layers", "stack_dims",
+    "downsampling_factors", "num_heads", "feedforward_dim",
+    "output_range", "augmentations", "transforms",
+})
+
+
+def _find_sweep_keys(config: dict, prefix: str = "") -> Dict[str, list]:
+    """Recursively find list-valued scalar keys suitable for sweeping.
+
+    Returns dict of dotpath -> list-of-values.
+    """
+    found = {}
+    for key, val in config.items():
+        dotpath = f"{prefix}.{key}" if prefix else key
+        if isinstance(val, dict):
+            found.update(_find_sweep_keys(val, dotpath))
+        elif isinstance(val, list) and key not in _SWEEP_BLOCKLIST:
+            # Only sweep if all elements are scalars (int, float, str, bool)
+            if val and all(isinstance(v, (int, float, str, bool)) for v in val):
+                found[dotpath] = val
+    return found
+
+
+def _set_nested(config: dict, dotpath: str, value):
+    """Set a value at a dot-separated path in a nested dict."""
+    keys = dotpath.split(".")
+    d = config
+    for k in keys[:-1]:
+        d = d.setdefault(k, {})
+    d[keys[-1]] = value
+
+
+def expand_sweeps(ideas: Dict[str, dict],
+                  max_combos: int = 20) -> Dict[str, dict]:
+    """Expand ideas with list-valued HPs into sub-run entries.
+
+    Sub-run IDs use format: idea-123~key=val~key2=val2
+    Original ideas with no sweepable keys pass through unchanged.
+    Ideas whose ID already contains '~' are skipped (no double-expansion).
+    """
+    import itertools
+
+    expanded = {}
+    for idea_id, idea in ideas.items():
+        # Skip already-expanded sub-runs
+        if "~" in idea_id:
+            expanded[idea_id] = idea
+            continue
+
+        sweep_keys = _find_sweep_keys(idea.get("config", {}))
+        if not sweep_keys:
+            expanded[idea_id] = idea
+            continue
+
+        # Compute Cartesian product
+        keys = sorted(sweep_keys.keys())
+        values = [sweep_keys[k] for k in keys]
+        combos = list(itertools.product(*values))
+
+        if len(combos) > max_combos:
+            logger.warning(
+                "Sweep for %s has %d combos (max %d), skipping expansion",
+                idea_id, len(combos), max_combos)
+            expanded[idea_id] = idea
+            continue
+
+        logger.info("Expanding %s into %d sweep sub-runs (%s)",
+                    idea_id, len(combos),
+                    ", ".join(f"{k}={len(v)}" for k, v in zip(keys, values)))
+
+        for combo in combos:
+            suffix_parts = []
+            sub_config = copy.deepcopy(idea["config"])
+            for k, v in zip(keys, combo):
+                short_key = k.split(".")[-1]
+                suffix_parts.append(f"{short_key}={v}")
+                _set_nested(sub_config, k, v)
+
+            sub_id = f"{idea_id}~{'~'.join(suffix_parts)}"
+            expanded[sub_id] = {
+                "title": idea["title"],
+                "priority": idea.get("priority", "medium"),
+                "config": sub_config,
+                "raw": idea.get("raw", ""),
+                "_sweep_parent": idea_id,
+            }
+
+    return expanded
+
+
 def get_unclaimed(ideas: Dict[str, dict], results_dir: Path,
                   skipped: Optional[set] = None) -> List[str]:
     """Return idea IDs with no results dir, sorted by priority then ID.
@@ -1512,7 +1608,29 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     completed.sort(key=lambda r: _safe_float(r.get("primary_val")),
                    reverse=reverse)
 
-    if completed:
+    # --- Sweep grouping: split into standalone + sweep groups ---
+    standalone = []
+    sweep_groups = {}  # parent_id -> list of sub-run rows
+    for r in completed:
+        if "~" in r["id"]:
+            parent_id = r["id"].split("~", 1)[0]
+            sweep_groups.setdefault(parent_id, []).append(r)
+        else:
+            standalone.append(r)
+
+    # Build main table: standalone + best of each sweep group
+    main_rows = list(standalone)
+    for parent_id, children in sweep_groups.items():
+        children.sort(key=lambda r: _safe_float(r.get("primary_val")),
+                      reverse=reverse)
+        best = dict(children[0])
+        best["title"] = f"{best['title']} (best of {len(children)})"
+        main_rows.append(best)
+
+    main_rows.sort(key=lambda r: _safe_float(r.get("primary_val")),
+                   reverse=reverse)
+
+    if main_rows:
         header = "| Rank | Idea | Title"
         sep = "|------|------|------"
         for col in columns:
@@ -1524,8 +1642,8 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
         lines.append(header)
         lines.append(sep)
 
-        for rank, r in enumerate(completed, 1):
-            row = f"| {rank} | {r['id']} | {r['title'][:40]}"
+        for rank, r in enumerate(main_rows, 1):
+            row = f"| {rank} | {r['id']} | {r['title'][:50]}"
             for col in columns:
                 key = col.get("key")
                 if not key:
@@ -1544,6 +1662,25 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
             lines.append(row)
         lines.append("")
 
+    # --- Sweep Details section ---
+    if sweep_groups:
+        lines.append("## Sweep Details")
+        lines.append("")
+        for parent_id in sorted(sweep_groups.keys(), key=_id_sort_key):
+            children = sweep_groups[parent_id]
+            children.sort(key=lambda r: _safe_float(r.get("primary_val")),
+                          reverse=reverse)
+            lines.append(f"### {parent_id} ({len(children)} variants)")
+            lines.append(f"| Rank | Sub-run | {primary_metric} |")
+            lines.append("|------|---------|" + "-" * max(6, len(primary_metric)) + "|")
+            for i, r in enumerate(children, 1):
+                pv = r.get("primary_val", "—")
+                if isinstance(pv, float):
+                    pv = f"{pv:.4f}"
+                suffix = r["id"].split("~", 1)[1] if "~" in r["id"] else r["id"]
+                lines.append(f"| {i} | {suffix} | {pv} |")
+            lines.append("")
+
     failed = [r for r in rows if r["status"] == "FAILED"]
     if failed:
         lines.append("## Failed")
@@ -1557,7 +1694,7 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     if queued:
         lines.append(f"## Queue ({len(queued)} ideas)")
         for r in queued[:20]:
-            pri = ideas[r["id"]]["priority"]
+            pri = ideas.get(r["id"], {}).get("priority", "medium")
             lines.append(f"- **{r['id']}** [{pri}]: {r['title'][:60]}")
         if len(queued) > 20:
             lines.append(f"- ... and {len(queued) - 20} more")
@@ -3013,8 +3150,10 @@ class Orze:
             except Exception as e:
                 logger.error("Error in _run_all_roles: %s — continuing", e)
 
-            # 5. Parse ideas and find unclaimed
+            # 5. Parse ideas, expand sweeps, and find unclaimed
             ideas = parse_ideas(cfg["ideas_file"])
+            sweep_max = cfg.get("sweep", {}).get("max_combos", 20)
+            ideas = expand_sweeps(ideas, max_combos=sweep_max)
             skipped = get_skipped_ideas(
                 self.failure_counts,
                 cfg.get("max_idea_failures", 0))
@@ -3166,6 +3305,12 @@ class Orze:
                         idea_id = unclaimed.pop(0)
                         if not claim(idea_id, self.results_dir, gpu):
                             continue
+                        # Write sweep config for sub-runs
+                        if ideas.get(idea_id, {}).get("_sweep_parent"):
+                            atomic_write(
+                                self.results_dir / idea_id / "sweep_config.yaml",
+                                yaml.dump(ideas[idea_id]["config"],
+                                          default_flow_style=False))
                         if not run_pre_script(idea_id, gpu, cfg):
                             logger.warning(
                                 "Pre-script failed for %s, marking FAILED",
