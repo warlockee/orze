@@ -81,6 +81,7 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Health monitoring** — stall detection, generic traceback detection, disk space checks
 - **Push notifications** — Telegram, Slack, Discord, or any webhook. Every message includes the top 10 leaderboard
 - **Telegram bot** — text back to the bot in natural language to check status, query results, or add ideas from your phone
+- **HP sweep** — list-valued hyperparameters (e.g. `lr: [1e-4, 3e-4]`) auto-expand into sub-runs via Cartesian product, with configurable `max_combos` guard. Report groups sweep variants and surfaces the best
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
@@ -138,6 +139,29 @@ telegram_bot:
   timeout: 120
   rate_limit: 10            # max messages per minute
 ```
+
+## HP Sweep
+
+Put a list where you'd normally put a scalar in your idea's YAML block, and orze expands it into sub-runs automatically:
+
+```yaml
+## idea-042: Try different learning rates
+optimizer:
+  lr: [1e-4, 3e-4, 1e-3]
+  weight_decay: 0.01
+```
+
+This creates three sub-runs: `idea-042~lr=0.0001`, `idea-042~lr=0.0003`, `idea-042~lr=0.001`. Each gets its own results dir, checkpoint, and eval. The report shows the best sub-run in the main leaderboard table with a "best of N" label, plus a Sweep Details section listing all variants.
+
+Multiple keys produce a Cartesian product (`lr: [1e-4, 3e-4]` × `weight_decay: [0.01, 0.05]` = 4 runs). Guarded by `max_combos` (default 20) to prevent accidental explosions.
+
+```yaml
+# In orze.yaml
+sweep:
+  max_combos: 20
+```
+
+Structural list keys (`betas`, `split_ratio`, `stack_layers`, etc.) are never treated as sweeps.
 
 ## Self-Healing
 
