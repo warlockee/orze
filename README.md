@@ -85,6 +85,7 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
 - **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and delegates all error diagnosis to an LLM agent (no hardcoded error patterns)
+- **Model discovery** — `hf_discover.py` queries HuggingFace for trending models by task/tag. Use it in a `mode: script` role to auto-discover new SOTA backbones without manual work
 - **Idea Lake** — SQLite-backed archive for completed/failed experiments. Metrics stored as generic JSON blobs (no project-specific schema). Training and eval scripts check the lake when an idea isn't in ideas.md
 - **Corruption guard** — detects if a research agent truncates ideas.md and auto-restores from rotating `.safe` backups
 - **Eval failure markers** — writes generic FAILED reports for crashed evals so the backlog scanner doesn't re-queue them forever
@@ -241,6 +242,7 @@ That's it. See [RULES.md](RULES.md) for the full specification.
 | [AGENT.md](AGENT.md) | Claude Code bootstrap — `@orze/AGENT.md` |
 | [RULES.md](RULES.md) | Complete LLM-readable specification |
 | [orze.yaml.example](orze.yaml.example) | All configuration options |
+| [hf_discover.py](hf_discover.py) | HuggingFace model discovery utility |
 
 ## CLI Reference
 
