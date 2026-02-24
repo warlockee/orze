@@ -22,6 +22,7 @@ import html as html_mod
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import signal
@@ -1743,9 +1744,146 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     return completed
 
 
+def write_admin_cache(results_dir: Path, ideas: dict, cfg: dict):
+    """Write pre-aggregated _admin_cache.json for instant admin panel access.
+
+    Aggregates fleet (heartbeats + GPU info), queue (with status),
+    and alerts — so the admin server never needs to scan the filesystem.
+    """
+    now = time.time()
+
+    # --- Fleet: enrich heartbeats ---
+    raw_hb = _read_all_heartbeats(results_dir, stale_seconds=600)
+    heartbeats = []
+    for hb in raw_hb:
+        age = now - hb.get("epoch", 0)
+        status = "online"
+        if age > 300:
+            status = "offline"
+        elif age > 120:
+            status = "degraded"
+        heartbeats.append({
+            **hb,
+            "status": status,
+            "heartbeat_age_sec": round(age, 1),
+        })
+
+    # --- Queue: expanded ideas with status ---
+    sweep_max = cfg.get("sweep", {}).get("max_combos", 20)
+    expanded = expand_sweeps(dict(ideas), max_combos=sweep_max)
+    all_statuses: dict = {}
+    queue_items = []
+    for idea_id, idea in expanded.items():
+        idea_dir = results_dir / idea_id
+        idea_status = "pending"
+        if idea_dir.exists():
+            mpath = idea_dir / "metrics.json"
+            if mpath.exists():
+                try:
+                    m = json.loads(mpath.read_text(encoding="utf-8"))
+                    idea_status = m.get("status", "COMPLETED").lower()
+                except (json.JSONDecodeError, OSError):
+                    idea_status = "running"
+            else:
+                idea_status = "running"
+        all_statuses[idea_status] = all_statuses.get(idea_status, 0) + 1
+        queue_items.append({
+            "idea_id": idea_id,
+            "title": idea.get("title", ""),
+            "priority": idea.get("priority", "medium"),
+            "status": idea_status,
+            "config": idea.get("config", {}),
+            "sweep_parent": idea.get("_sweep_parent"),
+        })
+
+    # --- Alerts ---
+    alerts = []
+    two_hours_ago = now - 7200
+    try:
+        with os.scandir(results_dir) as it:
+            for entry in it:
+                if not entry.is_dir() or not entry.name.startswith("idea-"):
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime < two_hours_ago:
+                    continue
+                mpath = Path(entry.path) / "metrics.json"
+                if not mpath.exists():
+                    continue
+                try:
+                    m = json.loads(mpath.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if m.get("status") not in ("FAILED", "ERROR"):
+                    continue
+                alerts.append({
+                    "type": "failure",
+                    "idea_id": entry.name,
+                    "error": str(m.get("error", m.get("status", "")))[:200],
+                    "minutes_ago": round((now - mtime) / 60, 1),
+                })
+    except OSError:
+        pass
+
+    for hb in heartbeats:
+        if hb.get("status") == "offline":
+            alerts.append({
+                "type": "stale_host",
+                "host": hb.get("host", "unknown"),
+                "minutes_ago": round(hb.get("heartbeat_age_sec", 0) / 60, 1),
+            })
+
+    try:
+        usage = shutil.disk_usage(results_dir)
+        disk_free = round(usage.free / (1024 ** 3), 1)
+        if disk_free < 50:
+            alerts.append({"type": "low_disk", "disk_free_gb": disk_free})
+    except Exception:
+        pass
+
+    cache = {
+        "fleet": {"heartbeats": heartbeats, "local_gpus": []},
+        "queue": {"items": queue_items, "counts": all_statuses,
+                  "total_all": sum(all_statuses.values())},
+        "alerts": {"alerts": alerts, "count": len(alerts)},
+        "epoch": now,
+    }
+    atomic_write(results_dir / "_admin_cache.json",
+                 json.dumps(cache, default=str))
+
+
 # ---------------------------------------------------------------------------
 # Status JSON (for LLM consumption)
 # ---------------------------------------------------------------------------
+
+def _query_gpu_details() -> List[dict]:
+    """Query nvidia-smi for per-GPU stats (memory, util, temp)."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        gpus = []
+        for line in result.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 6:
+                gpus.append({
+                    "index": int(parts[0]),
+                    "name": parts[1],
+                    "memory_used_mib": int(parts[2]),
+                    "memory_total_mib": int(parts[3]),
+                    "utilization_pct": int(parts[4]),
+                    "temperature_c": int(parts[5]),
+                })
+        return gpus
+    except Exception:
+        return []
+
 
 def write_host_heartbeat(results_dir: Path,
                          active: Dict[int, TrainingProcess],
@@ -1769,6 +1907,8 @@ def write_host_heartbeat(results_dir: Path,
             for tp in active.values()
         ],
         "free_gpus": free_gpus,
+        "gpu_info": _query_gpu_details(),
+        "os": f"{platform.system()} {platform.release()}",
     }
     atomic_write(results_dir / f"_host_{hostname}_{pid}.json",
                  json.dumps(heartbeat, indent=2))
@@ -3481,6 +3621,12 @@ class Orze:
                 counts.get("FAILED", 0), len(skipped), top_results, cfg,
                 role_states=self.role_states,
             )
+
+            # 9b. Admin cache (pre-aggregated fleet/queue/alerts)
+            try:
+                write_admin_cache(self.results_dir, ideas, cfg)
+            except Exception as e:
+                logger.warning("Admin cache write failed: %s", e)
 
             # 10. Save state
             save_state(self.results_dir, {

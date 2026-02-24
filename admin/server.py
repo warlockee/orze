@@ -17,7 +17,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -30,11 +29,8 @@ from fastapi.staticfiles import StaticFiles
 
 from orze.farm import (
     atomic_write,
-    detect_all_gpus,
-    expand_sweeps,
     load_project_config,
     parse_ideas,
-    _read_all_heartbeats,
 )
 from scripts.dashcam_risk.backbone_registry import BACKBONE_REGISTRY
 from orze.research_agent import append_ideas_to_md, format_idea_markdown
@@ -183,49 +179,6 @@ def _strip_sensitive(obj: Any) -> Any:
     return obj
 
 
-def _nvidia_smi_query() -> List[dict]:
-    """Query nvidia-smi for local GPU details."""
-    try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True, text=True, timeout=10,
-        )
-        gpus = []
-        for line in result.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) >= 6:
-                gpus.append({
-                    "index": int(parts[0]),
-                    "name": parts[1],
-                    "memory_used_mib": int(parts[2]),
-                    "memory_total_mib": int(parts[3]),
-                    "utilization_pct": int(parts[4]),
-                    "temperature_c": int(parts[5]),
-                })
-        return gpus
-    except Exception:
-        return []
-
-
-def _scan_idea_dirs() -> List[Path]:
-    """Scan results dir for idea-* directories using os.scandir."""
-    rd = _results_dir()
-    if not rd.exists():
-        return []
-    dirs = []
-    try:
-        with os.scandir(rd) as it:
-            for entry in it:
-                if entry.is_dir() and entry.name.startswith("idea-"):
-                    dirs.append(Path(entry.path))
-    except OSError:
-        pass
-    return sorted(dirs)
-
 
 def _tail_lines(path: Path, n: int = 200) -> str:
     """Read last n lines of a text file."""
@@ -258,33 +211,20 @@ async def get_status():
     return data
 
 
-def _build_fleet() -> dict:
-    rd = _results_dir()
-    raw_heartbeats = _read_all_heartbeats(rd, stale_seconds=600)
-    local_gpus = _nvidia_smi_query()
-    now = time.time()
-
-    heartbeats = []
-    for hb in raw_heartbeats:
-        age = now - hb.get("epoch", 0)
-        status = "online"
-        if age > 300:
-            status = "offline"
-        elif age > 120:
-            status = "degraded"
-        heartbeats.append({
-            **hb,
-            "status": status,
-            "heartbeat_age_sec": round(age, 1),
-        })
-
-    return {"heartbeats": heartbeats, "local_gpus": local_gpus}
+def _read_admin_cache() -> Optional[dict]:
+    """Read the pre-aggregated admin cache written by farm.py."""
+    return _read_json(_results_dir() / "_admin_cache.json")
 
 
 @app.get("/api/fleet")
 async def get_fleet():
-    """Host heartbeats + local nvidia-smi GPU details."""
-    return _cached("fleet", 5.0, _build_fleet)
+    """Host heartbeats + GPU details from admin cache."""
+    def _get():
+        cache = _read_admin_cache()
+        if cache and cache.get("fleet"):
+            return cache["fleet"]
+        return {"heartbeats": [], "local_gpus": []}
+    return _cached("fleet", 5.0, _get)
 
 
 @app.get("/api/runs")
@@ -410,69 +350,35 @@ async def get_queue(
     status_filter: str = "",
     search: str = "",
 ):
-    """Return paginated, filterable queue with server-side sorting."""
-    def _expand():
-        ideas = parse_ideas(_ideas_file())
-        sweep_max = _cfg.get("sweep", {}).get("max_combos", 20)
-        return expand_sweeps(dict(ideas), max_combos=sweep_max)
-    expanded = _cached("expanded_ideas", 10.0, _expand)
-
-    def _extract_field(raw: str, key: str) -> str:
-        m = re.search(rf"\*\*{key}\*\*:\s*(.+)", raw)
-        return m.group(1).strip() if m else ""
+    """Return paginated, filterable queue from admin cache."""
+    cache = _cached("admin_cache", 5.0,
+                    lambda: _read_admin_cache() or {})
+    queue_data = cache.get("queue", {})
+    all_items = queue_data.get("items", [])
+    all_statuses = queue_data.get("counts", {})
 
     priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     status_order = {"pending": 0, "running": 1, "completed": 2, "failed": 3, "error": 4}
 
-    # Counts across ALL items (before filtering)
-    all_statuses: Dict[str, int] = {}
-
+    # Enrich with HF info and filter
     results = []
-    for idea_id, idea in expanded.items():
-        idea_dir = _results_dir() / idea_id
-        idea_status = "pending"
-        if idea_dir.exists():
-            metrics = _read_json(idea_dir / "metrics.json")
-            if metrics:
-                idea_status = metrics.get("status", "COMPLETED").lower()
-            else:
-                idea_status = "running"
-
-        all_statuses[idea_status] = all_statuses.get(idea_status, 0) + 1
-
-        # Server-side status filter
-        if status_filter and idea_status != status_filter:
+    for item in all_items:
+        if status_filter and item.get("status") != status_filter:
             continue
-
-        # Server-side search filter
-        title = idea.get("title", "")
         if search:
             s = search.lower()
-            if (s not in idea_id.lower()
-                    and s not in title.lower()
-                    and s not in idea.get("raw", "").lower()):
+            if (s not in item.get("idea_id", "").lower()
+                    and s not in item.get("title", "").lower()):
                 continue
-
-        raw = idea.get("raw", "")
-        results.append({
-            "idea_id": idea_id,
-            "title": title,
-            "priority": idea.get("priority", "medium"),
-            "status": idea_status,
-            "config": idea.get("config", {}),
-            "category": _extract_field(raw, "Category"),
-            "parent": _extract_field(raw, "Parent"),
-            "hypothesis": _extract_field(raw, "Hypothesis"),
-            "sweep_parent": idea.get("_sweep_parent"),
-            "huggingface": _get_hf_info(
-                idea.get("config", {}).get("backbone", {}).get("name", "")
-            ),
-        })
+        # Add HF info on-demand (cheap lookup, no I/O)
+        item["huggingface"] = _get_hf_info(
+            item.get("config", {}).get("backbone", {}).get("name", ""))
+        results.append(item)
 
     results.sort(key=lambda r: (
-        status_order.get(r["status"], 9),
-        priority_order.get(r["priority"], 9),
-        r["idea_id"],
+        status_order.get(r.get("status", ""), 9),
+        priority_order.get(r.get("priority", ""), 9),
+        r.get("idea_id", ""),
     ))
 
     total_filtered = len(results)
@@ -483,7 +389,7 @@ async def get_queue(
     return {
         "queue": page_items,
         "total": total_filtered,
-        "total_all": sum(all_statuses.values()),
+        "total_all": queue_data.get("total_all", 0),
         "page": page,
         "per_page": per_page,
         "total_pages": total_pages,
@@ -493,65 +399,13 @@ async def get_queue(
 
 @app.get("/api/alerts")
 async def get_alerts():
-    """Scan for recent failures, stale hosts, low disk space."""
-    alerts: List[dict] = []
-    now = time.time()
-    two_hours_ago = now - 7200
-
-    # 1. Recent failures — scan only dirs modified in last 2 hours
-    rd = _results_dir()
-    if rd.exists():
-        try:
-            with os.scandir(rd) as it:
-                for entry in it:
-                    if not entry.is_dir() or not entry.name.startswith("idea-"):
-                        continue
-                    try:
-                        mtime = entry.stat().st_mtime
-                    except OSError:
-                        continue
-                    if mtime < two_hours_ago:
-                        continue
-                    metrics = _read_json(Path(entry.path) / "metrics.json")
-                    if metrics is None:
-                        continue
-                    status = metrics.get("status", "")
-                    if status not in ("FAILED", "ERROR"):
-                        continue
-                    alerts.append({
-                        "type": "failure",
-                        "idea_id": entry.name,
-                        "error": str(metrics.get("error", status))[:200],
-                        "minutes_ago": round((now - mtime) / 60, 1),
-                    })
-        except OSError:
-            pass
-
-    # 2. Stale heartbeats (hosts not reporting)
-    for hb_path in _results_dir().glob("_host_*.json"):
-        try:
-            hb = json.loads(hb_path.read_text(encoding="utf-8"))
-            age = now - hb.get("epoch", 0)
-            if age > 300:  # stale > 5 minutes
-                alerts.append({
-                    "type": "stale_host",
-                    "host": hb.get("host", "unknown"),
-                    "minutes_ago": round(age / 60, 1),
-                })
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    # 3. Low disk space from status.json
-    status_data = _read_json(_results_dir() / "status.json")
-    if status_data:
-        disk_free = status_data.get("disk_free_gb", 999)
-        if disk_free < 50:
-            alerts.append({
-                "type": "low_disk",
-                "disk_free_gb": disk_free,
-            })
-
-    return {"alerts": alerts, "count": len(alerts)}
+    """Alerts from admin cache."""
+    def _get():
+        cache = _read_admin_cache()
+        if cache and cache.get("alerts"):
+            return cache["alerts"]
+        return {"alerts": [], "count": 0}
+    return _cached("alerts", 5.0, _get)
 
 
 @app.get("/api/config")
@@ -659,10 +513,16 @@ def run_admin(cfg: dict, host: str = "0.0.0.0", port: int = 8787):
     logger.info("  results_dir: %s", cfg.get("results_dir", "results"))
     logger.info("  ideas_file:  %s", cfg.get("ideas_file", "ideas.md"))
 
-    # Pre-warm caches so first request is instant
+    # Pre-warm: read admin cache once so first requests are instant
     try:
-        _cached("fleet", 5.0, _build_fleet)
-        _cached("leaderboard", 10, lambda: _read_json(_results_dir() / "_leaderboard.json") or {"top": [], "metric": ""})
+        ac = _read_admin_cache()
+        if ac:
+            _cache["admin_cache"] = (ac, time.monotonic())
+            _cache["fleet"] = (ac.get("fleet", {"heartbeats": [], "local_gpus": []}), time.monotonic())
+            _cache["alerts"] = (ac.get("alerts", {"alerts": [], "count": 0}), time.monotonic())
+        lb = _read_json(_results_dir() / "_leaderboard.json")
+        if lb:
+            _cache["leaderboard"] = (lb, time.monotonic())
         logger.info("Cache pre-warmed")
     except Exception as e:
         logger.warning("Cache pre-warm failed: %s", e)
