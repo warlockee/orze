@@ -1714,8 +1714,32 @@ def run_post_scripts(idea_id: str, gpu: int, results_dir: Path, cfg: dict):
 # ---------------------------------------------------------------------------
 
 def run_cleanup(results_dir: Path, cfg: dict):
-    """Run periodic cleanup: delete files matching patterns, run cleanup script."""
+    """Run periodic cleanup: GC checkpoints, delete file patterns, run script."""
     cleanup_cfg = cfg.get("cleanup") or {}
+
+    # GC: delete checkpoint dirs for non-top experiments
+    gc_cfg = cfg.get("gc") or {}
+    if gc_cfg.get("enabled") and gc_cfg.get("checkpoints_dir"):
+        try:
+            from orze_gc import run_gc  # orze/gc.py (aliased to avoid stdlib gc)
+            report_cfg = cfg.get("report") or {}
+            ideas_path = Path(cfg.get("ideas_file", "ideas.md"))
+            lake_path = ideas_path.parent / "idea_lake.db"
+            stats = run_gc(
+                results_dir=results_dir,
+                checkpoints_dir=Path(gc_cfg["checkpoints_dir"]),
+                primary_metric=report_cfg.get("primary_metric", ""),
+                lake_db_path=lake_path if lake_path.exists() else None,
+                keep_top=gc_cfg.get("keep_top", 50),
+                keep_recent=gc_cfg.get("keep_recent", 20),
+                min_free_gb=gc_cfg.get("min_free_gb", 0),
+            )
+            cs = stats.get("checkpoints", {})
+            if cs.get("deleted", 0) > 0:
+                logger.info("GC: deleted %d checkpoint dirs, kept %d",
+                            cs["deleted"], cs["kept"])
+        except Exception as e:
+            logger.warning("GC failed: %s", e)
 
     # Built-in: delete files matching glob patterns in results dirs
     patterns = cleanup_cfg.get("patterns") or []

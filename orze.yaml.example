@@ -40,6 +40,16 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 #   claude_bin: claude               # path to Claude CLI
 #   timeout: 300                     # max time per fix attempt (seconds)
 
+# --- Checkpoint garbage collection (optional) ---
+# Deletes checkpoint dirs for non-top experiments to free disk space.
+# Runs during the periodic cleanup cycle (every cleanup.interval iterations).
+# gc:
+#   enabled: true
+#   checkpoints_dir: checkpoints         # where model checkpoints are saved
+#   keep_top: 50                         # keep top N by primary_metric
+#   keep_recent: 20                      # also keep N most recently completed
+#   min_free_gb: 100                     # only run GC when disk free < this (0 = always)
+
 # --- Pre-training hook (optional) ---
 # Runs before each training launch. Exit 0 = proceed, non-zero = skip idea.
 # Use for: feature extraction check, config validation, disk space check.
