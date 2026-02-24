@@ -258,15 +258,12 @@ async def get_status():
     return data
 
 
-@app.get("/api/fleet")
-async def get_fleet():
-    """Host heartbeats + local nvidia-smi GPU details."""
+def _build_fleet() -> dict:
     rd = _results_dir()
-    raw_heartbeats = _cached("heartbeats", 3.0, lambda: _read_all_heartbeats(rd, stale_seconds=600))
-    local_gpus = _cached("nvidia_smi", 5.0, _nvidia_smi_query)
+    raw_heartbeats = _read_all_heartbeats(rd, stale_seconds=600)
+    local_gpus = _nvidia_smi_query()
     now = time.time()
 
-    # Enrich heartbeats with computed fields the frontend needs
     heartbeats = []
     for hb in raw_heartbeats:
         age = now - hb.get("epoch", 0)
@@ -281,10 +278,13 @@ async def get_fleet():
             "heartbeat_age_sec": round(age, 1),
         })
 
-    return {
-        "heartbeats": heartbeats,
-        "local_gpus": local_gpus,
-    }
+    return {"heartbeats": heartbeats, "local_gpus": local_gpus}
+
+
+@app.get("/api/fleet")
+async def get_fleet():
+    """Host heartbeats + local nvidia-smi GPU details."""
+    return _cached("fleet", 5.0, _build_fleet)
 
 
 @app.get("/api/runs")
@@ -658,6 +658,15 @@ def run_admin(cfg: dict, host: str = "0.0.0.0", port: int = 8787):
     logger.info("Starting Orze Admin Panel on %s:%d", host, port)
     logger.info("  results_dir: %s", cfg.get("results_dir", "results"))
     logger.info("  ideas_file:  %s", cfg.get("ideas_file", "ideas.md"))
+
+    # Pre-warm caches so first request is instant
+    try:
+        _cached("fleet", 5.0, _build_fleet)
+        _cached("leaderboard", 10, lambda: _read_json(_results_dir() / "_leaderboard.json") or {"top": [], "metric": ""})
+        logger.info("Cache pre-warmed")
+    except Exception as e:
+        logger.warning("Cache pre-warm failed: %s", e)
+
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

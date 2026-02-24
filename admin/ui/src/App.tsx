@@ -47,7 +47,7 @@ export default function OrzeAdminPanel() {
 
   const tabs: { key: Tab; label: string; icon: any }[] = [
     { key: 'overview', label: 'Overview', icon: Activity },
-    { key: 'fleet', label: 'Fleet', icon: Server },
+    { key: 'fleet', label: 'Nodes', icon: Server },
     { key: 'runs', label: 'Runs', icon: Play },
     { key: 'queue', label: 'Queue', icon: ListOrdered },
     { key: 'leaderboard', label: 'Leaderboard', icon: Award },
