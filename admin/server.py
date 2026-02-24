@@ -37,7 +37,6 @@ from orze.farm import (
     _read_all_heartbeats,
 )
 from scripts.dashcam_risk.backbone_registry import BACKBONE_REGISTRY
-from orze.idea_lake import IdeaLake
 from orze.research_agent import append_ideas_to_md, format_idea_markdown
 
 logger = logging.getLogger("orze.admin")
@@ -51,6 +50,9 @@ _SENSITIVE_KEYS = {
 
 app = FastAPI(title="Orze Admin Panel", version="0.1.0")
 
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -58,6 +60,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def cache_static_assets(request: Request, call_next):
+    response = await call_next(request)
+    # Hashed asset filenames are immutable — cache forever
+    if "/assets/" in request.url.path:
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
 
 # Populated by run_admin() before uvicorn starts
 _cfg: Dict[str, Any] = {}
@@ -70,9 +81,6 @@ def _results_dir() -> Path:
 def _ideas_file() -> str:
     return _cfg.get("ideas_file", "ideas.md")
 
-
-def _idea_lake_path() -> Optional[str]:
-    return _cfg.get("idea_lake", None)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +139,24 @@ def _get_hf_info(backbone_name: str) -> Optional[dict]:
         "img_size": img_size,
         "source": source or "known",
     }
+
+
+# ---------------------------------------------------------------------------
+#  TTL Cache
+# ---------------------------------------------------------------------------
+
+_cache: Dict[str, tuple] = {}
+
+
+def _cached(key: str, ttl: float, fn):
+    """Return cached value if within TTL, else call fn() and cache result."""
+    now = time.monotonic()
+    entry = _cache.get(key)
+    if entry and now - entry[1] < ttl:
+        return entry[0]
+    val = fn()
+    _cache[key] = (val, time.monotonic())
+    return val
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +261,9 @@ async def get_status():
 @app.get("/api/fleet")
 async def get_fleet():
     """Host heartbeats + local nvidia-smi GPU details."""
-    raw_heartbeats = _read_all_heartbeats(_results_dir(), stale_seconds=600)
-    local_gpus = _nvidia_smi_query()
+    rd = _results_dir()
+    raw_heartbeats = _cached("heartbeats", 3.0, lambda: _read_all_heartbeats(rd, stale_seconds=600))
+    local_gpus = _cached("nvidia_smi", 5.0, _nvidia_smi_query)
     now = time.time()
 
     # Enrich heartbeats with computed fields the frontend needs
@@ -270,7 +297,7 @@ async def get_runs(limit: int = 50):
     raw_active = status_data.get("active", []) if status_data else []
 
     # Enrich active runs with human-readable titles from ideas.md
-    ideas = parse_ideas(_ideas_file())
+    ideas = _cached("parsed_ideas", 10.0, lambda: parse_ideas(_ideas_file()))
     active = []
     for r in raw_active:
         idea_id = r.get("idea_id", "")
@@ -359,56 +386,14 @@ async def get_run_log(idea_id: str):
 
 @app.get("/api/leaderboard")
 async def get_leaderboard():
-    """Top models from IdeaLake."""
-    metric = _cfg.get("report", {}).get("primary_metric", "test_accuracy")
-    lake_path = _idea_lake_path()
-    if not lake_path or not Path(lake_path).exists():
-        fallback = Path("idea_lake.db")
-        if not fallback.exists():
-            return {"top": [], "metric": metric}
-        lake_path = str(fallback)
-
-    lake = IdeaLake(lake_path)
-    try:
-        raw_top = lake.get_top_models(metric=metric, n=20)
-    finally:
-        lake.close()
-
-    # Flatten eval_metrics so frontend can access metric_value directly
-    top = []
-    for entry in raw_top:
-        em = entry.get("eval_metrics") or {}
-        if isinstance(em, str):
-            try:
-                em = json.loads(em)
-            except (json.JSONDecodeError, TypeError):
-                em = {}
-        # Find the primary metric value
-        metric_value = em.get(metric)
-        if metric_value is None:
-            # Try common prefixed variants
-            for k, v in em.items():
-                if metric in k:
-                    metric_value = v
-                    break
-        # training_time often not in idea_lake — read from metrics.json
-        training_time = entry.get("training_time")
-        if training_time is None:
-            idea_id = entry.get("idea_id", "")
-            mj = _read_json(_results_dir() / idea_id / "metrics.json")
-            if mj:
-                training_time = mj.get("training_time")
-
-        top.append({
-            "idea_id": entry.get("idea_id", ""),
-            "title": entry.get("title", ""),
-            "metric_value": metric_value,
-            "training_time": training_time,
-            "status": entry.get("status", ""),
-            "eval_metrics": em,
-        })
-
-    return {"top": top, "metric": metric}
+    """Top models — reads _leaderboard.json written by farm.py update_report()."""
+    def _read_lb():
+        lb = _read_json(_results_dir() / "_leaderboard.json")
+        if lb and lb.get("top"):
+            return lb
+        metric = (_cfg.get("report") or {}).get("primary_metric", "test_accuracy")
+        return {"top": [], "metric": metric}
+    return _cached("leaderboard", 10, _read_lb)
 
 
 @app.get("/api/ideas")
@@ -426,9 +411,11 @@ async def get_queue(
     search: str = "",
 ):
     """Return paginated, filterable queue with server-side sorting."""
-    ideas = parse_ideas(_ideas_file())
-    sweep_max = _cfg.get("sweep", {}).get("max_combos", 20)
-    expanded = expand_sweeps(dict(ideas), max_combos=sweep_max)
+    def _expand():
+        ideas = parse_ideas(_ideas_file())
+        sweep_max = _cfg.get("sweep", {}).get("max_combos", 20)
+        return expand_sweeps(dict(ideas), max_combos=sweep_max)
+    expanded = _cached("expanded_ideas", 10.0, _expand)
 
     def _extract_field(raw: str, key: str) -> str:
         m = re.search(rf"\*\*{key}\*\*:\s*(.+)", raw)
