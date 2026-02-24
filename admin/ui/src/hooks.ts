@@ -10,12 +10,15 @@ import type {
 
 export type Polled<T> = T & { _loading: boolean };
 
+// Module-level cache: survives tab unmount/remount
+const _responseCache = new Map<string, any>();
+
 function usePolling<T>(url: string, interval: number, initial: T): Polled<T> {
-  const [data, setData] = useState<T>(initial);
-  const [loading, setLoading] = useState(true);
+  const cached = _responseCache.get(url);
+  const [data, setData] = useState<T>(cached ?? initial);
+  const [loading, setLoading] = useState(!cached);
   useEffect(() => {
     let active = true;
-    setLoading(true);
     const f = () =>
       fetch(url)
         .then((r) => {
@@ -23,6 +26,7 @@ function usePolling<T>(url: string, interval: number, initial: T): Polled<T> {
           return r.json();
         })
         .then((d) => {
+          _responseCache.set(url, d);
           if (active) { setData(d); setLoading(false); }
         })
         .catch(() => {});
