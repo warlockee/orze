@@ -3215,18 +3215,26 @@ class Orze:
                 r"^## idea-\d+:", ideas_file.read_text(encoding="utf-8"),
                 re.MULTILINE))
             # Rotate backups: keep last 3
-            backup_base = ideas_file.with_suffix(".md.safe")
-            for i in range(2, 0, -1):
-                src = Path(f"{backup_base}.{i}")
-                dst = Path(f"{backup_base}.{i + 1}")
-                if src.exists():
-                    src.rename(dst)
-            if backup_base.exists():
-                backup_base.rename(Path(f"{backup_base}.1"))
-            import shutil
-            shutil.copy2(str(ideas_file), str(backup_base))
-            logger.debug("ideas.md backup: %d bytes, %d ideas",
-                         ideas_pre_size, ideas_pre_count)
+            # Wrapped in try/except: on shared FSX, concurrent roles can race
+            # on the same backup files (each role has its own lock, but all
+            # roles share ideas.md.safe*). A TOCTOU between exists() and
+            # rename() raises FileNotFoundError which must not abort the role.
+            try:
+                backup_base = ideas_file.with_suffix(".md.safe")
+                for i in range(2, 0, -1):
+                    src = Path(f"{backup_base}.{i}")
+                    dst = Path(f"{backup_base}.{i + 1}")
+                    if src.exists():
+                        src.rename(dst)
+                if backup_base.exists():
+                    backup_base.rename(Path(f"{backup_base}.1"))
+                import shutil
+                shutil.copy2(str(ideas_file), str(backup_base))
+                logger.debug("ideas.md backup: %d bytes, %d ideas",
+                             ideas_pre_size, ideas_pre_count)
+            except OSError as _backup_err:
+                logger.debug("ideas.md backup skipped (concurrent rename race): %s",
+                             _backup_err)
 
         # Launch non-blocking
         try:
