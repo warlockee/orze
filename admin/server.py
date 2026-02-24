@@ -47,7 +47,7 @@ _SENSITIVE_KEYS = {
     "ANTHROPIC_API_KEY", "LLM_API_KEY",
 }
 
-app = FastAPI(title="Orze Admin Panel", version="0.1.0")
+app = FastAPI(title="Orze Admin Panel", version="1.10.0")
 
 from starlette.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=500)
