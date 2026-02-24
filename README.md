@@ -85,6 +85,7 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
+- **Executor LLM fix** — when an experiment fails, an LLM automatically diagnoses the error, patches project code, and retries. Configurable attempt limit per idea. Previous attempt logs are fed back so the LLM doesn't repeat itself. Concurrent-safe: fixes are conditional to avoid breaking other running experiments
 - **Self-healing** — companion `bug_fixer.py` watchdog runs alongside farm.py, auto-restarts crashed processes, kills stuck jobs, and delegates all error diagnosis to an LLM agent (no hardcoded error patterns)
 - **Admin panel** — web dashboard at `:8787` with real-time overview, node status, run management, paginated queue browser with HuggingFace model info, leaderboard, and alerts. Kill runs or stop all from the UI. Primary node pre-aggregates all data for instant (<5ms) API responses
 - **Model discovery** — `hf_discover.py` queries HuggingFace for trending models by task/tag. Use it in a `mode: script` role to auto-discover new SOTA backbones without manual work
@@ -194,6 +195,30 @@ bug_fixer:
   stale_eval_min: 60        # kill idle eval after N minutes
   max_fixes_per_hour: 3     # rate limit on LLM fix sessions
 ```
+
+## Executor LLM Fix
+
+When an experiment fails (crash, timeout, stall, or script error), the executor can automatically spawn an LLM to diagnose the error and fix the project code — then retry the experiment on the same GPU. Disabled by default.
+
+```yaml
+# In orze.yaml
+max_fix_attempts: 2          # try up to 2 LLM fixes per failed idea (0 = disabled)
+executor_fix:
+  model: sonnet              # LLM model (default: sonnet)
+  timeout: 300               # max time per fix attempt (default: 300s)
+```
+
+How it works:
+1. Experiment fails (any cause: exit code, timeout, stall, fatal error)
+2. Executor reads the error log + idea config
+3. Spawns an LLM that can read and modify any project file (scripts, configs, utilities)
+4. If the LLM applies a fix, the experiment is relaunched automatically
+5. Previous attempt logs are included in later attempts so the LLM doesn't repeat itself
+6. After exhausting all attempts, the idea is marked failed normally
+
+The LLM cannot modify `orze/` (framework) or `ideas.md` (experiment definitions). Fixes must be concurrent-safe — other experiments may be running the same scripts.
+
+Fix logs: `results/_fix_logs/{idea_id}_attempt{N}.log`
 
 ## Multi-LLM Research Army
 
