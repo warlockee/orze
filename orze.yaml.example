@@ -27,8 +27,18 @@ gpu_mem_threshold: 2000              # GPU memory (MiB) to consider "in use"
 # --- Health monitoring (0 = disabled) ---
 stall_minutes: 0                     # kill if no log growth for N minutes
 max_idea_failures: 0                 # skip idea after N failures
+max_fix_attempts: 0                  # LLM fix attempts per failed idea (0 = disabled)
 min_disk_gb: 0                       # pause launches if disk < N GB free
 orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
+
+# --- Executor LLM fix (optional) ---
+# When max_fix_attempts > 0, failed ideas are sent to an LLM for diagnosis.
+# The LLM can modify project files (scripts, configs, utilities)
+# to fix the error, then the idea is automatically retried.
+# executor_fix:
+#   model: sonnet                    # LLM model for fix attempts
+#   claude_bin: claude               # path to Claude CLI
+#   timeout: 300                     # max time per fix attempt (seconds)
 
 # --- Pre-training hook (optional) ---
 # Runs before each training launch. Exit 0 = proceed, non-zero = skip idea.

@@ -45,12 +45,14 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.request
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -76,29 +78,286 @@ def load_status(results_dir: Path) -> dict:
     return {}
 
 
-def load_leaderboard(results_dir: Path) -> list:
-    """Load top results from status.json."""
+def load_full_leaderboard(results_dir: Path) -> Tuple[list, str]:
+    """Load full leaderboard from _leaderboard.json (richer than status.json).
+
+    Returns (entries, metric_name). Falls back to status.json top_results.
+    """
+    lb_path = results_dir / "_leaderboard.json"
+    if lb_path.exists():
+        try:
+            data = json.loads(lb_path.read_text(encoding="utf-8"))
+            return data.get("top", []), data.get("metric", "")
+        except (json.JSONDecodeError, OSError):
+            pass
+    # Fallback to status.json
     status = load_status(results_dir)
-    return status.get("top_results", [])
+    return status.get("top_results", []), ""
 
 
-def load_completed_ideas(results_dir: Path) -> Dict[str, dict]:
-    """Load metrics from all completed ideas."""
-    results = {}
+def analyze_failures(results_dir: Path,
+                     max_scan: int = 2000) -> Dict[str, Any]:
+    """Scan results for failures, categorize by error pattern.
+
+    Only scans the last `max_scan` idea dirs (by name) to avoid slow
+    filesystem walks on large result sets. This captures recent failure
+    patterns which are most relevant for idea generation.
+
+    Returns dict with:
+        total: int
+        patterns: list of {pattern, count, example_ids}
+        recent: list of {idea_id, error} (last 5)
+    """
+    errors: List[Tuple[str, str]] = []  # (idea_id, error_msg)
     if not results_dir.exists():
-        return results
-    for idea_dir in sorted(results_dir.iterdir()):
-        if not idea_dir.is_dir() or not idea_dir.name.startswith("idea-"):
-            continue
-        metrics_path = idea_dir / "metrics.json"
+        return {"total": 0, "patterns": [], "recent": []}
+
+    # Collect idea dirs without stat-ing each entry (os.scandir is faster)
+    idea_names = []
+    try:
+        with os.scandir(results_dir) as it:
+            for entry in it:
+                if entry.is_dir(follow_symlinks=False) and entry.name.startswith("idea-"):
+                    idea_names.append(entry.name)
+    except OSError:
+        return {"total": 0, "patterns": [], "recent": []}
+    idea_names.sort()
+    # Only scan the tail for efficiency on large result sets
+    scan_names = idea_names[-max_scan:] if len(idea_names) > max_scan else idea_names
+
+    for name in scan_names:
+        metrics_path = results_dir / name / "metrics.json"
         if not metrics_path.exists():
             continue
         try:
-            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-            results[idea_dir.name] = metrics
+            data = json.loads(metrics_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            pass
-    return results
+            continue
+        if data.get("status") not in ("FAILED", "ERROR"):
+            continue
+        raw = data.get("error") or data.get("traceback") or data.get("status", "unknown")
+        errors.append((name, str(raw).split("\n")[0][:200]))
+
+    if not errors:
+        return {"total": 0, "patterns": [], "recent": []}
+
+    # Normalize errors into patterns by stripping variable parts
+    def _normalize(msg: str) -> str:
+        msg = re.sub(r"idea-\d+", "idea-XXX", msg)
+        msg = re.sub(r"Unknown \w+: \S+", "Unknown <type>: <name>", msg)
+        msg = re.sub(r"Stalled \(no output for \d+m\)", "Stalled (hung process)", msg)
+        msg = re.sub(r"\d+\.\d+", "N", msg)
+        return msg.strip()
+
+    pattern_counter: Counter = Counter()
+    pattern_examples: Dict[str, List[str]] = defaultdict(list)
+    for idea_id, msg in errors:
+        pat = _normalize(msg)
+        pattern_counter[pat] += 1
+        if len(pattern_examples[pat]) < 3:
+            pattern_examples[pat].append(idea_id)
+
+    patterns = [
+        {"pattern": pat, "count": cnt, "example_ids": pattern_examples[pat]}
+        for pat, cnt in pattern_counter.most_common(10)
+    ]
+
+    recent = [{"idea_id": iid, "error": msg} for iid, msg in errors[-5:]]
+    return {"total": len(errors), "patterns": patterns, "recent": recent}
+
+
+def _find_best_lake_metric(conn: sqlite3.Connection,
+                           primary_metric: str) -> str:
+    """Find the best available metric in the lake.
+
+    Tries the primary_metric first, then strips prefixes to find alternatives.
+    E.g., if 'my_adjusted_auc' isn't in the lake, tries 'my_auc'.
+    """
+    if primary_metric:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM ideas "
+            "WHERE json_extract(eval_metrics, ?) IS NOT NULL",
+            (f"$.{primary_metric}",),
+        ).fetchone()[0]
+        if count > 0:
+            return primary_metric
+
+    # Try common suffixes/variants
+    candidates = []
+    if primary_metric:
+        # Strip "adjusted_" prefix: e.g. foo_adjusted_auc -> foo_auc
+        candidates.append(re.sub(r"_adjusted_", "_", primary_metric))
+        # Just "auc" or the last part
+        parts = primary_metric.split("_")
+        if len(parts) > 1:
+            candidates.append("_".join(parts[1:]))  # drop first prefix
+
+    # Find which has most data
+    best, best_count = "", 0
+    for cand in candidates:
+        if not cand:
+            continue
+        count = conn.execute(
+            "SELECT COUNT(*) FROM ideas "
+            "WHERE json_extract(eval_metrics, ?) IS NOT NULL",
+            (f"$.{cand}",),
+        ).fetchone()[0]
+        if count > best_count:
+            best, best_count = cand, count
+
+    if best:
+        logger.info("Lake metric fallback: %s -> %s (%d ideas)",
+                     primary_metric, best, best_count)
+    return best
+
+
+def load_lake_summary(lake_db_path: Path, primary_metric: str) -> Optional[dict]:
+    """Query idea_lake.db for historical stats and performance patterns.
+
+    Returns None if lake doesn't exist. Otherwise returns:
+        status_counts: {status: count}
+        top_from_lake: list of {idea_id, title, metric_value}
+        config_patterns: {dimension: [{value, mean, count}]}
+        lake_metric: str (the metric actually used)
+    """
+    if not lake_db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(lake_db_path), timeout=10)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return None
+
+    result: Dict[str, Any] = {}
+    try:
+        # Status breakdown
+        rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM ideas GROUP BY status"
+        ).fetchall()
+        result["status_counts"] = {r["status"]: r["cnt"] for r in rows}
+
+        # Find best available metric
+        lake_metric = _find_best_lake_metric(conn, primary_metric)
+        result["lake_metric"] = lake_metric
+
+        if lake_metric:
+            metric_path = f"$.{lake_metric}"
+            top_rows = conn.execute(
+                "SELECT idea_id, title, "
+                "json_extract(eval_metrics, ?) as metric_val "
+                "FROM ideas "
+                "WHERE json_extract(eval_metrics, ?) IS NOT NULL "
+                "ORDER BY json_extract(eval_metrics, ?) DESC LIMIT 10",
+                (metric_path, metric_path, metric_path),
+            ).fetchall()
+            result["top_from_lake"] = [
+                {"idea_id": r["idea_id"], "title": r["title"],
+                 "metric_value": r["metric_val"]}
+                for r in top_rows
+            ]
+
+            result["config_patterns"] = _analyze_config_dimensions(
+                conn, lake_metric
+            )
+
+    except Exception as e:
+        logger.warning("Lake query failed: %s", e)
+    finally:
+        conn.close()
+
+    return result
+
+
+def _extract_flat_keys(config: dict, prefix: str = "") -> Dict[str, Any]:
+    """Flatten a nested config dict into dot-separated keys.
+
+    Only keeps leaf scalar values (str, int, float, bool).
+    Limits depth to 2 levels to avoid noise.
+    """
+    result = {}
+    for key, val in config.items():
+        full_key = f"{prefix}.{key}" if prefix else key
+        if isinstance(val, dict) and not prefix:
+            result.update(_extract_flat_keys(val, full_key))
+        elif not isinstance(val, (dict, list)) and val is not None:
+            result[full_key] = val
+    return result
+
+
+def _analyze_config_dimensions(
+    conn: sqlite3.Connection, primary_metric: str
+) -> Dict[str, list]:
+    """Group completed ideas by config keys, compute per-value stats.
+
+    Uses config_summary if available, falls back to parsing the raw config YAML.
+    """
+    metric_path = f"$.{primary_metric}"
+    rows = conn.execute(
+        "SELECT config_summary, config, "
+        "json_extract(eval_metrics, ?) as metric_val "
+        "FROM ideas "
+        "WHERE json_extract(eval_metrics, ?) IS NOT NULL",
+        (metric_path, metric_path),
+    ).fetchall()
+
+    if not rows:
+        return {}
+
+    # Collect all config dimensions and their values with metrics
+    dim_data: Dict[str, Dict[str, List[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for r in rows:
+        metric_val = r["metric_val"]
+        if metric_val is None:
+            continue
+
+        # Try config_summary first (pre-computed flat keys)
+        cs = None
+        if r["config_summary"]:
+            try:
+                cs = json.loads(r["config_summary"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Fallback: parse raw config YAML and flatten
+        if not cs and r["config"]:
+            try:
+                raw = yaml.safe_load(r["config"])
+                if isinstance(raw, dict):
+                    cs = _extract_flat_keys(raw)
+            except yaml.YAMLError:
+                pass
+
+        if not cs:
+            continue
+
+        for key, val in cs.items():
+            if val is None or isinstance(val, (dict, list)):
+                continue
+            dim_data[key][str(val)].append(float(metric_val))
+
+    # For each dimension, compute mean + count per value, sorted by mean desc
+    # Only keep dimensions where at least 2 values have n >= 3
+    patterns: Dict[str, list] = {}
+    for dim, val_map in dim_data.items():
+        if len(val_map) < 2:
+            continue
+        entries = []
+        for val, metrics in val_map.items():
+            if len(metrics) < 3:
+                continue  # skip values with too few samples
+            entries.append({
+                "value": val,
+                "mean": round(sum(metrics) / len(metrics), 4),
+                "count": len(metrics),
+            })
+        if len(entries) < 2:
+            continue  # need at least 2 values to compare
+        entries.sort(key=lambda x: -x["mean"])
+        patterns[dim] = entries[:5]
+
+    return patterns
 
 
 def get_existing_idea_ids(ideas_path: Path) -> List[str]:
@@ -143,63 +402,119 @@ def next_idea_id(existing_ids: List[str]) -> int:
     return max(nums) + 1 if nums else 1
 
 
-def build_context(results_dir: Path, ideas_path: Path, report_cfg: dict) -> str:
-    """Build a context string summarizing current research state.
+def build_context(results_dir: Path, ideas_path: Path, report_cfg: dict,
+                  lake_db_path: Optional[Path] = None) -> str:
+    """Build a comprehensive context string for the LLM.
 
-    This is the generic context that any LLM can use to understand
-    what's been tried and what's working.
+    Includes: stats, full leaderboard with all metrics, categorized failure
+    analysis, historical performance patterns from idea_lake.db, and example
+    configs from top performers.
     """
     status = load_status(results_dir)
-    completed = load_completed_ideas(results_dir)
     existing_ids = get_existing_idea_ids(ideas_path)
-
-    # Basic stats
-    lines = ["# Current Research State\n"]
-    lines.append(f"- Total ideas: {len(existing_ids)}")
-    lines.append(f"- Completed: {status.get('completed', len(completed))}")
-    lines.append(f"- Failed: {status.get('failed', 0)}")
-    lines.append(f"- In queue: {status.get('queue_depth', 0)}")
-    lines.append("")
-
-    # Leaderboard
-    top = status.get("top_results", [])
     primary_metric = report_cfg.get("primary_metric", "")
     columns = report_cfg.get("columns", [])
-    if top:
-        lines.append("## Top Results (Leaderboard)\n")
-        # Build header from report columns
+
+    lines = ["# Current Research State\n"]
+    lines.append(f"- Total ideas in queue: {len(existing_ids)}")
+    lines.append(f"- Completed: {status.get('completed', 0)}")
+    lines.append(f"- Failed: {status.get('failed', 0)}")
+    lines.append(f"- In queue: {status.get('queue_depth', 0)}")
+    if primary_metric:
+        lines.append(f"- Primary metric: {primary_metric}")
+    lines.append("")
+
+    # --- Full leaderboard from _leaderboard.json ---
+    lb_entries, lb_metric = load_full_leaderboard(results_dir)
+    if lb_entries:
+        lines.append("## Leaderboard (all metrics)\n")
         col_labels = [c.get("label", c["key"]) for c in columns] if columns else []
         if col_labels:
-            lines.append("| # | Idea | " + " | ".join(col_labels) + " |")
-            lines.append("|---|------|" + "|".join(["---"] * len(col_labels)) + "|")
+            lines.append("| # | Idea | Title | " + " | ".join(col_labels) + " |")
+            lines.append("|---|------|-------|" + "|".join(["---"] * len(col_labels)) + "|")
         else:
-            lines.append("| # | Idea | Score |")
-            lines.append("|---|------|-------|")
+            lines.append("| # | Idea | Title | Score |")
+            lines.append("|---|------|-------|-------|")
 
-        for i, result in enumerate(top[:15], 1):
-            idea_id = result.get("idea_id", "?")
+        for i, entry in enumerate(lb_entries, 1):
+            idea_id = entry.get("idea_id", "?")
+            title = entry.get("title", "")[:40]
+            em = entry.get("eval_metrics", {})
             if col_labels and columns:
                 vals = []
                 for c in columns:
                     key = c["key"]
                     fmt = c.get("fmt", "")
-                    val = result.get(key, "")
-                    if val != "" and fmt:
+                    val = em.get(key, entry.get(key, ""))
+                    if val != "" and val is not None and fmt:
                         try:
                             val = f"{float(val):{fmt}}"
                         except (ValueError, TypeError):
                             val = str(val)
-                    vals.append(str(val))
-                lines.append(f"| {i} | {idea_id} | " + " | ".join(vals) + " |")
+                    vals.append(str(val) if val is not None else "")
+                lines.append(f"| {i} | {idea_id} | {title} | " + " | ".join(vals) + " |")
             else:
-                score = result.get(primary_metric, result.get("score", "?"))
-                lines.append(f"| {i} | {idea_id} | {score} |")
+                score = em.get(primary_metric, entry.get("metric_value", "?"))
+                lines.append(f"| {i} | {idea_id} | {title} | {score} |")
         lines.append("")
 
-    # Example configs from top ideas (teaches LLM the config schema)
-    if top and ideas_path.exists():
+    # --- Failure analysis ---
+    failures = analyze_failures(results_dir)
+    if failures["total"] > 0:
+        lines.append(f"## Failure Analysis ({failures['total']} total failures)\n")
+        lines.append("**Top failure patterns** (avoid generating ideas that would hit these):\n")
+        for p in failures["patterns"]:
+            examples = ", ".join(p["example_ids"][:2])
+            lines.append(f"- **{p['count']}x**: {p['pattern']} (e.g. {examples})")
+        if failures["recent"]:
+            lines.append("\n**Most recent failures:**\n")
+            for f in failures["recent"]:
+                lines.append(f"- {f['idea_id']}: {f['error']}")
+        lines.append("")
+
+    # --- Historical stats from idea_lake.db ---
+    if lake_db_path is None:
+        lake_db_path = ideas_path.parent / "idea_lake.db"
+    lake = load_lake_summary(lake_db_path, primary_metric)
+    if lake:
+        sc = lake.get("status_counts", {})
+        total_historical = sum(sc.values())
+        if total_historical > 0:
+            lines.append(f"## Historical Stats (from {total_historical} total experiments)\n")
+            parts = [f"{s}: {c}" for s, c in sorted(sc.items(), key=lambda x: -x[1])]
+            lines.append("- " + ", ".join(parts))
+            lines.append("")
+
+        lake_metric = lake.get("lake_metric", primary_metric)
+        top_lake = lake.get("top_from_lake", [])
+        if top_lake:
+            lines.append(f"## All-Time Best ({lake_metric})\n")
+            for i, t in enumerate(top_lake[:5], 1):
+                mv = t["metric_value"]
+                if isinstance(mv, float):
+                    mv = f"{mv:.4f}"
+                lines.append(f"{i}. {t['idea_id']}: {mv} — {t['title'][:50]}")
+            lines.append("")
+
+        config_patterns = lake.get("config_patterns", {})
+        if config_patterns:
+            lines.append("## Performance by Config Dimension\n")
+            lines.append("Shows which config values correlate with better results.\n")
+            for dim, entries in sorted(config_patterns.items()):
+                if not entries:
+                    continue
+                best = entries[0]
+                worst = entries[-1] if len(entries) > 1 else None
+                line = f"- **{dim}**: best={best['value']} (mean {lake_metric}={best['mean']}, n={best['count']})"
+                if worst and worst["value"] != best["value"]:
+                    line += f", worst={worst['value']} ({worst['mean']}, n={worst['count']})"
+                lines.append(line)
+            lines.append("")
+
+    # --- Example configs from top leaderboard ideas ---
+    if lb_entries and ideas_path.exists():
         idea_configs = parse_idea_configs(ideas_path)
-        top_ids = [r.get("idea_id") for r in top[:3] if r.get("idea_id")]
+        top_ids = [e.get("idea_id") for e in lb_entries[:5] if e.get("idea_id")]
         shown = 0
         for tid in top_ids:
             if tid in idea_configs and shown < 2:
@@ -212,7 +527,6 @@ def build_context(results_dir: Path, ideas_path: Path, report_cfg: dict) -> str:
                 lines.append("")
                 shown += 1
         if shown == 0:
-            # Fallback: show any config
             for iid, cfg in list(idea_configs.items())[-2:]:
                 lines.append(f"## Example Config ({iid})\n")
                 lines.append("```yaml")
@@ -222,15 +536,11 @@ def build_context(results_dir: Path, ideas_path: Path, report_cfg: dict) -> str:
                 lines.append("```")
                 lines.append("")
 
-    # Recent failures (help LLM avoid repeating mistakes)
-    failed = {k: v for k, v in completed.items()
-              if v.get("status") in ("FAILED", "ERROR")}
-    if failed:
-        recent_failed = sorted(failed.items(), key=lambda x: x[0])[-10:]
-        lines.append("## Recent Failures (avoid these patterns)\n")
-        for idea_id, metrics in recent_failed:
-            error = metrics.get("error", metrics.get("status", "unknown"))
-            lines.append(f"- {idea_id}: {str(error)[:100]}")
+    # --- Existing idea IDs (dedup hint) ---
+    if existing_ids:
+        tail = existing_ids[-50:]
+        lines.append(f"## Existing Ideas (last {len(tail)} of {len(existing_ids)} — avoid duplicates)\n")
+        lines.append(", ".join(tail))
         lines.append("")
 
     return "\n".join(lines)
@@ -534,16 +844,25 @@ You are a research agent for an automated ML experiment system called orze.
 Your job is to analyze past results and generate new experiment ideas.
 
 ## How It Works
-- You receive the current leaderboard and research state
+- You receive the full leaderboard, failure analysis, and performance patterns
 - You propose new experiments as structured ideas
 - Each idea needs: a title, hypothesis, and YAML config
 - The system will automatically train and evaluate your ideas
-- Your ideas should build on what's working and explore new directions
+
+## Strategy Guidelines
+- **Study the leaderboard**: understand what makes top performers successful
+- **Study the failures**: avoid config patterns that consistently fail
+- **Use performance patterns**: config dimensions show which values correlate with
+  better results — build on high-performing values, avoid low-performing ones
+- **Set parent IDs**: when iterating on a successful experiment, set "parent" to
+  its idea ID so the lineage is tracked
+- **Balance exploitation and exploration**: ~60% ideas should refine what works,
+  ~40% should try genuinely new approaches
 
 ## Output Format
 Return a JSON array of ideas. Each idea is an object with:
 - "title": short descriptive name (string)
-- "hypothesis": why this might work (string)
+- "hypothesis": why this might work, referencing evidence from the context (string)
 - "config": YAML-compatible dict with experiment config (object)
 - "priority": "critical" | "high" | "medium" | "low" (string, optional)
 - "category": free-form label like "architecture", "hyperparameter", "loss" (string, optional)
@@ -554,7 +873,7 @@ Example:
 [
   {
     "title": "Larger learning rate with cosine schedule",
-    "hypothesis": "Current best uses lr=1e-4. A 3x larger lr with cosine decay may converge faster and find a better minimum.",
+    "hypothesis": "Current best (idea-042) uses lr=1e-4. A 3x larger lr with cosine decay may converge faster and find a better minimum.",
     "config": {
       "model": {"type": "resnet50", "pretrained": true},
       "training": {"lr": 3e-4, "scheduler": "cosine", "epochs": 20}
@@ -565,17 +884,13 @@ Example:
   }
 ]
 ```
+
+Output ONLY the JSON array, no markdown fences or extra text.
 """
 
 
 def build_prompt(context: str, rules_content: str, num_ideas: int) -> str:
-    """Build the full prompt for the LLM.
-
-    Args:
-        context: research state summary (from build_context)
-        rules_content: project-specific rules (from rules_file)
-        num_ideas: how many ideas to generate
-    """
+    """Build the full prompt for the LLM."""
     parts = [DEFAULT_SYSTEM_PROMPT]
 
     if rules_content:
@@ -587,8 +902,8 @@ def build_prompt(context: str, rules_content: str, num_ideas: int) -> str:
 
     parts.append(f"\n## Your Task\n")
     parts.append(f"Generate exactly {num_ideas} new experiment ideas as a JSON array.")
-    parts.append("Build on what's working. Avoid patterns that have failed.")
-    parts.append("Each idea must have a unique, testable hypothesis.\n")
+    parts.append("Use the leaderboard, failure analysis, and performance patterns above to inform your choices.")
+    parts.append("Each idea must have a unique, testable hypothesis grounded in evidence from the context.\n")
 
     return "\n".join(parts)
 
@@ -608,6 +923,8 @@ def run_research_cycle(
     model: str = "",
     endpoint: str = "",
     rules_file: str = "",
+    lake_db_path: Optional[Path] = None,
+    dry_run: bool = False,
 ) -> int:
     """Run one research cycle. Returns number of ideas generated."""
     logger.info("=" * 60)
@@ -616,7 +933,8 @@ def run_research_cycle(
 
     # 1. Build context from results
     logger.info("Step 1: Building research context...")
-    context = build_context(results_dir, ideas_path, report_cfg)
+    context = build_context(results_dir, ideas_path, report_cfg,
+                            lake_db_path=lake_db_path)
     existing_ids = get_existing_idea_ids(ideas_path)
     start_id = next_idea_id(existing_ids)
     logger.info("  %d existing ideas, next ID: idea-%04d", len(existing_ids), start_id)
@@ -629,8 +947,19 @@ def run_research_cycle(
             rules_content = rules_path.read_text(encoding="utf-8")
             logger.info("  Loaded rules from %s (%d chars)", rules_file, len(rules_content))
 
-    # 3. Build prompt and call LLM
+    # 3. Build prompt
     prompt = build_prompt(context, rules_content, num_ideas)
+
+    if dry_run:
+        print("=" * 60)
+        print("DRY RUN — prompt that would be sent to LLM:")
+        print("=" * 60)
+        print(prompt)
+        print("=" * 60)
+        print(f"Prompt length: {len(prompt)} chars")
+        return 0
+
+    # 4. Call LLM
     logger.info("Step 2: Calling %s (prompt: %d chars)...", backend, len(prompt))
     response = call_llm(prompt, backend, api_key=api_key, model=model,
                         endpoint=endpoint)
@@ -638,7 +967,7 @@ def run_research_cycle(
         logger.error("LLM returned empty response — aborting cycle")
         return 0
 
-    # 4. Parse ideas from response
+    # 5. Parse ideas from response
     logger.info("Step 3: Parsing ideas from response...")
     ideas = parse_llm_ideas(response, start_id, cycle)
     if not ideas:
@@ -647,7 +976,7 @@ def run_research_cycle(
         return 0
     logger.info("  Parsed %d ideas", len(ideas))
 
-    # 5. Format and append to ideas.md
+    # 6. Format and append to ideas.md
     ideas_md = []
     for idea in ideas:
         md = format_idea_markdown(
@@ -724,6 +1053,10 @@ Examples:
                         help="Path to results dir (overrides orze.yaml)")
     parser.add_argument("--rules-file", default="",
                         help="Path to project-specific rules file")
+    parser.add_argument("--lake-db", default="",
+                        help="Path to idea_lake.db (default: alongside ideas.md)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the prompt and exit without calling the LLM")
 
     args = parser.parse_args()
 
@@ -739,6 +1072,7 @@ Examples:
     ideas_path = Path(args.ideas_md or cfg.get("ideas_file", "ideas.md"))
     results_dir = Path(args.results_dir or cfg.get("results_dir", "results"))
     report_cfg = cfg.get("report", {})
+    lake_db_path = Path(args.lake_db) if args.lake_db else None
 
     count = run_research_cycle(
         backend=args.backend,
@@ -751,6 +1085,8 @@ Examples:
         model=args.model,
         endpoint=args.endpoint,
         rules_file=args.rules_file,
+        lake_db_path=lake_db_path,
+        dry_run=args.dry_run,
     )
 
     sys.exit(0 if count > 0 else 1)

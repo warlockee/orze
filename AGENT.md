@@ -97,6 +97,7 @@ timeout: 3600
 poll: 30
 stall_minutes: 30
 max_idea_failures: 3
+max_fix_attempts: 2             # LLM auto-fix per failed idea (0 = disabled)
 min_disk_gb: 20
 
 roles:

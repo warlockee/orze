@@ -97,6 +97,18 @@ QUEUED → CLAIMED → [PRE-CHECK] → TRAINING → COMPLETED or FAILED → [EVA
 - **Crash**: Non-zero exit code
 - **Pre-script failure**: Pre-training check failed (e.g., missing features)
 
+### Executor LLM Fix (Auto-Retry)
+When `max_fix_attempts` > 0 in orze.yaml, failed ideas are automatically sent to an LLM for diagnosis. The LLM reads the error log and idea config, then attempts to fix the project code (scripts, configs, utilities — anything except `orze/` and `ideas.md`). If a fix is applied, the idea is re-launched on the same GPU. Fix attempts are tracked per idea and persisted across restarts.
+
+```yaml
+max_fix_attempts: 2          # try up to 2 LLM fixes per failed idea
+executor_fix:
+  model: sonnet              # LLM model (default: sonnet)
+  timeout: 300               # max time per fix attempt (default: 300s)
+```
+
+Fix logs are saved to `results/_fix_logs/{idea_id}_attempt{N}.log`.
+
 ### Reclaiming Failed Ideas
 - Delete the `results/{idea_id}/` directory to allow retry
 - Or set `max_idea_failures` in orze.yaml to auto-skip after N failures
