@@ -27,8 +27,7 @@ export default function LeaderboardTab() {
             title: <span className="text-xs text-gray-400 truncate block max-w-[300px]">{e.title || '-'}</span>,
             metric: (
               <span className="font-mono text-emerald-400">
-                {typeof e.metric_value === 'number' ? e.metric_value.toFixed(4)
-                  : typeof e.auc_roc === 'number' ? e.auc_roc.toFixed(4) : '-'}
+                {typeof e.metric_value === 'number' ? e.metric_value.toFixed(4) : '-'}
               </span>
             ),
             time: <span className="text-xs text-gray-500">{e.training_time ? fmtTime(e.training_time / 60) : '-'}</span>,

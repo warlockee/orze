@@ -8,7 +8,7 @@ Usage:
     lake = IdeaLake("idea_lake.db")
     lake.insert("idea-001", "Zipformer", config_yaml, raw_md, eval_metrics={...})
     idea = lake.get("idea-001")
-    top = lake.get_top_models(metric="auc_roc", n=10)
+    top = lake.get_top_models(metric="test_accuracy", n=10)
 """
 
 import datetime
@@ -222,7 +222,7 @@ class IdeaLake:
             filters: dict of {json_path: value} to match in config_summary.
                      e.g. {"backbone_name": "dinov2_vitl14"}
             min_metric: (metric_key, min_value) to filter eval_metrics.
-                        e.g. ("auc_roc", 0.6)
+                        e.g. ("test_accuracy", 0.8)
             sort_metric: key in eval_metrics to sort by (descending).
             limit: max results.
         """
@@ -258,7 +258,7 @@ class IdeaLake:
         return [dict(r) for r in rows]
 
     def get_top_models(
-        self, metric: str = "auc_roc", n: int = 20
+        self, metric: str = "test_accuracy", n: int = 20
     ) -> List[dict]:
         """Return top N models by the given metric (from eval_metrics JSON)."""
         rows = self.conn.execute(

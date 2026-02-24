@@ -97,7 +97,6 @@ export interface LeaderboardEntry {
   metric_value: number;
   metric_name: string;
   training_time?: number;
-  auc_roc?: number;
 }
 
 export interface LeaderboardResponse {

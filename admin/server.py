@@ -32,7 +32,10 @@ from orze.farm import (
     load_project_config,
     parse_ideas,
 )
-from scripts.dashcam_risk.backbone_registry import BACKBONE_REGISTRY
+try:
+    from scripts.dashcam_risk.backbone_registry import BACKBONE_REGISTRY
+except ImportError:
+    BACKBONE_REGISTRY = {}
 from orze.research_agent import append_ideas_to_md, format_idea_markdown
 
 logger = logging.getLogger("orze.admin")
