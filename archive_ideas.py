@@ -267,6 +267,20 @@ def main():
         len(to_keep), len(text) / 1e6, len(new_text) / 1e6,
     )
 
+    # Update archived index for report generation
+    archived_index = results_dir / "_archived_index.json"
+    existing_idx = {}
+    if archived_index.exists():
+        try:
+            existing_idx = json.loads(archived_index.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    for idea in to_archive:
+        if idea.get("status") == "completed":
+            existing_idx[idea["idea_id"]] = idea["title"]
+    archived_index.write_text(json.dumps(existing_idx), encoding="utf-8")
+    logger.info("Updated archived index: %d entries", len(existing_idx))
+
     logger.info("Done! Lake has %d ideas total", lake.count())
     lake.close()
 

@@ -1541,17 +1541,29 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
         match = re.search(r"\d+", x)
         return int(match.group()) if match else 999999
 
-    for idea_id in sorted(ideas.keys(), key=_id_sort_key):
+    # Include archived ideas from cached index
+    all_ideas = dict(ideas)
+    archived_index = results_dir / "_archived_index.json"
+    if archived_index.exists():
+        try:
+            idx = json.loads(archived_index.read_text(encoding="utf-8"))
+            for arch_id, arch_title in idx.items():
+                if arch_id not in all_ideas:
+                    all_ideas[arch_id] = {"title": arch_title, "priority": "archived"}
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for idea_id in sorted(all_ideas.keys(), key=_id_sort_key):
         idea_dir = results_dir / idea_id
 
         if not idea_dir.exists():
-            rows.append({"id": idea_id, "title": ideas[idea_id]["title"],
+            rows.append({"id": idea_id, "title": all_ideas[idea_id]["title"],
                          "status": "QUEUED", "values": {}})
             continue
 
         metrics_path = idea_dir / "metrics.json"
         if not metrics_path.exists():
-            rows.append({"id": idea_id, "title": ideas[idea_id]["title"],
+            rows.append({"id": idea_id, "title": all_ideas[idea_id]["title"],
                          "status": "IN_PROGRESS", "values": {}})
             continue
 
@@ -1574,7 +1586,7 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
                            else metrics.get(primary_metric))
 
         rows.append({
-            "id": idea_id, "title": ideas[idea_id]["title"],
+            "id": idea_id, "title": all_ideas[idea_id]["title"],
             "status": metrics.get("status", "UNKNOWN"),
             "values": values,
             "primary_val": primary_val,
@@ -1700,7 +1712,7 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     if queued:
         lines.append(f"## Queue ({len(queued)} ideas)")
         for r in queued[:20]:
-            pri = ideas.get(r["id"], {}).get("priority", "medium")
+            pri = all_ideas.get(r["id"], {}).get("priority", "medium")
             lines.append(f"- **{r['id']}** [{pri}]: {r['title'][:60]}")
         if len(queued) > 20:
             lines.append(f"- ... and {len(queued) - 20} more")
@@ -1708,6 +1720,22 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 
     report_path = results_dir / "report.md"
     atomic_write(report_path, "\n".join(lines))
+
+    # Write leaderboard cache for admin panel (avoids expensive rescan)
+    lb_entries = []
+    for r in main_rows[:20]:
+        lb_entries.append({
+            "idea_id": r["id"],
+            "title": r["title"],
+            "metric_value": r.get("primary_val"),
+            "training_time": r["values"].get("training_time"),
+            "status": "COMPLETED",
+            "eval_metrics": r["values"],
+        })
+    lb_path = results_dir / "_leaderboard.json"
+    atomic_write(lb_path, json.dumps({"top": lb_entries, "metric": primary_metric},
+                                     default=str))
+
     logger.info("Report updated: %d completed, %d queued, %d failed",
                 counts.get("COMPLETED", 0), counts.get("QUEUED", 0),
                 counts.get("FAILED", 0))
