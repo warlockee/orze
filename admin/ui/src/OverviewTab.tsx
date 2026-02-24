@@ -8,21 +8,10 @@ export default function OverviewTab() {
   const fleet = useFleet();
   const runs = useRuns();
 
-  if (status._loading && fleet._loading) return <LoadingState label="Loading overview…" />;
-
-  const hosts = fleet.heartbeats;
-  const localGpus = fleet.local_gpus;
-  const gpuAvg = localGpus.length > 0
-    ? Math.round(localGpus.reduce((s, g) => s + g.utilization_pct, 0) / localGpus.length)
-    : 0;
-  const memAvg = localGpus.length > 0
-    ? Math.round(localGpus.reduce((s, g) => s + (g.memory_used_mib / g.memory_total_mib) * 100, 0) / localGpus.length)
-    : 0;
-  const tempMax = localGpus.length > 0 ? Math.max(...localGpus.map((g) => g.temperature_c)) : 0;
-  const activeRuns = runs.active;
-
   const gpuSparkRef = useRef<number[]>([]);
   const queueSparkRef = useRef<number[]>([]);
+
+  const localGpus = fleet.local_gpus;
 
   useEffect(() => {
     if (!localGpus.length) return;
@@ -35,6 +24,18 @@ export default function OverviewTab() {
       queueSparkRef.current = [...queueSparkRef.current.slice(-19), status.queue_depth];
     }
   }, [status]);
+
+  if (status._loading && fleet._loading) return <LoadingState label="Loading overview…" />;
+
+  const hosts = fleet.heartbeats;
+  const gpuAvg = localGpus.length > 0
+    ? Math.round(localGpus.reduce((s, g) => s + g.utilization_pct, 0) / localGpus.length)
+    : 0;
+  const memAvg = localGpus.length > 0
+    ? Math.round(localGpus.reduce((s, g) => s + (g.memory_used_mib / g.memory_total_mib) * 100, 0) / localGpus.length)
+    : 0;
+  const tempMax = localGpus.length > 0 ? Math.max(...localGpus.map((g) => g.temperature_c)) : 0;
+  const activeRuns = runs.active;
 
   return (
     <div className="space-y-6">

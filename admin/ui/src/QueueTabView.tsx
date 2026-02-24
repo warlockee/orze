@@ -13,12 +13,12 @@ export default function QueueTabView() {
 
   const queueData = useQueue(page, statusFilter, searchDebounced);
 
-  if (queueData._loading) return <LoadingState label="Loading queue…" />;
-
   useEffect(() => {
     const t = setTimeout(() => { setSearchDebounced(search); setPage(1); }, 300);
     return () => clearTimeout(t);
   }, [search]);
+
+  if (queueData._loading) return <LoadingState label="Loading queue…" />;
 
   const onToggle = (id: string) => {
     setExpanded((prev) => {
