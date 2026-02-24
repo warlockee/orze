@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Search, Filter } from 'lucide-react';
 import { useQueue } from './hooks';
-import { Badge, Card, Pagination, fmtRunName, priorityColor, queueStatusColor } from './components';
+import { Badge, Card, Pagination, LoadingState, fmtRunName, priorityColor, queueStatusColor } from './components';
 import type { QueueItem } from './types';
 
 export default function QueueTabView() {
@@ -12,6 +12,8 @@ export default function QueueTabView() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const queueData = useQueue(page, statusFilter, searchDebounced);
+
+  if (queueData._loading) return <LoadingState label="Loading queue…" />;
 
   useEffect(() => {
     const t = setTimeout(() => { setSearchDebounced(search); setPage(1); }, 300);

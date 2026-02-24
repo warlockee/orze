@@ -8,10 +8,14 @@ import type {
   QueueResponse,
 } from './types';
 
-function usePolling<T>(url: string, interval: number, initial: T): T {
+export type Polled<T> = T & { _loading: boolean };
+
+function usePolling<T>(url: string, interval: number, initial: T): Polled<T> {
   const [data, setData] = useState<T>(initial);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     let active = true;
+    setLoading(true);
     const f = () =>
       fetch(url)
         .then((r) => {
@@ -19,7 +23,7 @@ function usePolling<T>(url: string, interval: number, initial: T): T {
           return r.json();
         })
         .then((d) => {
-          if (active) setData(d);
+          if (active) { setData(d); setLoading(false); }
         })
         .catch(() => {});
     f();
@@ -29,7 +33,7 @@ function usePolling<T>(url: string, interval: number, initial: T): T {
       clearInterval(id);
     };
   }, [url, interval]);
-  return data;
+  return { ...data, _loading: loading };
 }
 
 const EMPTY_STATUS: StatusResponse = {

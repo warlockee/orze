@@ -1,12 +1,14 @@
 import { useRef, useEffect } from 'react';
 import { Cpu, HardDrive, Thermometer, Layers, TrendingUp, AlertTriangle, Play } from 'lucide-react';
 import { useStatus, useFleet, useRuns } from './hooks';
-import { Badge, Card, IconKpi, statusColor, fmtRunName, fmtTime } from './components';
+import { Badge, Card, IconKpi, LoadingState, statusColor, fmtRunName, fmtTime } from './components';
 
 export default function OverviewTab() {
   const status = useStatus();
   const fleet = useFleet();
   const runs = useRuns();
+
+  if (status._loading && fleet._loading) return <LoadingState label="Loading overview…" />;
 
   const hosts = fleet.heartbeats;
   const localGpus = fleet.local_gpus;

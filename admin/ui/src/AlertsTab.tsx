@@ -1,9 +1,10 @@
 import { Shield } from 'lucide-react';
 import { useAlerts } from './hooks';
-import { Badge, Card, AlertCard } from './components';
+import { Badge, Card, AlertCard, LoadingState } from './components';
 
 export default function AlertsTab() {
   const alertsData = useAlerts();
+  if (alertsData._loading) return <LoadingState label="Loading alerts…" />;
   const alerts = alertsData.alerts;
 
   return (

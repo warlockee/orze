@@ -1,8 +1,9 @@
 import { useLeaderboard } from './hooks';
-import { Badge, Card, Table, fmtTime } from './components';
+import { Badge, Card, Table, LoadingState, fmtTime } from './components';
 
 export default function LeaderboardTab() {
   const leaderboard = useLeaderboard();
+  if (leaderboard._loading) return <LoadingState label="Loading leaderboard…" />;
   const lbEntries = leaderboard.top;
 
   return (

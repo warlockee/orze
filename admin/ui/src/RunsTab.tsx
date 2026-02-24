@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Play, XCircle, FileText } from 'lucide-react';
 import { useRuns } from './hooks';
 import { fetchRunDetail, fetchRunLog, killRun } from './api';
-import { Badge, Card, Pill, Reveal, statusColor, fmtRunName, fmtTime, fmtMetric } from './components';
+import { Badge, Card, Pill, Reveal, LoadingState, statusColor, fmtRunName, fmtTime, fmtMetric } from './components';
 import type { Run, ActiveRun, RunDetail } from './types';
 
 export default function RunsTab() {
@@ -10,15 +10,6 @@ export default function RunsTab() {
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [runLog, setRunLog] = useState<string>('');
-
-  const activeRuns = runs.active;
-  const completedRuns = runs.recent;
-  const allRuns: Run[] = [
-    ...activeRuns.map((r: ActiveRun) => ({
-      idea_id: r.idea_id, status: 'RUNNING' as const, host: r.host, gpu: r.gpu, elapsed_min: r.elapsed_min, title: r.title,
-    })),
-    ...completedRuns,
-  ];
 
   useEffect(() => {
     if (!selectedRun) { setRunDetail(null); setRunLog(''); return; }
@@ -30,6 +21,17 @@ export default function RunsTab() {
     if (!confirm(`Kill run ${id}?`)) return;
     await killRun(id);
   }, []);
+
+  if (runs._loading) return <LoadingState label="Loading runs…" />;
+
+  const activeRuns = runs.active;
+  const completedRuns = runs.recent;
+  const allRuns: Run[] = [
+    ...activeRuns.map((r: ActiveRun) => ({
+      idea_id: r.idea_id, status: 'RUNNING' as const, host: r.host, gpu: r.gpu, elapsed_min: r.elapsed_min, title: r.title,
+    })),
+    ...completedRuns,
+  ];
 
   return (
     <div className="space-y-6">
