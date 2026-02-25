@@ -22,6 +22,23 @@ import yaml
 
 logger = logging.getLogger("idea_lake")
 
+
+def flatten_config(config: dict, prefix: str = "", max_depth: int = 2) -> Dict[str, Any]:
+    """Flatten a nested config dict into dot-separated keys.
+    Only keeps leaf scalar values (str, int, float, bool).
+    """
+    result = {}
+    if not isinstance(config, dict) or max_depth <= 0:
+        return result
+
+    for key, val in config.items():
+        full_key = f"{prefix}.{key}" if prefix else key
+        if isinstance(val, dict):
+            result.update(flatten_config(val, full_key, max_depth - 1))
+        elif not isinstance(val, (dict, list)) and val is not None:
+            result[full_key] = val
+    return result
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS ideas (
     idea_id TEXT PRIMARY KEY,
@@ -136,6 +153,15 @@ class IdeaLake:
         created_at: Optional[str] = None,
     ):
         """Insert or update an idea in the lake."""
+        # Auto-compute summary if missing
+        if not config_summary and config_yaml:
+            try:
+                cfg_obj = yaml.safe_load(config_yaml)
+                if isinstance(cfg_obj, dict):
+                    config_summary = flatten_config(cfg_obj)
+            except yaml.YAMLError:
+                pass
+
         self.conn.execute(
             """INSERT OR REPLACE INTO ideas (
                 idea_id, title, priority, category, parent, hypothesis,
@@ -301,6 +327,15 @@ class IdeaLake:
         for idea in ideas:
             eval_metrics = idea.get("eval_metrics") or idea.get("metrics")
             config_summary = idea.get("config_summary")
+            config_yaml = idea.get("config_yaml", "")
+
+            if not config_summary and config_yaml:
+                try:
+                    cfg_obj = yaml.safe_load(config_yaml)
+                    if isinstance(cfg_obj, dict):
+                        config_summary = flatten_config(cfg_obj)
+                except yaml.YAMLError:
+                    pass
 
             self.conn.execute(
                 """INSERT OR IGNORE INTO ideas (
@@ -321,7 +356,7 @@ class IdeaLake:
                     idea.get("category", "architecture"),
                     idea.get("parent"),
                     idea.get("hypothesis"),
-                    idea.get("config_yaml", ""),
+                    config_yaml,
                     idea.get("raw_markdown", ""),
                     json.dumps(config_summary) if config_summary else None,
                     json.dumps(eval_metrics) if eval_metrics else None,
@@ -333,6 +368,37 @@ class IdeaLake:
             )
         self.conn.commit()
         logger.info("Bulk inserted %d ideas", len(ideas))
+
+    def ensure_config_summaries(self, force: bool = False):
+        """Backfill missing config_summary for all rows by parsing config YAML.
+        Highly recommended for performance on large databases.
+        """
+        query = "SELECT idea_id, config FROM ideas WHERE config IS NOT NULL AND config != ''"
+        if not force:
+            query += " AND config_summary IS NULL"
+
+        rows = self.conn.execute(query).fetchall()
+        if not rows:
+            return
+
+        logger.info("Updating config_summary for %d ideas (force=%s)...", len(rows), force)
+        count = 0
+        for r in rows:
+            try:
+                cfg_obj = yaml.safe_load(r["config"])
+                if isinstance(cfg_obj, dict):
+                    summary = flatten_config(cfg_obj)
+                    self.conn.execute(
+                        "UPDATE ideas SET config_summary = ? WHERE idea_id = ?",
+                        (json.dumps(summary), r["idea_id"]),
+                    )
+                    count += 1
+                    if count % 500 == 0:
+                        self.conn.commit()
+            except Exception:
+                continue
+        self.conn.commit()
+        logger.info("Successfully updated %d config summaries.", count)
 
     def close(self):
         self.conn.close()

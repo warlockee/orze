@@ -1822,6 +1822,15 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     columns = report_cfg.get("columns") or DEFAULT_CONFIG["report"]["columns"]
     title = report_cfg.get("title") or "Orze Report"
 
+    # --- Load results cache ---
+    cache_path = results_dir / "_results_cache.json"
+    cache = {}
+    if cache_path.exists():
+        try:
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
     rows = []
     def _id_sort_key(x):
         match = re.search(r"\d+", x)
@@ -1839,9 +1848,9 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
         except (json.JSONDecodeError, OSError):
             pass
 
+    updated_cache = False
     for idea_id in sorted(all_ideas.keys(), key=_id_sort_key):
         idea_dir = results_dir / idea_id
-
         if not idea_dir.exists():
             rows.append({"id": idea_id, "title": all_ideas[idea_id]["title"],
                          "status": "QUEUED", "values": {}})
@@ -1853,6 +1862,14 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
                          "status": "IN_PROGRESS", "values": {}})
             continue
 
+        # Check cache: {idea_id: {mtime: float, row: dict}}
+        mtime = metrics_path.stat().st_mtime
+        cached = cache.get(idea_id)
+        if cached and cached.get("mtime") == mtime:
+            rows.append(cached["row"])
+            continue
+
+        # Cache miss or stale: read and parse
         try:
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
@@ -1871,13 +1888,22 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
                            if "." in primary_metric
                            else metrics.get(primary_metric))
 
-        rows.append({
+        row_data = {
             "id": idea_id, "title": all_ideas[idea_id]["title"],
             "status": metrics.get("status", "UNKNOWN"),
             "values": values,
             "primary_val": primary_val,
             "metrics": metrics,
-        })
+        }
+        rows.append(row_data)
+        cache[idea_id] = {"mtime": mtime, "row": row_data}
+        updated_cache = True
+
+    if updated_cache:
+        try:
+            atomic_write(cache_path, json.dumps(cache))
+        except OSError:
+            pass
 
     counts = {}
     for r in rows:

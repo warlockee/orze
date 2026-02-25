@@ -285,19 +285,22 @@ def _extract_flat_keys(config: dict, prefix: str = "") -> Dict[str, Any]:
 
 
 def _analyze_config_dimensions(
-    conn: sqlite3.Connection, primary_metric: str
+    conn: sqlite3.Connection, primary_metric: str, max_samples: int = 5000
 ) -> Dict[str, list]:
     """Group completed ideas by config keys, compute per-value stats.
 
-    Uses config_summary if available, falls back to parsing the raw config YAML.
+    Uses pre-computed config_summary column for O(1) key access.
+    Limits analysis to top max_samples ideas for scalability.
     """
     metric_path = f"$.{primary_metric}"
+    # Sample the best ideas to find winning patterns
     rows = conn.execute(
-        "SELECT config_summary, config, "
+        "SELECT config_summary, "
         "json_extract(eval_metrics, ?) as metric_val "
         "FROM ideas "
-        "WHERE json_extract(eval_metrics, ?) IS NOT NULL",
-        (metric_path, metric_path),
+        "WHERE json_extract(eval_metrics, ?) IS NOT NULL "
+        "ORDER BY metric_val DESC LIMIT ?",
+        (metric_path, metric_path, max_samples),
     ).fetchall()
 
     if not rows:
@@ -312,21 +315,11 @@ def _analyze_config_dimensions(
         if metric_val is None:
             continue
 
-        # Try config_summary first (pre-computed flat keys)
         cs = None
         if r["config_summary"]:
             try:
                 cs = json.loads(r["config_summary"])
             except (json.JSONDecodeError, TypeError):
-                pass
-
-        # Fallback: parse raw config YAML and flatten
-        if not cs and r["config"]:
-            try:
-                raw = yaml.safe_load(r["config"])
-                if isinstance(raw, dict):
-                    cs = _extract_flat_keys(raw)
-            except yaml.YAMLError:
                 pass
 
         if not cs:
