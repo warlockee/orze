@@ -187,6 +187,53 @@ def gc_checkpoints(checkpoints_dir: Path, keep_ids: Set[str],
     return stats
 
 
+def gc_results(results_dir: Path, keep_ids: Set[str],
+               dry_run: bool = False) -> Dict[str, Any]:
+    """Delete large artifacts (.pt, .pth) from results/ directories of non-top ideas.
+
+    Unlike checkpoints_dir (which deletes the entire dir), this only prunes
+    large files to keep logs and metrics intact.
+    """
+    stats = {"deleted_files": 0, "freed_bytes": 0, "kept": 0, "errors": 0}
+
+    if not results_dir.exists():
+        return stats
+
+    try:
+        with os.scandir(results_dir) as it:
+            for entry in it:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                if not entry.name.startswith("idea-"):
+                    continue
+
+                base_id = entry.name.split("~")[0]
+                if base_id in keep_ids:
+                    stats["kept"] += 1
+                    continue
+
+                # Prune large files in this results dir
+                idea_path = Path(entry.path)
+                for ext in ["*.pt", "*.pth", "*.ckpt", "*.bin"]:
+                    for f in idea_path.glob(ext):
+                        if dry_run:
+                            logger.info("[DRY RUN] Would delete artifact: %s", f)
+                            stats["deleted_files"] += 1
+                            continue
+                        try:
+                            f_size = f.stat().st_size
+                            f.unlink()
+                            stats["deleted_files"] += 1
+                            stats["freed_bytes"] += f_size
+                        except Exception as e:
+                            logger.warning("Failed to delete %s: %s", f, e)
+                            stats["errors"] += 1
+    except OSError:
+        pass
+
+    return stats
+
+
 def run_gc(
     results_dir: Path,
     checkpoints_dir: Optional[Path],
@@ -196,6 +243,7 @@ def run_gc(
     keep_recent: int = 20,
     min_free_gb: float = 0,
     dry_run: bool = False,
+    gc_results_enabled: bool = False,
 ) -> Dict[str, Any]:
     """Run garbage collection. Returns stats dict."""
     logger.info("=" * 50)
@@ -230,14 +278,23 @@ def run_gc(
 
     logger.info("Total protected: %d ideas", len(keep_ids))
 
+    stats: Dict[str, Any] = {"checkpoints": {}, "results": {}}
+
     # GC checkpoints
-    stats: Dict[str, Any] = {"checkpoints": {}}
     if checkpoints_dir:
         stats["checkpoints"] = gc_checkpoints(
             checkpoints_dir, keep_ids, dry_run=dry_run)
         cs = stats["checkpoints"]
         logger.info("Checkpoints: deleted=%d, kept=%d, errors=%d",
                      cs["deleted"], cs["kept"], cs["errors"])
+
+    # GC results artifacts
+    if gc_results_enabled:
+        stats["results"] = gc_results(results_dir, keep_ids, dry_run=dry_run)
+        rs = stats["results"]
+        freed_mb = rs["freed_bytes"] / (1024 * 1024)
+        logger.info("Results artifacts: deleted=%d, freed=%.1fMB, kept=%d",
+                     rs["deleted_files"], freed_mb, rs["kept"])
 
     # Report final disk state
     if results_dir.exists():
@@ -289,6 +346,8 @@ Examples:
                         help="Only run if disk free < this (0 = always run)")
     parser.add_argument("--lake-db", default="",
                         help="Path to idea_lake.db")
+    parser.add_argument("--gc-results", action="store_true",
+                        help="Delete large artifacts (.pt) from results/ too")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be deleted without deleting")
 
@@ -319,6 +378,7 @@ Examples:
     keep_top = args.keep_top or gc_cfg.get("keep_top", 50)
     keep_recent = args.keep_recent or gc_cfg.get("keep_recent", 20)
     min_free_gb = args.min_free_gb or gc_cfg.get("min_free_gb", 0)
+    gc_results_enabled = args.gc_results or gc_cfg.get("results_artifacts", False)
 
     lake_db_path = Path(args.lake_db) if args.lake_db else \
         ideas_path.parent / "idea_lake.db"
@@ -332,6 +392,7 @@ Examples:
         keep_recent=keep_recent,
         min_free_gb=min_free_gb,
         dry_run=args.dry_run,
+        gc_results_enabled=gc_results_enabled,
     )
 
     print(json.dumps(stats, indent=2))
