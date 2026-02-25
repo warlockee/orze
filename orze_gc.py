@@ -234,6 +234,79 @@ def gc_results(results_dir: Path, keep_ids: Set[str],
     return stats
 
 
+def archive_to_cold_storage(results_dir: Path, archive_dir: Path, keep_ids: Set[str],
+                            dry_run: bool = False) -> Dict[str, Any]:
+    """Move bulky items (overlays, .pt files) to cold storage.
+    Leaves metadata (json, log, yaml) on hot storage so framework stays functional.
+    """
+    stats = {"archived_files": 0, "freed_bytes": 0, "kept": 0, "errors": 0}
+
+    if not results_dir.exists():
+        return stats
+
+    if not archive_dir.exists() and not dry_run:
+        try:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error("Could not create archive dir: %s", e)
+            return stats
+
+    try:
+        with os.scandir(results_dir) as it:
+            for entry in it:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                if not entry.name.startswith("idea-"):
+                    continue
+
+                base_id = entry.name.split("~")[0]
+                if base_id in keep_ids:
+                    stats["kept"] += 1
+                    continue
+
+                idea_path = Path(entry.path)
+                archive_idea_path = archive_dir / entry.name
+
+                # 1. Archive overlays directory (recursive)
+                overlays_path = idea_path / "overlays"
+                if overlays_path.exists() and overlays_path.is_dir():
+                    if dry_run:
+                        logger.info("[DRY RUN] Would archive overlays: %s -> %s",
+                                     overlays_path, archive_idea_path / "overlays")
+                        stats["archived_files"] += 1
+                    else:
+                        try:
+                            archive_idea_path.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(overlays_path), str(archive_idea_path / "overlays"))
+                            stats["archived_files"] += 1
+                            logger.info("Archived overlays for %s", entry.name)
+                        except Exception as e:
+                            logger.warning("Failed to archive overlays for %s: %s", entry.name, e)
+                            stats["errors"] += 1
+
+                # 2. Archive large model files
+                for ext in ["*.pt", "*.pth", "*.ckpt", "*.bin"]:
+                    for f in idea_path.glob(ext):
+                        if dry_run:
+                            logger.info("[DRY RUN] Would archive artifact: %s -> %s",
+                                         f, archive_idea_path / f.name)
+                            stats["archived_files"] += 1
+                            continue
+                        try:
+                            archive_idea_path.mkdir(parents=True, exist_ok=True)
+                            f_size = f.stat().st_size
+                            shutil.move(str(f), str(archive_idea_path / f.name))
+                            stats["archived_files"] += 1
+                            stats["freed_bytes"] += f_size
+                        except Exception as e:
+                            logger.warning("Failed to archive %s: %s", f, e)
+                            stats["errors"] += 1
+    except OSError:
+        pass
+
+    return stats
+
+
 def run_gc(
     results_dir: Path,
     checkpoints_dir: Optional[Path],
@@ -244,6 +317,7 @@ def run_gc(
     min_free_gb: float = 0,
     dry_run: bool = False,
     gc_results_enabled: bool = False,
+    archive_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run garbage collection. Returns stats dict."""
     logger.info("=" * 50)
@@ -278,7 +352,7 @@ def run_gc(
 
     logger.info("Total protected: %d ideas", len(keep_ids))
 
-    stats: Dict[str, Any] = {"checkpoints": {}, "results": {}}
+    stats: Dict[str, Any] = {"checkpoints": {}, "results": {}, "archive": {}}
 
     # GC checkpoints
     if checkpoints_dir:
@@ -288,8 +362,17 @@ def run_gc(
         logger.info("Checkpoints: deleted=%d, kept=%d, errors=%d",
                      cs["deleted"], cs["kept"], cs["errors"])
 
-    # GC results artifacts
-    if gc_results_enabled:
+    # Cold Storage Archival
+    if archive_dir:
+        stats["archive"] = archive_to_cold_storage(
+            results_dir, archive_dir, keep_ids, dry_run=dry_run)
+        as_ = stats["archive"]
+        freed_gb = as_["freed_bytes"] / (1024**3)
+        logger.info("Archive: items=%d, freed=%.1fGB, kept=%d",
+                     as_["archived_files"], freed_gb, as_["kept"])
+
+    # GC results artifacts (Deletes from hot storage without archive)
+    if gc_results_enabled and not archive_dir:
         stats["results"] = gc_results(results_dir, keep_ids, dry_run=dry_run)
         rs = stats["results"]
         freed_mb = rs["freed_bytes"] / (1024 * 1024)
@@ -348,6 +431,8 @@ Examples:
                         help="Path to idea_lake.db")
     parser.add_argument("--gc-results", action="store_true",
                         help="Delete large artifacts (.pt) from results/ too")
+    parser.add_argument("--archive-dir", default="",
+                        help="Move bulky result assets to this secondary storage path")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be deleted without deleting")
 
@@ -380,6 +465,12 @@ Examples:
     min_free_gb = args.min_free_gb or gc_cfg.get("min_free_gb", 0)
     gc_results_enabled = args.gc_results or gc_cfg.get("results_artifacts", False)
 
+    archive_dir = args.archive_dir or gc_cfg.get("archive_dir", "")
+    if archive_dir:
+        archive_dir = Path(archive_dir)
+    else:
+        archive_dir = None
+
     lake_db_path = Path(args.lake_db) if args.lake_db else \
         ideas_path.parent / "idea_lake.db"
 
@@ -393,6 +484,7 @@ Examples:
         min_free_gb=min_free_gb,
         dry_run=args.dry_run,
         gc_results_enabled=gc_results_enabled,
+        archive_dir=archive_dir,
     )
 
     print(json.dumps(stats, indent=2))

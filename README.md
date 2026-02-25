@@ -82,6 +82,7 @@ nohup python orze/bug_fixer.py -c orze.yaml >> results/bug_fixer.log 2>&1 &
 - **Push notifications** — Telegram, Slack, Discord, or any webhook. Every message includes the top 10 leaderboard
 - **Telegram bot** — text back to the bot in natural language to check status, query results, or add ideas from your phone
 - **HP sweep** — list-valued hyperparameters (e.g. `lr: [1e-4, 3e-4]`) auto-expand into sub-runs via Cartesian product, with configurable `max_combos` guard. Report groups sweep variants and surfaces the best
+- **Cold Storage Archival** — move bulky artifacts (checkpoints, visualization overlays) to secondary storage (EFS, NFS, HDD) while leaving metadata (json, log, yaml) on hot storage. Keeps the framework fast and functional while saving expensive high-performance disk space. Configure via `archive_dir` in `orze.yaml`
 - **Configurable report** — custom columns, metrics from any JSON file
 - **Multi-machine** — works across machines on shared filesystems (NFS/EFS/FSx)
 - **Failure handling** — auto-skip after N failures, orphan cleanup
@@ -120,6 +121,22 @@ notifications:
   heartbeat_interval: 1800  # seconds between status pulses (0=off)
   milestone_every: 100      # notify every N completions (0=off)
 ```
+
+### Cold Storage Archival
+
+Move bulky artifacts (checkpoints, visualization overlays) to secondary storage while keeping essential metadata on hot storage.
+
+```yaml
+# In orze.yaml
+gc:
+  enabled: true
+  keep_top: 50
+  keep_recent: 10
+  results_artifacts: true
+  archive_dir: /path/to/cold/storage/results
+```
+
+Bulky items (`overlays/`, `*.pt`, `*.ckpt`) are moved to the `archive_dir` for non-top experiments. Metadata (`metrics.json`, `resolved_config.yaml`, `*.log`) remains in the primary results directory, keeping the leaderboard and research agents fully functional.
 
 ### Telegram Bot
 
