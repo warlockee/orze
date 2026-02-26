@@ -420,16 +420,10 @@ def build_context(results_dir: Path, ideas_path: Path, report_cfg: dict,
     # --- Full leaderboard from _leaderboard.json ---
     lb_entries, lb_metric = load_full_leaderboard(results_dir)
     if lb_entries:
-        lines.append("## Leaderboard (all metrics)\n")
+        lines.append("## Leaderboard (top and bottom focus)\n")
         col_labels = [c.get("label", c["key"]) for c in columns] if columns else []
-        if col_labels:
-            lines.append("| # | Idea | Title | " + " | ".join(col_labels) + " |")
-            lines.append("|---|------|-------|" + "|".join(["---"] * len(col_labels)) + "|")
-        else:
-            lines.append("| # | Idea | Title | Score |")
-            lines.append("|---|------|-------|-------|")
-
-        for i, entry in enumerate(lb_entries, 1):
+        
+        def _format_row(i, entry):
             idea_id = entry.get("idea_id", "?")
             title = entry.get("title", "")[:40]
             em = entry.get("eval_metrics", {})
@@ -445,10 +439,29 @@ def build_context(results_dir: Path, ideas_path: Path, report_cfg: dict,
                         except (ValueError, TypeError):
                             val = str(val)
                     vals.append(str(val) if val is not None else "")
-                lines.append(f"| {i} | {idea_id} | {title} | " + " | ".join(vals) + " |")
+                return f"| {i} | {idea_id} | {title} | " + " | ".join(vals) + " |"
             else:
                 score = em.get(primary_metric, entry.get("metric_value", "?"))
-                lines.append(f"| {i} | {idea_id} | {title} | {score} |")
+                return f"| {i} | {idea_id} | {title} | {score} |"
+
+        if col_labels:
+            header = "| # | Idea | Title | " + " | ".join(col_labels) + " |"
+            sep = "|---|------|-------|" + "|".join(["---"] * len(col_labels)) + "|"
+        else:
+            header = "| # | Idea | Title | Score |"
+            sep = "|---|------|-------|-------|"
+            
+        lines.append(header)
+        lines.append(sep)
+
+        # Token Optimization: Only show top 10 and bottom 5 in full detail
+        # Show middle as summary to save repetitive tokens
+        n_total = len(lb_entries)
+        for i, entry in enumerate(lb_entries, 1):
+            if i <= 10 or i > (n_total - 5):
+                lines.append(_format_row(i, entry))
+            elif i == 11:
+                lines.append(f"| ... | ... | [{n_total-15} intermediate models omitted] | ... |")
         lines.append("")
 
     # --- Failure analysis ---

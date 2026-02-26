@@ -69,7 +69,8 @@ def get_top_idea_ids(results_dir: Path, primary_metric: str,
             conn = sqlite3.connect(str(lake_db_path), timeout=10)
             # Try primary_metric, then fallback without "adjusted_"
             for metric in [primary_metric,
-                           primary_metric.replace("_adjusted_", "_")]:
+                           primary_metric.replace("_adjusted_", "_"),
+                           "fedex_auc_roc", "auc_roc"]:
                 rows = conn.execute(
                     "SELECT idea_id FROM ideas "
                     "WHERE json_extract(eval_metrics, ?) IS NOT NULL "
@@ -80,6 +81,16 @@ def get_top_idea_ids(results_dir: Path, primary_metric: str,
                     for r in rows:
                         keep.add(r[0])
                     break
+            
+            # Additional safety: always keep anything with AUC > 0.95
+            rows = conn.execute(
+                "SELECT idea_id FROM ideas "
+                "WHERE (json_extract(eval_metrics, '$.auc_roc') > 0.95 "
+                "OR json_extract(eval_metrics, '$.fedex_auc_roc') > 0.95)"
+            ).fetchall()
+            for r in rows:
+                keep.add(r[0])
+                
             conn.close()
         except Exception as e:
             logger.warning("Lake query failed: %s", e)

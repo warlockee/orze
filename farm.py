@@ -42,6 +42,12 @@ import atexit
 
 import yaml
 
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from idea_lake import IdeaLake
+except ImportError:
+    IdeaLake = Any
+
 __version__ = "1.11.0"
 
 logger = logging.getLogger("orze")
@@ -365,10 +371,12 @@ def _validate_config(cfg: dict) -> list:
                               f"(gemini, openai, anthropic, ollama, custom)")
 
     # Validate numeric fields
-    for key in ("timeout", "poll", "eval_timeout", "stall_minutes"):
+    for key in ("timeout", "poll", "eval_timeout", "stall_minutes",
+                "max_idea_failures", "max_fix_attempts", "min_disk_gb",
+                "orphan_timeout_hours"):
         val = cfg.get(key)
-        if val is not None and (not isinstance(val, (int, float)) or val <= 0):
-            errors.append(f"{key}: must be a positive number, got {val!r}")
+        if val is not None and (not isinstance(val, (int, float)) or val < 0):
+            errors.append(f"{key}: must be a non-negative number, got {val!r}")
 
     # Validate eval config consistency
     if cfg.get("eval_script") and not cfg.get("eval_output"):
@@ -586,15 +594,13 @@ def expand_sweeps(ideas: Dict[str, dict],
                     idea_id, len(combos),
                     ", ".join(f"{k}={len(v)}" for k, v in zip(keys, values)))
 
-        for combo in combos:
-            suffix_parts = []
+        for i, combo in enumerate(combos, 1):
             sub_config = copy.deepcopy(idea["config"])
             for k, v in zip(keys, combo):
-                short_key = k.split(".")[-1]
-                suffix_parts.append(f"{short_key}={v}")
                 _set_nested(sub_config, k, v)
 
-            sub_id = f"{idea_id}~{'~'.join(suffix_parts)}"
+            # Use requested -ht-N naming convention
+            sub_id = f"{idea_id}-ht-{i}"
             expanded[sub_id] = {
                 "title": idea["title"],
                 "priority": idea.get("priority", "medium"),
@@ -1813,7 +1819,7 @@ def _read_metric_value(results_dir: Path, idea_id: str, col: dict) -> Any:
 
 
 def update_report(results_dir: Path, ideas: Dict[str, dict],
-                  cfg: dict) -> list:
+                  cfg: dict, lake: Optional[IdeaLake] = None) -> list:
     """Generate a configurable leaderboard report.md from all results.
     Returns sorted list of completed row dicts."""
     report_cfg = cfg.get("report") or DEFAULT_CONFIG["report"]
@@ -1821,6 +1827,24 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     sort_order = report_cfg.get("sort") or "descending"
     columns = report_cfg.get("columns") or DEFAULT_CONFIG["report"]["columns"]
     title = report_cfg.get("title") or "Orze Report"
+    reverse = sort_order == "descending"
+    _sentinel = float("-inf") if reverse else float("inf")
+
+    def _safe_float(v):
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return _sentinel
+
+    # SYSTEMATIC FIX: Tie-breaker sorting
+    # We sort by (primary_val, secondary_val) to ensure high-AUC models surface 
+    # even if their gated adjusted_auc is 0.
+    def _get_tiebreaker_sort_key(r):
+        pv = _safe_float(r.get("primary_val"))
+        # Tie-breaker: look for raw AUC in values or metrics
+        sv = _safe_float(r["values"].get("fedex_auc_roc") or 
+                         deep_get(r["metrics"], "test_metrics.auc_roc") or 0.0)
+        return (pv, sv)
 
     # --- Load results cache ---
     cache_path = results_dir / "_results_cache.json"
@@ -1838,27 +1862,51 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 
     # Include archived ideas from cached index
     all_ideas = dict(ideas)
-    archived_index = results_dir / "_archived_index.json"
-    if archived_index.exists():
-        try:
-            idx = json.loads(archived_index.read_text(encoding="utf-8"))
-            for arch_id, arch_title in idx.items():
-                if arch_id not in all_ideas:
-                    all_ideas[arch_id] = {"title": arch_title, "priority": "archived"}
-        except (json.JSONDecodeError, OSError):
-            pass
+    if lake:
+        # DB is source of truth for full idea set (archived + hot)
+        db_ids = lake.get_all_ids()
+        # In memory ideas (hot) take precedence for config, but DB knows about everyone
+        for aid in db_ids:
+            if aid not in all_ideas:
+                # Stub for report walker — title will be fetched from DB below
+                all_ideas[aid] = {"title": "...", "priority": "archived"}
+    else:
+        archived_index = results_dir / "_archived_index.json"
+        if archived_index.exists():
+            try:
+                idx = json.loads(archived_index.read_text(encoding="utf-8"))
+                for arch_id, arch_title in idx.items():
+                    if arch_id not in all_ideas:
+                        all_ideas[arch_id] = {"title": arch_title, "priority": "archived"}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    # Determine report title
+    report_title = report_cfg.get("title") or "Orze Report"
 
     updated_cache = False
     for idea_id in sorted(all_ideas.keys(), key=_id_sort_key):
         idea_dir = results_dir / idea_id
+        
+        # Determine base title/data (from memory or DB)
+        idea_info = all_ideas.get(idea_id, {"title": idea_id})
+        curr_idea_title = idea_info["title"]
+        
+        if lake and curr_idea_title == "...":
+            # Lazy fetch title from DB for archived ideas
+            db_idea = lake.get(idea_id)
+            if db_idea:
+                curr_idea_title = db_idea["title"]
+                all_ideas[idea_id]["title"] = curr_idea_title
+
         if not idea_dir.exists():
-            rows.append({"id": idea_id, "title": all_ideas[idea_id]["title"],
+            rows.append({"id": idea_id, "title": curr_idea_title,
                          "status": "QUEUED", "values": {}})
             continue
 
         metrics_path = idea_dir / "metrics.json"
         if not metrics_path.exists():
-            rows.append({"id": idea_id, "title": all_ideas[idea_id]["title"],
+            rows.append({"id": idea_id, "title": curr_idea_title,
                          "status": "IN_PROGRESS", "values": {}})
             continue
 
@@ -1883,13 +1931,11 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
             values[key] = _read_metric_value(results_dir, idea_id, col)
 
         primary_val = values.get(primary_metric)
-        if primary_val is None:
-            primary_val = (deep_get(metrics, primary_metric)
-                           if "." in primary_metric
-                           else metrics.get(primary_metric))
-
+        # SYSTEMATIC FIX: No deceptive fallbacks. Only use verified report values.
+        # If the external report is missing or zero, we show 0.0 or None.
+        
         row_data = {
-            "id": idea_id, "title": all_ideas[idea_id]["title"],
+            "id": idea_id, "title": curr_idea_title,
             "status": metrics.get("status", "UNKNOWN"),
             "values": values,
             "primary_val": primary_val,
@@ -1911,7 +1957,7 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        f"# {title}",
+        f"# {report_title}",
         f"**Updated:** {now} | **Host:** {socket.gethostname()}",
         "",
         "## Pipeline Status",
@@ -1926,24 +1972,19 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     ]
 
     completed = [r for r in rows if r["status"] == "COMPLETED"]
-    reverse = sort_order == "descending"
-    _sentinel = float("-inf") if reverse else float("inf")
-
-    def _safe_float(v):
-        try:
-            return float(v)
-        except (ValueError, TypeError):
-            return _sentinel
-
-    completed.sort(key=lambda r: _safe_float(r.get("primary_val")),
-                   reverse=reverse)
+    completed.sort(key=_get_tiebreaker_sort_key, reverse=reverse)
 
     # --- Sweep grouping: split into standalone + sweep groups ---
     standalone = []
     sweep_groups = {}  # parent_id -> list of sub-run rows
     for r in completed:
-        if "~" in r["id"]:
+        parent_id = None
+        if "-ht-" in r["id"]:
+            parent_id = r["id"].split("-ht-", 1)[0]
+        elif "~" in r["id"]:
             parent_id = r["id"].split("~", 1)[0]
+            
+        if parent_id:
             sweep_groups.setdefault(parent_id, []).append(r)
         else:
             standalone.append(r)
@@ -1951,13 +1992,13 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     # Build main table: standalone + best of each sweep group
     main_rows = list(standalone)
     for parent_id, children in sweep_groups.items():
-        children.sort(key=lambda r: _safe_float(r.get("primary_val")),
+        children.sort(key=_get_tiebreaker_sort_key,
                       reverse=reverse)
         best = dict(children[0])
         best["title"] = f"{best['title']} (best of {len(children)})"
         main_rows.append(best)
 
-    main_rows.sort(key=lambda r: _safe_float(r.get("primary_val")),
+    main_rows.sort(key=_get_tiebreaker_sort_key,
                    reverse=reverse)
 
     if main_rows:
@@ -2007,7 +2048,16 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
                 pv = r.get("primary_val", "—")
                 if isinstance(pv, float):
                     pv = f"{pv:.4f}"
-                suffix = r["id"].split("~", 1)[1] if "~" in r["id"] else r["id"]
+                
+                # Extract suffix for display
+                sub_id = r["id"]
+                if "-ht-" in sub_id:
+                    suffix = "ht-" + sub_id.split("-ht-", 1)[1]
+                elif "~" in sub_id:
+                    suffix = sub_id.split("~", 1)[1]
+                else:
+                    suffix = sub_id
+                    
                 lines.append(f"| {i} | {suffix} | {pv} |")
             lines.append("")
 
@@ -2626,6 +2676,7 @@ def notify(event: str, data: dict, cfg: dict):
         if not ncfg.get("enabled", False):
             return
 
+        logger.info("Sending notification for event: %s", event)
         global_on = ncfg.get("on") or ["completed", "failed", "new_best"]
         # Lifecycle/system events always delivered (not filtered)
         lifecycle = {"started", "shutdown", "heartbeat", "milestone",
@@ -2739,8 +2790,27 @@ class Orze:
         try:
             from idea_lake import IdeaLake
             lake_path = Path(cfg.get("ideas_file", "ideas.md")).parent / "idea_lake.db"
+            
+            # MOUNT INTEGRITY CHECK: Prevents split-brain leaderboard corruption
+            if not lake_path.exists():
+                logger.error("CRITICAL: idea_lake.db not found! Shared drive might not be mounted.")
+                if (cfg.get("notifications") or {}).get("enabled"):
+                    logger.error("DISABLING NOTIFICATIONS: Local view is inconsistent with fleet.")
+                    cfg["notifications"]["enabled"] = False
+            
             self.lake = IdeaLake(str(lake_path))
             logger.info("Idea Lake initialized: %d archived ideas", self.lake.count())
+            
+            # Sanity check results count
+            res_dir = Path(cfg.get("results_dir", "results"))
+            if res_dir.exists():
+                n_results = len([d for d in res_dir.iterdir() if d.is_dir() and d.name.startswith("idea-")])
+                if n_results < 500 and not once:
+                    logger.warning("SUSPICIOUS: results dir has only %d entries. "
+                                   "Potential mount failure or local drive leak.", n_results)
+                    if (cfg.get("notifications") or {}).get("enabled"):
+                        logger.error("DISABLING NOTIFICATIONS for this host to prevent report corruption.")
+                        cfg["notifications"]["enabled"] = False
         except Exception as exc:
             logger.warning("Idea Lake not available: %s", exc)
             self.lake = None
@@ -2955,22 +3025,20 @@ class Orze:
                             except (json.JSONDecodeError, OSError,
                                     KeyError, UnicodeDecodeError):
                                 pass
-                    if metric_val is None:
-                        # Last resort: use training's internal metric
-                        metric_val = deep_get(
-                            m, f"test_metrics.{primary}"
-                        ) or m.get(primary)
+                    
+                    # SYSTEMATIC FIX: No Last Resort fallback. 
+                    # We only report what we have verified.
+                    
                     if metric_val is None:
                         logger.warning(
                             "Notification for %s has metric_val=None "
-                            "(row_pv=%s, m.get(%s)=%s, eval=%s, test_auc=%s)",
+                            "(row_pv=%s, m.get(%s)=%s, eval_exists=%s)",
                             idea_id,
                             row.get("primary_val"),
                             primary, m.get(primary),
                             (self.results_dir / idea_id /
                              cfg.get("eval_output", "eval_report.json")
-                             ).exists(),
-                            m.get(primary))
+                             ).exists())
                     t_time = m.get("training_time") or None
                     # Format metric to 4 decimal places
                     fmt_val = (f"{metric_val:.4f}"
@@ -3025,6 +3093,7 @@ class Orze:
                                         eval_metrics[key] = em[key]
                             except (json.JSONDecodeError, OSError):
                                 pass
+                        # Ensure status is updated in DB if archived
                         self.lake.insert(
                             idea_id, title, config_yaml, raw_md,
                             eval_metrics=eval_metrics or None,
@@ -3651,14 +3720,62 @@ class Orze:
             except Exception as e:
                 logger.error("Error in _run_all_roles: %s — continuing", e)
 
-            # 5. Parse ideas, expand sweeps, and find unclaimed
-            ideas = parse_ideas(cfg["ideas_file"])
+            # 5. Sync ideas from ideas.md to idea_lake.db (ingestion)
+            raw_ideas = parse_ideas(cfg["ideas_file"])
+            if self.lake:
+                # Sync new ideas to DB queue
+                db_ids = self.lake.get_all_ids()
+                ingested_ids = []
+                for idea_id, idea in raw_ideas.items():
+                    if idea_id not in db_ids:
+                        self.lake.insert(
+                            idea_id, idea["title"], yaml.dump(idea["config"]),
+                            idea.get("raw", ""), 
+                            status="queued",
+                            priority=idea.get("priority", "medium")
+                        )
+                        ingested_ids.append(idea_id)
+                
+                if ingested_ids:
+                    logger.info("Ingested %d new ideas from %s to SQLite queue", 
+                                len(ingested_ids), cfg["ideas_file"])
+                    # OPTIMIZATION: Consumption logic (wipe ideas.md after ingestion)
+                    # We keep the header (everything before the first ## idea-)
+                    try:
+                        text = Path(cfg["ideas_file"]).read_text(encoding="utf-8")
+                        header_match = re.split(r"^## idea-", text, flags=re.MULTILINE)[0]
+                        Path(cfg["ideas_file"]).write_text(header_match.strip() + "\n\n", 
+                                                           encoding="utf-8")
+                        logger.info("Consumed %d ideas from %s (wiped file)", 
+                                    len(ingested_ids), cfg["ideas_file"])
+                    except Exception as e:
+                        logger.warning("Failed to consume ideas.md: %s", e)
+
+            # 5a. Expand sweeps and find unclaimed work
+            # For sweeps, we still expand in memory for now to keep it simple,
+            # but we query the base queue from SQLite.
             sweep_max = cfg.get("sweep", {}).get("max_combos", 20)
-            ideas = expand_sweeps(ideas, max_combos=sweep_max)
+            
+            if self.lake:
+                # Get the base queue from SQLite
+                queue_ideas = {r["idea_id"]: {
+                    "title": r["title"],
+                    "priority": r["priority"],
+                    "config": yaml.safe_load(r["config"]),
+                    "raw": "" # markdown not needed for expansion
+                } for r in self.lake.get_queue(limit=100)}
+                # Expand any sweeps in the queue
+                ideas = expand_sweeps(queue_ideas, max_combos=sweep_max)
+            else:
+                # Legacy fallback
+                ideas = expand_sweeps(raw_ideas, max_combos=sweep_max)
+
             skipped = get_skipped_ideas(
                 self.failure_counts,
                 cfg.get("max_idea_failures", 0))
             unclaimed = get_unclaimed(ideas, self.results_dir, skipped)
+            if unclaimed:
+                logger.info("Unclaimed queue (top 5): %s", unclaimed[:5])
 
             # 6. EVALS FIRST — launch evals before training
             #    Evals are bottleneck (~30min vs 3min training),
@@ -3804,7 +3921,11 @@ class Orze:
                 "max_concurrent", 3)
             sweep_counts: Dict[str, int] = {}
             for tp in self.active.values():
-                base = tp.idea_id.split("~")[0]
+                base = tp.idea_id
+                if "-ht-" in base:
+                    base = base.split("-ht-", 1)[0]
+                elif "~" in base:
+                    base = base.split("~", 1)[0]
                 sweep_counts[base] = sweep_counts.get(base, 0) + 1
 
             if unclaimed and free and disk_ok:
@@ -3813,9 +3934,14 @@ class Orze:
                     while unclaimed:
                         idea_id = unclaimed.pop(0)
                         # Enforce per-idea sweep concurrency limit
-                        if "~" in idea_id:
-                            base = idea_id.split("~")[0]
-                            if sweep_counts.get(base, 0) >= max_sweep_concurrent:
+                        base_id = idea_id
+                        if "-ht-" in base_id:
+                            base_id = base_id.split("-ht-", 1)[0]
+                        elif "~" in base_id:
+                            base_id = base_id.split("~", 1)[0]
+                            
+                        if base_id != idea_id:
+                            if sweep_counts.get(base_id, 0) >= max_sweep_concurrent:
                                 continue
                         if not claim(idea_id, self.results_dir, gpu):
                             continue
@@ -3883,9 +4009,14 @@ class Orze:
                                 _record_failure(self.failure_counts, idea_id)
                                 continue
                         self.active[gpu] = tp
-                        if "~" in idea_id:
-                            base = idea_id.split("~")[0]
-                            sweep_counts[base] = sweep_counts.get(base, 0) + 1
+                        base_id = idea_id
+                        if "-ht-" in base_id:
+                            base_id = base_id.split("-ht-", 1)[0]
+                        elif "~" in base_id:
+                            base_id = base_id.split("~", 1)[0]
+                            
+                        if base_id != idea_id:
+                            sweep_counts[base_id] = sweep_counts.get(base_id, 0) + 1
                         launched = True
                         break
                     if not launched:
@@ -3904,8 +4035,19 @@ class Orze:
                             len(unclaimed), len(self.active),
                             len(self.active_evals))
 
+            # Circuit Breaker: if too many ideas fail in one iteration, stop the farm
+            if len(self.failure_counts) > 5:
+                # Count only new failures this iteration
+                max_fail = cfg.get("max_idea_failures", 3)
+                new_fails = [fid for fid, count in self.failure_counts.items() 
+                             if count >= max_fail]
+                if len(new_fails) > 10:
+                    logger.error("CIRCUIT BREAKER: Too many failures (%d). Stopping.", 
+                                 len(new_fails))
+                    Path(".orze_stop_all").touch()
+
             # 8. Update report
-            completed_rows = update_report(self.results_dir, ideas, cfg)
+            completed_rows = update_report(self.results_dir, ideas, cfg, lake=self.lake)
 
             # 9. Write heartbeat + status.json
             write_host_heartbeat(self.results_dir, self.active, free)

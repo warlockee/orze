@@ -14,6 +14,7 @@ Usage:
 import datetime
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -42,6 +43,7 @@ def flatten_config(config: dict, prefix: str = "", max_depth: int = 2) -> Dict[s
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS ideas (
     idea_id TEXT PRIMARY KEY,
+    id_num INTEGER,
     title TEXT NOT NULL,
     priority TEXT DEFAULT 'medium',
     category TEXT DEFAULT 'architecture',
@@ -102,6 +104,25 @@ class IdeaLake:
         has_old = any(c in cols for c in _OLD_METRIC_COLS)
         has_new = "eval_metrics" in cols
 
+        if "id_num" not in cols:
+            logger.info("Migrating idea_lake schema: adding id_num column")
+            self.conn.execute("ALTER TABLE ideas ADD COLUMN id_num INTEGER")
+            # Backfill
+            rows = self.conn.execute("SELECT idea_id FROM ideas").fetchall()
+            for r in rows:
+                match = re.search(r"idea-(\d+)", r["idea_id"])
+                if match:
+                    self.conn.execute(
+                        "UPDATE ideas SET id_num = ? WHERE idea_id = ?",
+                        (int(match.group(1)), r["idea_id"])
+                    )
+            self.conn.commit()
+            logger.info("Backfilled id_num for %d ideas", len(rows))
+            # Create indexes that need id_num
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_status_priority_id ON ideas(status, priority, id_num)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_id_num ON ideas(id_num)")
+            self.conn.commit()
+
         if has_old and not has_new:
             logger.info("Migrating idea_lake schema: fixed columns → JSON blobs")
             self.conn.execute("ALTER TABLE ideas ADD COLUMN eval_metrics TEXT")
@@ -153,6 +174,12 @@ class IdeaLake:
         created_at: Optional[str] = None,
     ):
         """Insert or update an idea in the lake."""
+        # Extract numeric ID for indexed sorting
+        id_num = None
+        match = re.search(r"idea-(\d+)", idea_id)
+        if match:
+            id_num = int(match.group(1))
+
         # Auto-compute summary if missing
         if not config_summary and config_yaml:
             try:
@@ -164,18 +191,19 @@ class IdeaLake:
 
         self.conn.execute(
             """INSERT OR REPLACE INTO ideas (
-                idea_id, title, priority, category, parent, hypothesis,
+                idea_id, id_num, title, priority, category, parent, hypothesis,
                 config, raw_markdown,
                 config_summary, eval_metrics,
                 status, training_time, archived_at, created_at
             ) VALUES (
-                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?,
                 ?, ?,
                 ?, ?,
                 ?, ?, ?, ?
             )""",
             (
                 idea_id,
+                id_num,
                 title,
                 priority,
                 category,
@@ -188,7 +216,7 @@ class IdeaLake:
                 status,
                 training_time,
                 datetime.datetime.now().isoformat(),
-                created_at,
+                created_at or datetime.datetime.now().isoformat(),
             ),
         )
         self.conn.commit()
@@ -220,10 +248,35 @@ class IdeaLake:
         row = self.conn.execute("SELECT COUNT(*) FROM ideas").fetchone()
         return row[0]
 
-    def get_all_ids(self) -> Set[str]:
-        """Return set of all idea IDs in the lake."""
-        rows = self.conn.execute("SELECT idea_id FROM ideas").fetchall()
+    def get_all_ids(self, status: Optional[str] = None) -> Set[str]:
+        """Return set of all idea IDs in the lake, optionally filtered by status."""
+        query = "SELECT idea_id FROM ideas"
+        params = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        rows = self.conn.execute(query, params).fetchall()
         return {r[0] for r in rows}
+
+    def get_queue(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Return unclaimed ideas, sorted by priority then ID."""
+        rows = self.conn.execute(
+            """SELECT idea_id, title, priority, config, created_at 
+               FROM ideas 
+               WHERE status = 'queued' OR status = 'pending'
+               ORDER BY 
+                 CASE priority 
+                   WHEN 'critical' THEN 0 
+                   WHEN 'high' THEN 1 
+                   WHEN 'medium' THEN 2 
+                   WHEN 'low' THEN 3 
+                   ELSE 2 
+                 END,
+                 id_num ASC
+               LIMIT ?""",
+            (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_max_id_num(self) -> int:
         """Return the highest numeric idea ID in the lake."""
