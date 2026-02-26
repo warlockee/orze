@@ -327,6 +327,9 @@ def load_project_config(path: Optional[str]) -> dict:
     cfg = dict(DEFAULT_CONFIG)
     cfg["report"] = dict(DEFAULT_CONFIG["report"])
 
+    if not path and Path("orze.yaml").exists():
+        path = "orze.yaml"
+
     if path and Path(path).exists():
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         for k, v in raw.items():
