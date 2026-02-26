@@ -6,22 +6,30 @@ Orze runs the full research loop: **generate ideas → train → evaluate → le
 
 **Website:** [orze.ai](https://orze.ai)
 
-## Getting Started (Under 30 Seconds)
+## Getting Started
 
-In any of your project folders, install and initialize orze:
+In any of your project folders, install orze:
 
 ```bash
-# 1. Download orze
 curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
+```
 
-# 2. Auto-initialize project (creates train.py, orze.yaml, ideas.md)
+Then initialize your project using one of two methods:
+
+### Option 1: Quick Auto-Init (Under 30 Seconds)
+```bash
+# Auto-initialize project (creates train.py, orze.yaml, ideas.md)
 python3 orze/farm.py --init
 
-# 3. Launch the orchestrator!
+# Launch the orchestrator!
 python3 orze/farm.py
 ```
 
-Your AI agent will explore your codebase, wrap your training script (if you have one), and launch the autonomous research loop for you.
+### Option 2: AI-Assisted Setup
+If you use an LLM CLI (Claude, Gemini, etc.), you can ask an AI agent to explore your existing codebase, wrap your training script, and set up the project for you:
+```bash
+do @orze/AGENT.md
+```
 
 ## Manual Quick Start (3 minutes)
 
