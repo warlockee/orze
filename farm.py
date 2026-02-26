@@ -53,6 +53,44 @@ __version__ = "1.11.1"
 logger = logging.getLogger("orze")
 
 
+BASELINE_TRAIN_PY = """
+import argparse, json, yaml, os
+from pathlib import Path
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--idea-id", required=True)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--ideas-md", required=True)
+    parser.add_argument("--results-dir", default="results")
+    args, unknown = parser.parse_known_args()
+
+    print(f"Training {args.idea_id}...")
+    
+    # Simulating training
+    res_dir = Path(args.results_dir) / args.idea_id
+    res_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Write metrics.json (the Orze contract)
+    with open(res_dir / "metrics.json", "w") as f:
+        json.dump({"status": "COMPLETED", "accuracy": 0.5}, f)
+
+if __name__ == "__main__":
+    main()
+"""
+
+BASELINE_IDEAS_MD = """
+## idea-001: Baseline
+- **Priority**: medium
+- **Hypothesis**: Initial experiment to establish a baseline.
+
+```yaml
+learning_rate: 0.001
+batch_size: 32
+```
+"""
+
+
 # ---------------------------------------------------------------------------
 # Process group helpers — ensures all child processes are killed on shutdown
 # ---------------------------------------------------------------------------
@@ -4283,6 +4321,8 @@ Examples:
                         help="Directory for results")
     parser.add_argument("--train-script", type=str, default=None,
                         help="Training script to run per idea")
+    parser.add_argument("--init", action="store_true",
+                        help="Initialize a new orze project in the current directory")
     parser.add_argument("--admin", action="store_true",
                         help="Launch admin panel instead of farm loop")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -4298,6 +4338,103 @@ Examples:
     if args.admin:
         from orze.admin.server import run_admin
         run_admin(cfg)
+        return
+
+    # --init: Initialize a new project in the current directory
+    if args.init:
+        print("\n\033[1mOrze — Initialization\033[0m")
+        print("---------------------")
+
+        # 1. Detect project type
+        py_files = list(Path(".").rglob("*.py"))
+        is_torch = any("torch" in f.read_text(errors="ignore") for f in py_files[:20])
+        print(f"Project context: {'PyTorch' if is_torch else 'Generic ML'}")
+
+        # 2. Find/create training script
+        train_scripts = []
+        for p in Path(".").glob("**/train*.py"):
+            if "orze" in str(p): continue
+            train_scripts.append(str(p))
+
+        train_script = None
+        if train_scripts:
+            train_script = train_scripts[0]
+            print(f"Detected training script: {train_script}")
+        else:
+            train_script = "train.py"
+            if not Path(train_script).exists():
+                print(f"No training script found. Creating {train_script}...")
+                Path(train_script).write_text(BASELINE_TRAIN_PY.strip() + "\n", encoding="utf-8")
+            else:
+                print(f"Using existing {train_script}")
+
+        # 3. Create orze.yaml
+        if not Path("orze.yaml").exists():
+            print("Creating orze.yaml...")
+            backend = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else \
+                      "gemini" if os.environ.get("GEMINI_API_KEY") else \
+                      "openai" if os.environ.get("OPENAI_API_KEY") else "ollama"
+
+            yaml_content = f"""# orze.yaml — Project configuration
+train_script: {train_script}
+ideas_file: ideas.md
+results_dir: results
+python: {sys.executable}
+
+# Research agent settings
+roles:
+  research:
+    mode: research
+    backend: {backend}
+    cooldown: 300
+"""
+            Path("orze.yaml").write_text(yaml_content.strip() + "\n", encoding="utf-8")
+
+        # 4. Create ideas.md
+        if not Path("ideas.md").exists():
+            print("Creating ideas.md with a baseline...")
+            Path("ideas.md").write_text(BASELINE_IDEAS_MD.strip() + "\n", encoding="utf-8")
+
+        # 5. Create basic rules
+        if not Path("GOAL.md").exists():
+            Path("GOAL.md").write_text("# Research Goal\n\nTask: Optimize the model\nMetric: accuracy\n", encoding="utf-8")
+
+        if not Path("RESEARCH_RULES.md").exists():
+            rules_content = """# Research Rules
+
+You are a research agent for an automated ML experiment system.
+Your goal is to generate new experiment ideas to improve the model's performance.
+
+## How to Generate Ideas
+1.  **Analyze the results**: Read `results/report.md` to see what has worked and what hasn't.
+2.  **Form a hypothesis**: Based on the results, form a hypothesis about what might improve the primary metric.
+3.  **Propose a change**: Create a new idea with a specific, minimal change to the configuration.
+4.  **Format**: Ensure the idea is in the correct format (H2 header, YAML block).
+
+## Example Idea
+```markdown
+## idea-002: Increase learning rate
+- **Priority**: high
+- **Hypothesis**: The baseline model might be underfitting, a higher learning rate could lead to faster convergence and a better result.
+- **Config overrides**:
+  ```yaml
+  learning_rate: 0.01
+  ```
+```
+
+## Your Task
+Generate 3-5 new ideas to improve the model's performance based on the current results.
+Append them to `ideas.md`.
+Focus on simple changes first: learning rate, batch size, optimizer, or simple architectural tweaks.
+"""
+            Path("RESEARCH_RULES.md").write_text(rules_content, encoding="utf-8")
+
+        print("\n\033[32m✔ Initialization complete!\033[0m")
+        print("\nNext steps:")
+        print("  1. Review \033[36mGOAL.md\033[0m and \033[36mRESEARCH_RULES.md\033[0m")
+        print(f"  2. Review \033[36morze.yaml\033[0m (train_script: {train_script})")
+        print("  3. Run Orze: \033[1mpython orze/farm.py\033[0m")
+        print("")
         return
 
     if args.timeout is not None:
