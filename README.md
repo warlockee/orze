@@ -6,18 +6,24 @@ Orze runs the full research loop: **generate ideas → train → evaluate → le
 
 **Website:** [orze.ai](https://orze.ai)
 
-## Install
+## Getting Started
+
+In any of your project folders, install orze:
 
 ```bash
 curl -sL https://raw.githubusercontent.com/warlockee/orze/main/setup.sh | bash
 ```
 
-This downloads the orze files into `orze/` under your project root. 
+Then say **`do @orze/AGENT.md`** in any of your LLM CLI (Claude, Gemini, etc.).
 
-## Quick Start (3 minutes)
+Your AI agent will explore your codebase, wrap your training script, and launch the autonomous research loop for you.
+
+## Manual Quick Start (3 minutes)
+
+If you prefer to configure manually:
 
 ### 1. Create a minimal `train.py`
-Your script receives `--idea-id`, `--config` (base), and `--ideas-md`. You are responsible for merging them.
+Your script receives `--idea-id`, `--config`, and `--ideas-md`. You are responsible for merging them.
 
 ```python
 import argparse, json, yaml, os
@@ -32,7 +38,6 @@ def main():
     args = parser.parse_args()
 
     # 1. Load base config + idea overrides (Simplified)
-    # For a production example, see orze/RULES.md
     with open(args.config) as f: config = yaml.safe_load(f)
     
     print(f"Training {args.idea_id} on GPU {os.environ.get('CUDA_VISIBLE_DEVICES')}...")
