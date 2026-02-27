@@ -20,6 +20,9 @@ orze --init
 
 # Launch the orchestrator
 orze
+
+# or If you in Claude/Gemini Cli
+do @orze/AGENT.md
 ```
 
 That's it. Orze will auto-detect your GPUs and start running experiments from `ideas.md`.
