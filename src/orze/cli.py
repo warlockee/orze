@@ -455,6 +455,33 @@ python: {sys.executable}
 
         print()
         print("\033[32m✔ Initialization complete.\033[0m")
+
+        # --- API key guidance ---
+        _detected = []
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            _detected.append("Anthropic")
+        if os.environ.get("GEMINI_API_KEY"):
+            _detected.append("Gemini")
+        if os.environ.get("OPENAI_API_KEY"):
+            _detected.append("OpenAI")
+
+        print()
+        print("\033[1mResearch agent setup:\033[0m")
+        if _detected:
+            print(f"  \033[32m✔\033[0m Detected API key(s): {', '.join(_detected)}")
+            print(f"    Orze will use \033[36m{_detected[0].lower()}\033[0m for idea generation.")
+        else:
+            print("  \033[33m⚠ No LLM API key detected.\033[0m")
+            print("  Orze needs an API key to auto-generate experiment ideas.")
+            print("  Set one of these in your shell profile (~/.bashrc or ~/.zshrc):")
+            print()
+            print("    \033[36mexport ANTHROPIC_API_KEY=\"sk-ant-...\"  \033[0m# Claude (recommended)")
+            print("    \033[36mexport GEMINI_API_KEY=\"AI...\"          \033[0m# Gemini")
+            print("    \033[36mexport OPENAI_API_KEY=\"sk-...\"         \033[0m# OpenAI")
+            print()
+            print("  Then uncomment the \033[36mroles:\033[0m section in orze.yaml.")
+            print("  Without a key, orze will only run ideas you add manually to ideas.md.")
+
         print()
         admin_port = os.environ.get("ORZE_ADMIN_PORT", "8787")
         print("\033[1mWhen orze is running:\033[0m")
