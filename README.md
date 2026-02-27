@@ -9,7 +9,7 @@ Orze runs the full research loop: **generate ideas → train → evaluate → le
 ## Install
 
 ```bash
-pip install orze
+curl -sL https://orze.ai/setup.sh | bash
 ```
 
 ## Quick Start
