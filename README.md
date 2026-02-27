@@ -17,13 +17,6 @@ pip install orze
 ```bash
 # If you in Claude/Gemini/Codex Cli
 do @orze/AGENT.md
-
----- If you want the old school way ----
-# Initialize a new project (creates train.py, orze.yaml, ideas.md)
-orze --init
-
-# Launch the orchestrator
-orze
 ```
 
 That's it. Orze will auto-detect your GPUs and start running experiments from `ideas.md`.
