@@ -42,10 +42,10 @@ That's it. Orze will auto-detect your GPUs and start running experiments from `i
 ┌─────────────────────────────────────────────────────┐
 │                       orze                          │
 │                                                     │
-│   ┌───────────┐     ┌─────────┐     ┌──────────┐   │
-│   │ Research  │────>│  Train  │────>│ Evaluate │   │
-│   │ (any LLM) │     │ (GPUs)  │     │          │   │
-│   └─────▲─────┘     └─────────┘     └──────────┘   │
+│   ┌───────────┐     ┌─────────┐     ┌──────────┐    │
+│   │ Research  │────>│  Train  │────>│ Evaluate │    │
+│   │ (any LLM) │     │ (GPUs)  │     │          │    │
+│   └─────▲─────┘     └─────────┘     └──────────┘    │
 │         │                                │          │
 │         └────────── results/ ◄───────────┘          │
 │                                                     │
@@ -56,6 +56,10 @@ That's it. Orze will auto-detect your GPUs and start running experiments from `i
 ## Admin Panel
 
 When orze starts, it automatically launches a real-time admin dashboard on **http://localhost:8787**. No extra install or setup needed.
+
+<img width="450" height="674" alt="admin-panel" src="https://github.com/user-attachments/assets/b23879e3-d064-4e02-8251-6e8dbfad21f9" />
+<img width="450" height="674" alt="admin-queue" src="https://github.com/user-attachments/assets/39747da2-7b7f-4a9f-ad4a-7cfaca41407b" />
+<img width="900" height="551" alt="admin-leaderboard" src="https://github.com/user-attachments/assets/70e77941-efbf-4018-9200-93ea77998c5e" />
 
 The panel provides:
 - **Overview** — GPU utilization, VRAM, temperature, queue depth, top results at a glance
@@ -93,6 +97,7 @@ notifications:
       bot_token: "YOUR_BOT_TOKEN"
       chat_id: "YOUR_CHAT_ID"
 ```
+<img width="521" height="341" alt="tg" src="https://github.com/user-attachments/assets/f931221d-b428-4b85-9a8e-af6d516cb5ad" />
 
 Notification events:
 - `completed` — an experiment finished successfully
