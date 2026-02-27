@@ -277,7 +277,12 @@ python: {sys.executable}
         from orze.reporting.leaderboard import update_report
         ideas = parse_ideas(cfg["ideas_file"])
         results_dir = Path(cfg["results_dir"])
-        update_report(results_dir, ideas, cfg)
+        lake = None
+        lake_path = Path(cfg["ideas_file"]).parent / "idea_lake.db"
+        if lake_path.exists():
+            from orze.idea_lake import IdeaLake
+            lake = IdeaLake(str(lake_path))
+        update_report(results_dir, ideas, cfg, lake=lake)
         print("Report updated.")
         return
 

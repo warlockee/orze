@@ -4,6 +4,8 @@ You are setting up **orze** — a system that automates the full research loop: 
 
 Read `RULES.md` for the complete technical specification.
 
+> **Shortcut:** For a new project, run `orze --init` to scaffold `train.py`, `orze.yaml`, and `ideas.md` automatically, then jump to step 8.
+
 ## What to do
 
 ### 1. Understand the project (explore first, don't ask)
@@ -107,6 +109,14 @@ roles:
     model: sonnet
     cooldown: 300
     timeout: 600
+    allowed_tools: "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
+
+  # Optional: add more research agents using other LLMs. Orze also
+  # auto-discovers GEMINI_API_KEY / OPENAI_API_KEY from the environment
+  # and creates agents automatically if no roles are configured.
+  # research_gemini:
+  #   mode: research
+  #   backend: gemini
 
 report:
   title: "Research Report"
