@@ -31,7 +31,7 @@ def parse_ideas(path: str) -> Dict[str, dict]:
     except OSError:
         return {}
     ideas = {}
-    pattern = re.compile(r"^## (idea-\d+):\s*(.+?)$", re.MULTILINE)
+    pattern = re.compile(r"^## (idea-[a-z0-9]+):\s*(.+?)$", re.MULTILINE)
     matches = list(pattern.finditer(text))
 
     for i, m in enumerate(matches):

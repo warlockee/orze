@@ -142,7 +142,7 @@ def analyze_failures(results_dir: Path,
 
     # Normalize errors into patterns by stripping variable parts
     def _normalize(msg: str) -> str:
-        msg = re.sub(r"idea-\d+", "idea-XXX", msg)
+        msg = re.sub(r"idea-[a-z0-9]+", "idea-XXX", msg)
         msg = re.sub(r"Unknown \w+: \S+", "Unknown <type>: <name>", msg)
         msg = re.sub(r"Stalled \(no output for \d+m\)", "Stalled (hung process)", msg)
         msg = re.sub(r"\d+\.\d+", "N", msg)
@@ -357,7 +357,7 @@ def get_existing_idea_ids(ideas_path: Path) -> List[str]:
     if not ideas_path.exists():
         return []
     text = ideas_path.read_text(encoding="utf-8")
-    return [m.group(1) for m in re.finditer(r"^## (idea-\d+):", text, re.MULTILINE)]
+    return [m.group(1) for m in re.finditer(r"^## (idea-[a-z0-9]+):", text, re.MULTILINE)]
 
 
 def parse_idea_configs(ideas_path: Path) -> Dict[str, dict]:
@@ -366,7 +366,7 @@ def parse_idea_configs(ideas_path: Path) -> Dict[str, dict]:
         return {}
     text = ideas_path.read_text(encoding="utf-8")
     ideas = {}
-    pattern = re.compile(r"^## (idea-\d+):\s*(.+?)$", re.MULTILINE)
+    pattern = re.compile(r"^## (idea-[a-z0-9]+):\s*(.+?)$", re.MULTILINE)
     matches = list(pattern.finditer(text))
     for i, m in enumerate(matches):
         idea_id = m.group(1)
@@ -384,14 +384,22 @@ def parse_idea_configs(ideas_path: Path) -> Dict[str, dict]:
     return ideas
 
 
-def next_idea_id(existing_ids: List[str]) -> int:
-    """Get the next available idea number."""
-    nums = []
-    for id_str in existing_ids:
-        m = re.match(r"idea-(\d+)", id_str)
-        if m:
-            nums.append(int(m.group(1)))
-    return max(nums) + 1 if nums else 1
+def generate_idea_id(config: dict, results_dir: Path) -> str:
+    """Generate a 6-char content-hash idea ID, collision-free.
+
+    Hash = sha256(yaml.dump(config, sort_keys=True) + nonce)[:6].
+    Checks results/ to avoid collisions with existing experiments.
+    """
+    import hashlib
+    import time as _time
+    raw = yaml.dump(config, sort_keys=True)
+    for nonce in range(100):
+        h = hashlib.sha256(f"{raw}:{nonce}".encode()).hexdigest()[:6]
+        idea_id = f"idea-{h}"
+        if not (results_dir / idea_id).exists():
+            return idea_id
+    # Fallback: timestamp-based
+    return f"idea-{hashlib.sha256(f'{raw}:{_time.time()}'.encode()).hexdigest()[:6]}"
 
 
 def build_context(results_dir: Path, ideas_path: Path, report_cfg: dict,
@@ -611,11 +619,12 @@ def append_ideas_to_md(ideas_md: list, ideas_path: Path,
 #  LLM response parsing (generic — extracts ideas from LLM output)
 # ---------------------------------------------------------------------------
 
-def parse_llm_ideas(response: str, start_id: int, cycle: int) -> list:
+def parse_llm_ideas(response: str, results_dir: Path, cycle: int) -> list:
     """Parse LLM response into structured ideas.
 
     Expects the LLM to return ideas as JSON array or markdown.
     Tries JSON first, falls back to markdown parsing.
+    IDs are 6-char content hashes of the config YAML.
 
     Each idea needs: title, hypothesis, config (dict).
     Optional: priority, category, parent.
@@ -630,7 +639,7 @@ def parse_llm_ideas(response: str, start_id: int, cycle: int) -> list:
                 continue
             if not item.get("title") or not item.get("config"):
                 continue
-            idea_id = f"idea-{start_id + i:04d}"
+            idea_id = generate_idea_id(item["config"], results_dir)
             ideas.append({
                 "idea_id": idea_id,
                 "title": item["title"],
@@ -645,7 +654,7 @@ def parse_llm_ideas(response: str, start_id: int, cycle: int) -> list:
 
     # Fallback: try to find YAML blocks in markdown
     pattern = re.compile(
-        r"##\s*(?:idea-\d+:\s*)?(.+?)$\s*"
+        r"##\s*(?:idea-[a-z0-9]+:\s*)?(.+?)$\s*"
         r"(?:.*?hypothesis[:\s]*(.+?)$)?\s*"
         r"```ya?ml\s*\n(.*?)```",
         re.MULTILINE | re.DOTALL | re.IGNORECASE,
@@ -659,7 +668,7 @@ def parse_llm_ideas(response: str, start_id: int, cycle: int) -> list:
             continue
         if not isinstance(config, dict):
             continue
-        idea_id = f"idea-{start_id + i:04d}"
+        idea_id = generate_idea_id(config, results_dir)
         ideas.append({
             "idea_id": idea_id,
             "title": title,
@@ -911,21 +920,24 @@ Return a JSON array of ideas. Each idea is an object with:
 - "config": YAML-compatible dict with experiment config (object)
 - "priority": "critical" | "high" | "medium" | "low" (string, optional)
 - "category": free-form label like "architecture", "hyperparameter", "loss" (string, optional)
-- "parent": "none" or "idea-XXX" if building on a previous idea (string, optional)
+- "parent": "none" or an existing idea ID if building on a previous idea (string, optional)
+
+Note: idea IDs are auto-generated as 6-char content hashes (e.g. "idea-a7f3b2").
+You do NOT need to assign IDs — just provide the config and orze will hash it.
 
 Example:
 ```json
 [
   {
     "title": "Larger learning rate with cosine schedule",
-    "hypothesis": "Current best (idea-042) uses lr=1e-4. A 3x larger lr with cosine decay may converge faster and find a better minimum.",
+    "hypothesis": "Current best uses lr=1e-4. A 3x larger lr with cosine decay may converge faster and find a better minimum.",
     "config": {
       "model": {"type": "resnet50", "pretrained": true},
       "training": {"lr": 3e-4, "scheduler": "cosine", "epochs": 20}
     },
     "priority": "high",
     "category": "hyperparameter",
-    "parent": "idea-042"
+    "parent": "none"
   }
 ]
 ```
@@ -981,8 +993,7 @@ def run_research_cycle(
     context = build_context(results_dir, ideas_path, report_cfg,
                             lake_db_path=lake_db_path)
     existing_ids = get_existing_idea_ids(ideas_path)
-    start_id = next_idea_id(existing_ids)
-    logger.info("  %d existing ideas, next ID: idea-%04d", len(existing_ids), start_id)
+    logger.info("  %d existing ideas in queue, using content-hash IDs", len(existing_ids))
 
     # 2. Load project-specific rules if provided
     rules_content = ""
@@ -1014,7 +1025,7 @@ def run_research_cycle(
 
     # 5. Parse ideas from response
     logger.info("Step 3: Parsing ideas from response...")
-    ideas = parse_llm_ideas(response, start_id, cycle)
+    ideas = parse_llm_ideas(response, results_dir, cycle)
     if not ideas:
         logger.warning("Could not parse any ideas from LLM response")
         logger.debug("Response was: %s", response[:2000])

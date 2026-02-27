@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("archive_ideas")
 
-_IDEA_PATTERN = re.compile(r"^## (idea-\d+):\s*(.+?)$", re.MULTILINE)
+_IDEA_PATTERN = re.compile(r"^## (idea-[a-z0-9]+):\s*(.+?)$", re.MULTILINE)
 
 
 def parse_all_ideas(text: str):
@@ -51,7 +51,7 @@ def parse_all_ideas(text: str):
         category = cat_match.group(1).lower() if cat_match else "architecture"
 
         # Extract parent
-        par_match = re.search(r"\*\*Parent\*\*:\s*(idea-\d+|none)", raw_block)
+        par_match = re.search(r"\*\*Parent\*\*:\s*(idea-[a-z0-9]+|none)", raw_block)
         parent = par_match.group(1) if par_match and par_match.group(1) != "none" else None
 
         # Extract hypothesis

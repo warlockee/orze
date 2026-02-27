@@ -29,8 +29,7 @@ def get_unclaimed(ideas: Dict[str, dict], results_dir: Path,
 
     def sort_key(idea_id):
         pri = PRIORITY_ORDER.get(ideas[idea_id]["priority"], 2)
-        match = re.search(r"\d+", idea_id)
-        return (pri, int(match.group()) if match else 999999)
+        return (pri, idea_id)
 
     unclaimed.sort(key=sort_key)
     return unclaimed

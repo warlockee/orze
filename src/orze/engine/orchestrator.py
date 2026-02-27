@@ -639,7 +639,7 @@ class Orze:
         if ideas_file.exists():
             ideas_pre_size = ideas_file.stat().st_size
             ideas_pre_count = len(re.findall(
-                r"^## idea-\d+:", ideas_file.read_text(encoding="utf-8"),
+                r"^## idea-[a-z0-9]+:", ideas_file.read_text(encoding="utf-8"),
                 re.MULTILINE))
             # Rotate backups: keep last 3
             # Wrapped in try/except: on shared FSX, concurrent roles can race

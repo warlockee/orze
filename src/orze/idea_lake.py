@@ -110,11 +110,15 @@ class IdeaLake:
             # Backfill
             rows = self.conn.execute("SELECT idea_id FROM ideas").fetchall()
             for r in rows:
-                match = re.search(r"idea-(\d+)", r["idea_id"])
+                match = re.search(r"idea-([a-z0-9]+)", r["idea_id"])
                 if match:
+                    try:
+                        num = int(match.group(1))
+                    except ValueError:
+                        num = int(match.group(1), 16) % (2**31)
                     self.conn.execute(
                         "UPDATE ideas SET id_num = ? WHERE idea_id = ?",
-                        (int(match.group(1)), r["idea_id"])
+                        (num, r["idea_id"])
                     )
             self.conn.commit()
             logger.info("Backfilled id_num for %d ideas", len(rows))
@@ -165,11 +169,14 @@ class IdeaLake:
         created_at: Optional[str] = None,
     ):
         """Insert or update an idea in the lake."""
-        # Extract numeric ID for indexed sorting
+        # Extract numeric ID for indexed sorting (supports both numeric and hex IDs)
         id_num = None
-        match = re.search(r"idea-(\d+)", idea_id)
+        match = re.search(r"idea-([a-z0-9]+)", idea_id)
         if match:
-            id_num = int(match.group(1))
+            try:
+                id_num = int(match.group(1))
+            except ValueError:
+                id_num = int(match.group(1), 16) % (2**31)
 
         # Auto-compute summary if missing
         if not config_summary and config_yaml:
@@ -389,10 +396,15 @@ class IdeaLake:
                 except yaml.YAMLError:
                     pass
 
-            # Extract numeric ID for sorting
+            # Extract numeric ID for sorting (supports both numeric and hex IDs)
             id_num = None
             try:
-                id_num = int(re.search(r"\d+", idea["idea_id"]).group())
+                match = re.search(r"idea-([a-z0-9]+)", idea["idea_id"])
+                if match:
+                    try:
+                        id_num = int(match.group(1))
+                    except ValueError:
+                        id_num = int(match.group(1), 16) % (2**31)
             except (AttributeError, ValueError):
                 pass
 

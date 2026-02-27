@@ -272,7 +272,7 @@ async def get_runs(limit: int = 50):
 @app.get("/api/run/detail")
 async def get_run(idea_id: str):
     """Read metrics.json + claim.json for a specific idea."""
-    if not re.match(r"^idea-\d+(-ht-\d+)?(~\d+)?$", idea_id):
+    if not re.match(r"^idea-[a-z0-9]+(-ht-\d+)?(~\d+)?$", idea_id):
         raise HTTPException(400, "Invalid idea_id format")
 
     idea_dir = _results_dir() / idea_id
@@ -295,7 +295,7 @@ async def get_run(idea_id: str):
 @app.get("/api/run/log")
 async def get_run_log(idea_id: str):
     """Tail training.log (last 200 lines)."""
-    if not re.match(r"^idea-\d+(-ht-\d+)?(~\d+)?$", idea_id):
+    if not re.match(r"^idea-[a-z0-9]+(-ht-\d+)?(~\d+)?$", idea_id):
         raise HTTPException(400, "Invalid idea_id format")
 
     idea_dir = _results_dir() / idea_id
@@ -433,26 +433,11 @@ async def post_idea(request: Request):
         try:
             from orze.idea_lake import IdeaLake
             lake = IdeaLake(str(lake_path))
-            next_num = lake.get_next_id()
             lake.close()
         except Exception:
-            # Fallback to scanning ideas.md
-            existing = parse_ideas(_ideas_file())
-            max_num = 0
-            for k in existing:
-                m = re.match(r"^idea-(\d+)", k)
-                if m:
-                    max_num = max(max_num, int(m.group(1)))
-            next_num = max_num + 1
-    else:
-        existing = parse_ideas(_ideas_file())
-        max_num = 0
-        for k in existing:
-            m = re.match(r"^idea-(\d+)", k)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-        next_num = max_num + 1
-    idea_id = f"idea-{next_num:04d}"
+            pass
+    from orze.agents.research import generate_idea_id
+    idea_id = generate_idea_id(config, _results_dir())
 
     md = format_idea_markdown(
         idea_id=idea_id,
@@ -485,7 +470,7 @@ async def action_kill(request: Request):
         raise HTTPException(400, "Invalid JSON body")
 
     idea_id = body.get("idea_id")
-    if not idea_id or not re.match(r"^idea-\d+(-ht-\d+)?(~\d+)?$", idea_id):
+    if not idea_id or not re.match(r"^idea-[a-z0-9]+(-ht-\d+)?(~\d+)?$", idea_id):
         raise HTTPException(400, "Valid idea_id required (e.g. idea-0042)")
 
     idea_dir = _results_dir() / idea_id
