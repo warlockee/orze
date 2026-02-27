@@ -220,6 +220,37 @@ def _do_uninstall(cfg: dict):
         print(f"  {lake_path} (idea archive database)")
 
 
+def _do_upgrade():
+    """Upgrade orze to the latest version from PyPI."""
+    import subprocess
+
+    print(f"\n\033[1mOrze — Upgrade\033[0m")
+    print("---------------")
+    print(f"Current version: {__version__}")
+    print("Upgrading via pip...\n")
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "orze"],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        print("\n\033[31mUpgrade failed.\033[0m Try manually:")
+        print("  pip install --upgrade orze")
+        return
+
+    # Report the new version
+    result = subprocess.run(
+        [sys.executable, "-c", "from orze import __version__; print(__version__)"],
+        capture_output=True, text=True,
+    )
+    new_ver = result.stdout.strip() if result.returncode == 0 else "unknown"
+    if new_ver == __version__:
+        print(f"\nAlready up-to-date (v{__version__}).")
+    else:
+        print(f"\n\033[32mUpgraded: v{__version__} -> v{new_ver}\033[0m")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -272,6 +303,8 @@ Examples:
                         help="Initialize a new orze project in the current directory")
     parser.add_argument("--admin", action="store_true",
                         help="Launch admin panel instead of farm loop")
+    parser.add_argument("--upgrade", action="store_true",
+                        help="Upgrade orze to the latest version from PyPI")
     parser.add_argument("--uninstall", action="store_true",
                         help="Full uninstall: stop orze, remove runtime files, "
                              "pip uninstall — keeps only research results")
@@ -289,6 +322,11 @@ Examples:
     if args.admin:
         from orze.admin.server import run_admin
         run_admin(cfg)
+        return
+
+    # --upgrade: upgrade orze from PyPI
+    if args.upgrade:
+        _do_upgrade()
         return
 
     # --uninstall: full cleanup, keep only research results
