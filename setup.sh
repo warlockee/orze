@@ -9,9 +9,10 @@ pip install orze
 echo ""
 echo "Done! orze is installed."
 echo ""
-echo "Initialize your project:"
-echo "  orze --init"
+echo "Initializing project..."
+orze --init
+
 echo ""
-echo "Then launch:"
+echo "To launch:"
 echo "  orze"
 echo ""
