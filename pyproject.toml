@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orze"
-version = "2.1.4"
+version = "2.1.5"
 description = "GPU experiment orchestrator using filesystem coordination"
 readme = "README.md"
 license = "Apache-2.0"

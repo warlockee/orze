@@ -137,52 +137,40 @@ def _do_uninstall(cfg: dict):
 
     # --- 2. Clean results directory ----------------------------------
     print("[2/4] Cleaning runtime files from results/...")
-    removed = 0
     if results_dir.exists():
-        # Remove orze system files (dot-files and underscore-prefixed)
-        for p in sorted(results_dir.iterdir()):
-            name = p.name
-            # Keep the report/status summaries
-            if name in _RESULTS_KEEP:
-                continue
-            # System dot-files (.orze_*, .orze.pid*)
-            if name.startswith(".orze"):
-                p.unlink(missing_ok=True)
-                removed += 1
-                continue
-            # Underscore-prefixed system files/dirs (_leaderboard.json,
-            # _results_cache.json, _host_*.json, _*_lock/, _*_logs/, etc.)
-            if name.startswith("_"):
-                if p.is_dir():
-                    shutil.rmtree(p, ignore_errors=True)
-                else:
-                    p.unlink(missing_ok=True)
-                removed += 1
-                continue
-            # Log files at top level (orze.log, bug_fixer.log, etc.)
-            if name.endswith(".log"):
-                p.unlink(missing_ok=True)
-                removed += 1
-                continue
-            # Idea directories — strip everything except research results
-            if p.is_dir():
-                for child in sorted(p.iterdir()):
-                    if child.name in _IDEA_KEEP:
-                        continue
-                    # Keep subdirectories produced by eval/post-scripts
-                    # (overlays/, checkpoints user explicitly asked to keep, etc.)
-                    if child.is_dir():
-                        continue
-                    child.unlink(missing_ok=True)
-                    removed += 1
+        # Fast path: rename the whole dir, create a fresh one, move only
+        # keeper files back (O(1) renames), then bulk-delete the old tree.
+        stale = results_dir.with_name(results_dir.name + "._orze_uninstall_tmp")
+        if stale.exists():
+            shutil.rmtree(stale, ignore_errors=True)
+        results_dir.rename(stale)
+        results_dir.mkdir()
 
-        # Remove empty idea dirs (no metrics.json means no results)
-        for p in sorted(results_dir.iterdir()):
-            if p.is_dir() and not any(p.iterdir()):
-                p.rmdir()
-                removed += 1
+        # Restore top-level keeper files (report.md, status.json)
+        for name in _RESULTS_KEEP:
+            src = stale / name
+            if src.exists():
+                src.rename(results_dir / name)
 
-    print(f"  Removed {removed} runtime file(s)")
+        # Restore keeper files and subdirs from idea directories
+        for p in stale.iterdir():
+            if not p.is_dir() or p.name.startswith((".","_")):
+                continue
+            keep_files = [c for c in p.iterdir()
+                          if c.is_file() and c.name in _IDEA_KEEP]
+            keep_dirs = [c for c in p.iterdir() if c.is_dir()]
+            if keep_files or keep_dirs:
+                dest = results_dir / p.name
+                dest.mkdir()
+                for f in keep_files:
+                    f.rename(dest / f.name)
+                for d in keep_dirs:
+                    d.rename(dest / d.name)
+
+        # Bulk-delete the old tree (fast, handled in C)
+        shutil.rmtree(stale, ignore_errors=True)
+
+    print("  Cleaned runtime files")
 
     # --- 3. Remove orze config file ----------------------------------
     print("[3/4] Removing orze config...")
