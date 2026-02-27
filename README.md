@@ -13,10 +13,13 @@ curl -sL https://orze.ai/setup.sh | bash
 ```
 
 ## Quick Start
-
-```bash
 # If you in Claude/Gemini/Codex Cli
+```bash
 do @orze/AGENT.md
+```
+# If not
+```bash
+orze
 ```
 
 That's it. Orze will auto-detect your GPUs and start running experiments from `ideas.md`.
