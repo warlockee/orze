@@ -27,44 +27,6 @@ do @orze/AGENT.md
 
 That's it. Orze will auto-detect your GPUs and start running experiments from `ideas.md`.
 
-## Manual Setup (3 minutes)
-
-If you prefer to configure manually:
-
-### 1. Create a minimal `train.py`
-Your script receives `--idea-id`, `--config`, and `--ideas-md`. Write results when done.
-
-```python
-import argparse, json, yaml, os
-from pathlib import Path
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--idea-id", required=True)
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--ideas-md", required=True)
-    parser.add_argument("--results-dir", default="results")
-    args = parser.parse_args()
-
-    with open(args.config) as f: config = yaml.safe_load(f)
-
-    print(f"Training {args.idea_id} on GPU {os.environ.get('CUDA_VISIBLE_DEVICES')}...")
-
-    # Write results/idea-id/metrics.json when done
-    res_dir = Path(args.results_dir) / args.idea_id
-    res_dir.mkdir(parents=True, exist_ok=True)
-    with open(res_dir / "metrics.json", "w") as f:
-        json.dump({"status": "COMPLETED", "accuracy": 0.95}, f)
-
-if __name__ == "__main__": main()
-```
-
-### 2. Configure and Launch
-```bash
-# Edit orze.yaml to point to your train script
-orze -c orze.yaml
-```
-
 ## Key Features
 
 - **Scales to 1M+ Experiments** — SQLite-backed job queue and indexed reporting with O(log N) scheduling.
