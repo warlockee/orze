@@ -75,6 +75,7 @@ orze -c orze.yaml
 - **Multi-Machine** — Orchestrate thousands of GPUs across nodes via shared filesystems (NFS/EFS/FSx).
 - **HP Sweep** — List-valued hyperparameters (e.g. `lr: [1e-4, 3e-4]`) auto-expand into Cartesian product sub-runs.
 - **Admin Panel** — Real-time web dashboard at `:8787` for fleet monitoring. Install with `pip install orze[admin]`.
+- **Clean Uninstall** — `orze --uninstall` removes all runtime files and the package itself, preserving only your research results.
 
 ## How It Works
 
