@@ -51,7 +51,7 @@ export interface Heartbeat {
   heartbeat_age_sec: number;
 }
 
-export interface FleetResponse {
+export interface NodesResponse {
   heartbeats: Heartbeat[];
   local_gpus: GpuInfo[];
 }
@@ -160,4 +160,4 @@ export interface QueueResponse {
   counts: Record<string, number>;
 }
 
-export type Tab = 'overview' | 'fleet' | 'runs' | 'queue' | 'leaderboard' | 'alerts' | 'settings';
+export type Tab = 'overview' | 'nodes' | 'runs' | 'queue' | 'leaderboard' | 'alerts' | 'settings';

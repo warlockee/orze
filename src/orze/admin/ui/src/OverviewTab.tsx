@@ -1,23 +1,23 @@
 import { useRef, useEffect } from 'react';
 import { Cpu, HardDrive, Thermometer, Layers, TrendingUp, AlertTriangle, Play } from 'lucide-react';
-import { useStatus, useFleet, useRuns } from './hooks';
+import { useStatus, useNodes, useRuns } from './hooks';
 import { Badge, Card, IconKpi, LoadingState, statusColor, fmtRunName, fmtTime } from './components';
 
 export default function OverviewTab() {
   const status = useStatus();
-  const fleet = useFleet();
+  const nodes = useNodes();
   const runs = useRuns();
 
   const gpuSparkRef = useRef<number[]>([]);
   const queueSparkRef = useRef<number[]>([]);
 
-  const localGpus = fleet.local_gpus;
+  const localGpus = nodes.local_gpus;
 
   useEffect(() => {
     if (!localGpus.length) return;
     const avg = localGpus.reduce((s, g) => s + g.utilization_pct, 0) / localGpus.length;
     gpuSparkRef.current = [...gpuSparkRef.current.slice(-19), avg];
-  }, [fleet]);
+  }, [nodes]);
 
   useEffect(() => {
     if (status.queue_depth != null) {
@@ -25,9 +25,9 @@ export default function OverviewTab() {
     }
   }, [status]);
 
-  if (status._loading && fleet._loading) return <LoadingState label="Loading overview…" />;
+  if (status._loading && nodes._loading) return <LoadingState label="Loading overview…" />;
 
-  const hosts = fleet.heartbeats;
+  const hosts = nodes.heartbeats;
   const gpuAvg = localGpus.length > 0
     ? Math.round(localGpus.reduce((s, g) => s + g.utilization_pct, 0) / localGpus.length)
     : 0;
@@ -51,7 +51,7 @@ export default function OverviewTab() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-bold">Fleet</h2>
+            <h2 className="text-sm font-bold">Nodes</h2>
             <Badge color={hosts.length > 0 ? 'green' : 'gray'}>{hosts.length} hosts</Badge>
           </div>
           <div className="space-y-2">

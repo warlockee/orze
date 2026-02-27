@@ -33,7 +33,7 @@ That's it. Orze will auto-detect your GPUs and start running experiments from `i
 - **Self-Healing Watchdog** — Companion `bug_fixer` agent auto-restarts crashed processes, kills stuck jobs, and diagnoses errors using an LLM.
 - **Multi-Machine** — Orchestrate thousands of GPUs across nodes via shared filesystems (NFS/EFS/FSx).
 - **HP Sweep** — List-valued hyperparameters (e.g. `lr: [1e-4, 3e-4]`) auto-expand into Cartesian product sub-runs.
-- **Admin Panel** — Real-time web dashboard at `:8787` for fleet monitoring. Install with `pip install orze[admin]`.
+- **Admin Panel** — Real-time web dashboard auto-starts at `http://localhost:8787` when orze launches.
 - **Clean Uninstall** — `orze --uninstall` removes all runtime files and the package itself, preserving only your research results.
 
 ## How It Works
@@ -52,6 +52,52 @@ That's it. Orze will auto-detect your GPUs and start running experiments from `i
 │   ideas.md ◄── research ── report.md                │
 └─────────────────────────────────────────────────────┘
 ```
+
+## Admin Panel
+
+When orze starts, it automatically launches a real-time admin dashboard on **http://localhost:8787**. No extra install or setup needed.
+
+The panel provides:
+- **Overview** — GPU utilization, VRAM, temperature, queue depth, top results at a glance
+- **Nodes** — Per-host heartbeat status, free GPUs, active runs across your cluster
+- **Runs** — All active, completed, and failed experiments with logs and metrics
+- **Queue** — Pending ideas waiting to be scheduled
+- **Leaderboard** — Ranked results sorted by your primary metric
+- **Alerts** — Failure spikes, stale nodes, disk warnings
+- **Settings** — Live view of your `orze.yaml` configuration
+
+To change the port, set the `ORZE_ADMIN_PORT` environment variable:
+```bash
+ORZE_ADMIN_PORT=9000 orze
+```
+
+## Telegram Notifications
+
+Get real-time alerts on your phone when experiments complete, fail, or hit a new best score.
+
+**1. Create a bot** — message [@BotFather](https://t.me/BotFather) on Telegram:
+```
+/newbot
+```
+Follow the prompts. You'll receive a bot token like `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`.
+
+**2. Get your chat ID** — message [@userinfobot](https://t.me/userinfobot) on Telegram. It will reply with your numeric chat ID.
+
+**3. Add to `orze.yaml`:**
+```yaml
+notifications:
+  enabled: true
+  on: [completed, failed, new_best]
+  channels:
+    - type: telegram
+      bot_token: "YOUR_BOT_TOKEN"
+      chat_id: "YOUR_CHAT_ID"
+```
+
+Notification events:
+- `completed` — an experiment finished successfully
+- `failed` — an experiment errored out
+- `new_best` — a new top score on your primary metric
 
 ## The Contract
 

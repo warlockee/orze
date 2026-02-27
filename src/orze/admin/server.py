@@ -196,15 +196,21 @@ def _read_admin_cache() -> Optional[dict]:
     return _read_json(_results_dir() / "_admin_cache.json")
 
 
+@app.get("/api/nodes")
 @app.get("/api/fleet")
-async def get_fleet():
-    """Host heartbeats + GPU details from admin cache."""
+async def get_nodes():
+    """Host heartbeats + GPU details — reads raw heartbeat files for freshness."""
     def _get():
-        cache = _read_admin_cache()
-        if cache and cache.get("fleet"):
-            return cache["fleet"]
-        return {"heartbeats": [], "local_gpus": []}
-    return _cached("fleet", 5.0, _get)
+        from orze.reporting.state import _read_all_heartbeats
+        now = time.time()
+        raw_hb = _read_all_heartbeats(_results_dir(), stale_seconds=600)
+        heartbeats = []
+        for hb in raw_hb:
+            age = now - hb.get("epoch", 0)
+            status = "online" if age < 120 else ("degraded" if age < 300 else "offline")
+            heartbeats.append({**hb, "status": status, "heartbeat_age_sec": round(age, 1)})
+        return {"heartbeats": heartbeats, "local_gpus": []}
+    return _cached("nodes", 5.0, _get)
 
 
 @app.get("/api/runs")

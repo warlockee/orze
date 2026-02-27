@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import type {
   StatusResponse,
-  FleetResponse,
+  NodesResponse,
   RunsResponse,
   LeaderboardResponse,
   AlertsResponse,
@@ -54,7 +54,7 @@ const EMPTY_STATUS: StatusResponse = {
   top_results: [],
 };
 
-const EMPTY_FLEET: FleetResponse = { heartbeats: [], local_gpus: [] };
+const EMPTY_NODES: NodesResponse = { heartbeats: [], local_gpus: [] };
 const EMPTY_RUNS: RunsResponse = { active: [], recent: [] };
 const EMPTY_LB: LeaderboardResponse = { top: [], metric: '' };
 const EMPTY_ALERTS: AlertsResponse = { alerts: [], count: 0 };
@@ -63,8 +63,8 @@ export function useStatus() {
   return usePolling<StatusResponse>('/api/status', 5000, EMPTY_STATUS);
 }
 
-export function useFleet() {
-  return usePolling<FleetResponse>('/api/fleet', 5000, EMPTY_FLEET);
+export function useNodes() {
+  return usePolling<NodesResponse>('/api/nodes', 5000, EMPTY_NODES);
 }
 
 export function useRuns() {
