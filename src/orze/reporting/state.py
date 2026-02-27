@@ -1,0 +1,190 @@
+import os
+import json
+import logging
+import socket
+import time
+import datetime
+import platform
+import shutil
+from typing import Dict, Any, List, Optional
+from pathlib import Path
+from orze.core.fs import atomic_write
+from orze.hardware.gpu import _query_gpu_details
+
+TrainingProcess = Any  # type alias to avoid circular import
+
+logger = logging.getLogger("orze")
+
+
+def write_host_heartbeat(results_dir: Path, hostname: str,
+                         active, free_gpus: list):
+    """Write per-host heartbeat file with active processes and free GPUs."""
+    pid = os.getpid()
+    now = time.time()
+    heartbeat = {
+        "host": hostname,
+        "pid": pid,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "epoch": now,
+        "active": [
+            {
+                "idea_id": tp.idea_id,
+                "gpu": tp.gpu,
+                "elapsed_min": round((now - tp.start_time) / 60, 1),
+            }
+            for tp in active.values()
+        ],
+        "free_gpus": free_gpus,
+        "gpu_info": _query_gpu_details(),
+        "os": f"{platform.system()} {platform.release()}",
+    }
+    atomic_write(results_dir / f"_host_{hostname}_{pid}.json",
+                 json.dumps(heartbeat, indent=2))
+
+
+def _read_all_heartbeats(results_dir: Path,
+                         stale_seconds: float = 300) -> list:
+    """Read all host heartbeat files, filtering out stale ones (>5min).
+    Removes stale heartbeat files to prevent clutter."""
+    now = time.time()
+    heartbeats = []
+    for hb_path in results_dir.glob("_host_*.json"):
+        try:
+            hb = json.loads(hb_path.read_text(encoding="utf-8"))
+            age = now - hb.get("epoch", 0)
+            if age <= stale_seconds:
+                heartbeats.append(hb)
+            else:
+                # Clean up stale heartbeat file
+                try:
+                    hb_path.unlink()
+                except OSError:
+                    pass
+        except Exception:
+            # Purge unparseable/corrupt heartbeat files if stale
+            try:
+                if now - hb_path.stat().st_mtime > stale_seconds:
+                    hb_path.unlink()
+            except OSError:
+                pass
+            continue
+    return heartbeats
+
+
+def write_status_json(results_dir: Path, iteration: int,
+                      active: Dict[int, TrainingProcess],
+                      free_gpus: List[int], queue_depth: int,
+                      completed_count: int, failed_count: int,
+                      skipped_count: int, top_results: list,
+                      cfg: dict,
+                      role_states: Optional[dict] = None):
+    """Write machine-readable status.json for LLM agents.
+    Merges heartbeats from all hosts for a combined multi-machine view."""
+    disk_free_gb = 0.0
+    try:
+        usage = shutil.disk_usage(results_dir)
+        disk_free_gb = usage.free / (1024 ** 3)
+    except Exception:
+        pass
+
+    now = time.time()
+
+    # Merge active processes from all hosts
+    heartbeats = _read_all_heartbeats(results_dir)
+    all_active = []
+    free_gpus_by_host = {}
+    for hb in heartbeats:
+        host = hb.get("host", "unknown")
+        for a in hb.get("active", []):
+            a["host"] = host
+            all_active.append(a)
+        free_gpus_by_host[host] = hb.get("free_gpus", [])
+
+    # Build per-role status
+    role_states = role_states or {}
+    roles_cfg = cfg.get("roles") or {}
+    roles_status = {}
+    for rname in roles_cfg:
+        rs = role_states.get(rname, {})
+        last_run = rs.get("last_run_time", 0.0)
+        roles_status[rname] = {
+            "enabled": True,
+            "cycles": rs.get("cycles", 0),
+            "last_run_min_ago": (
+                round((now - last_run) / 60, 1) if last_run > 0 else None
+            ),
+        }
+
+    # Backward compat: flat research_* keys
+    research_rs = role_states.get("research", {})
+    research_last = research_rs.get("last_run_time", 0.0)
+
+    hostname = socket.gethostname()
+    status = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "host": hostname,
+        "iteration": iteration,
+        "active": all_active,
+        "free_gpus": free_gpus,
+        "free_gpus_by_host": free_gpus_by_host,
+        "queue_depth": queue_depth,
+        "completed": completed_count,
+        "failed": failed_count,
+        "skipped": skipped_count,
+        "disk_free_gb": round(disk_free_gb, 1),
+        "top_results": top_results[:10],
+        "roles": roles_status,
+        "research_enabled": "research" in roles_cfg,
+        "research_cycles": research_rs.get("cycles", 0),
+        "last_research_min_ago": (
+            round((now - research_last) / 60, 1) if research_last > 0
+            else None
+        ),
+    }
+
+    atomic_write(results_dir / "status.json", json.dumps(status, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+
+def load_state(results_dir: Path) -> dict:
+    """Load orchestrator state from checkpoint (per-host).
+    Falls back to legacy .orze_state.json for backward compat.
+    Migrates legacy flat research_* keys into roles dict."""
+    hostname = socket.gethostname()
+    path = results_dir / f".orze_state_{hostname}.json"
+
+    if not path.exists():
+        legacy = results_dir / ".orze_state.json"
+        if legacy.exists():
+            path = legacy
+
+    if path.exists():
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            logger.warning("Corrupt state file, starting fresh")
+            return {"iteration": 0, "failure_counts": {}, "roles": {}}
+
+        # Migrate legacy flat research state into roles dict
+        if "roles" not in state and "research_cycles" in state:
+            state["roles"] = {
+                "research": {
+                    "cycles": state.pop("research_cycles", 0),
+                    "last_run_time": state.pop("last_research_time", 0.0),
+                }
+            }
+        state.setdefault("roles", {})
+        return state
+    return {"iteration": 0, "failure_counts": {}, "roles": {}}
+
+
+def save_state(results_dir: Path, state: dict):
+    """Save orchestrator state for restart recovery (per-host)."""
+    hostname = socket.gethostname()
+    atomic_write(results_dir / f".orze_state_{hostname}.json",
+                 json.dumps(state, indent=2))
+

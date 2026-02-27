@@ -16,7 +16,6 @@ import json
 import logging
 import re
 import sqlite3
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import yaml
@@ -66,14 +65,13 @@ CREATE TABLE IF NOT EXISTS id_sequence (
 );
 """
 
-# Legacy columns from pre-1.5 schema (auto-migrated to generic JSON on first access).
-# Kept only for backward-compatible migration of old .db files.
-_OLD_METRIC_COLS = [
-    "fedex_auc", "fedex_f1", "fedex_fpr", "fedex_fp", "fedex_fn", "nexar_auc",
-]
-_OLD_DENORM_COLS = [
-    "backbone_name", "freeze_backbone", "temporal_type", "learning_rate", "num_frames",
-]
+# Legacy fixed-metric columns from pre-1.5 schema.
+# Auto-detected from PRAGMA table_info during migration.
+_KNOWN_META_COLS = {
+    "idea_id", "id_num", "title", "priority", "category", "parent",
+    "hypothesis", "config", "raw_markdown", "config_summary",
+    "eval_metrics", "status", "training_time", "archived_at", "created_at",
+}
 
 
 class IdeaLake:
@@ -101,7 +99,9 @@ class IdeaLake:
         cols = {
             r[1] for r in self.conn.execute("PRAGMA table_info(ideas)").fetchall()
         }
-        has_old = any(c in cols for c in _OLD_METRIC_COLS)
+        # Detect legacy schema: any column not in _KNOWN_META_COLS is an old metric/config column
+        extra_cols = cols - _KNOWN_META_COLS
+        has_old = bool(extra_cols)
         has_new = "eval_metrics" in cols
 
         if "id_num" not in cols:
@@ -124,7 +124,7 @@ class IdeaLake:
             self.conn.commit()
 
         if has_old and not has_new:
-            logger.info("Migrating idea_lake schema: fixed columns → JSON blobs")
+            logger.info("Migrating idea_lake schema: fixed columns → JSON blobs (extra: %s)", extra_cols)
             self.conn.execute("ALTER TABLE ideas ADD COLUMN eval_metrics TEXT")
             self.conn.execute("ALTER TABLE ideas ADD COLUMN config_summary TEXT")
 
@@ -132,23 +132,14 @@ class IdeaLake:
             rows = self.conn.execute("SELECT idea_id, * FROM ideas").fetchall()
             for row in rows:
                 rd = dict(row)
-                em = {}
-                for c in _OLD_METRIC_COLS:
+                merged = {}
+                for c in extra_cols:
                     if c in rd and rd[c] is not None:
-                        em[c] = rd[c]
-                cs = {}
-                for c in _OLD_DENORM_COLS:
-                    if c in rd and rd[c] is not None:
-                        cs[c] = rd[c]
+                        merged[c] = rd[c]
 
                 self.conn.execute(
-                    "UPDATE ideas SET eval_metrics = ?, config_summary = ? "
-                    "WHERE idea_id = ?",
-                    (
-                        json.dumps(em) if em else None,
-                        json.dumps(cs) if cs else None,
-                        rd["idea_id"],
-                    ),
+                    "UPDATE ideas SET eval_metrics = ? WHERE idea_id = ?",
+                    (json.dumps(merged) if merged else None, rd["idea_id"]),
                 )
             self.conn.commit()
             logger.info("Migration complete for %d ideas", len(rows))
@@ -281,12 +272,11 @@ class IdeaLake:
     def get_max_id_num(self) -> int:
         """Return the highest numeric idea ID in the lake."""
         row = self.conn.execute(
-            "SELECT idea_id FROM ideas ORDER BY "
-            "CAST(REPLACE(idea_id, 'idea-', '') AS INTEGER) DESC LIMIT 1"
+            "SELECT MAX(id_num) FROM ideas WHERE id_num IS NOT NULL"
         ).fetchone()
-        if row is None:
+        if row is None or row[0] is None:
             return 0
-        return int(row[0].replace("idea-", ""))
+        return int(row[0])
 
     def query(
         self,
@@ -305,11 +295,14 @@ class IdeaLake:
             sort_metric: key in eval_metrics to sort by (descending).
             limit: max results.
         """
+        _safe_key = re.compile(r"^[a-zA-Z0-9_.]+$")
         clauses = []
         params = []
 
         if filters:
             for key, val in filters.items():
+                if not _safe_key.match(key):
+                    continue
                 clauses.append(
                     f"json_extract(config_summary, '$.{key}') = ?"
                 )
@@ -317,17 +310,17 @@ class IdeaLake:
 
         if min_metric:
             metric_key, min_val = min_metric
-            clauses.append(
-                f"json_extract(eval_metrics, '$.{metric_key}') >= ?"
-            )
-            params.append(min_val)
+            if _safe_key.match(metric_key):
+                clauses.append(
+                    f"json_extract(eval_metrics, '$.{metric_key}') >= ?"
+                )
+                params.append(min_val)
 
         where = " AND ".join(clauses) if clauses else "1=1"
-        sort_col = (
-            f"json_extract(eval_metrics, '$.{sort_metric}')"
-            if sort_metric
-            else "archived_at"
-        )
+        if sort_metric and _safe_key.match(sort_metric):
+            sort_col = f"json_extract(eval_metrics, '$.{sort_metric}')"
+        else:
+            sort_col = "archived_at"
         params.append(limit)
         rows = self.conn.execute(
             f"SELECT * FROM ideas WHERE {where} "
@@ -360,14 +353,20 @@ class IdeaLake:
         return results
 
     def get_next_id(self) -> int:
-        """Atomically get and increment the next idea ID number."""
-        cur = self.conn.execute("SELECT next_id FROM id_sequence LIMIT 1")
-        row = cur.fetchone()
-        next_id = row[0] if row else 1
-        self.conn.execute(
-            "UPDATE id_sequence SET next_id = ?", (next_id + 1,)
-        )
-        self.conn.commit()
+        """Atomically get and increment the next idea ID number.
+        Uses BEGIN IMMEDIATE to prevent concurrent readers from getting the same ID."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = self.conn.execute("SELECT next_id FROM id_sequence LIMIT 1")
+            row = cur.fetchone()
+            next_id = row[0] if row else 1
+            self.conn.execute(
+                "UPDATE id_sequence SET next_id = ?", (next_id + 1,)
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
         return next_id
 
     def set_next_id(self, n: int):
@@ -390,20 +389,28 @@ class IdeaLake:
                 except yaml.YAMLError:
                     pass
 
+            # Extract numeric ID for sorting
+            id_num = None
+            try:
+                id_num = int(re.search(r"\d+", idea["idea_id"]).group())
+            except (AttributeError, ValueError):
+                pass
+
             self.conn.execute(
                 """INSERT OR IGNORE INTO ideas (
-                    idea_id, title, priority, category, parent, hypothesis,
+                    idea_id, id_num, title, priority, category, parent, hypothesis,
                     config, raw_markdown,
                     config_summary, eval_metrics,
                     status, training_time, archived_at, created_at
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?,
                     ?, ?,
                     ?, ?,
                     ?, ?, ?, ?
                 )""",
                 (
                     idea["idea_id"],
+                    id_num,
                     idea["title"],
                     idea.get("priority", "medium"),
                     idea.get("category", "architecture"),

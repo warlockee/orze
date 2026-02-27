@@ -4,23 +4,39 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orze"
-version = "1.12.0"
+version = "2.0.0"
 description = "GPU experiment orchestrator using filesystem coordination"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 authors = [
     {name = "orze contributors"},
 ]
-keywords = ["gpu", "experiment", "orchestrator", "machine-learning"]
+keywords = ["gpu", "experiment", "orchestrator", "machine-learning", "research-automation"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+admin = ["fastapi>=0.100", "uvicorn>=0.23", "starlette"]
+
+[project.scripts]
+orze = "orze.cli:main"
 
 [project.urls]
 Homepage = "https://orze.ai"
 Repository = "https://github.com/warlockee/orze"
+
+[tool.setuptools.packages.find]
+where = ["src"]

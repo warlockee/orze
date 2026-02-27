@@ -4,14 +4,14 @@
 Frees disk space by deleting checkpoint directories for non-top experiments.
 Determines which experiments to keep from _leaderboard.json and idea_lake.db.
 
-Can be run standalone or wired into farm.py's cleanup cycle.
+Can be run standalone or wired into the orchestrator's cleanup cycle.
 
 Usage:
     # Standalone
     python orze/orze_gc.py -c orze.yaml --dry-run
     python orze/orze_gc.py -c orze.yaml --keep-top 50
 
-    # In orze.yaml (auto-called by farm.py every cleanup.interval iterations):
+    # In orze.yaml (auto-called by the orchestrator every cleanup.interval iterations):
     gc:
       enabled: true
       checkpoints_dir: checkpoints      # where model checkpoints live
@@ -28,7 +28,6 @@ import logging
 import os
 import shutil
 import sqlite3
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -46,7 +45,7 @@ def get_top_idea_ids(results_dir: Path, primary_metric: str,
     """Collect idea IDs that should be kept (top performers).
 
     Sources (merged):
-    1. _leaderboard.json (top 20 from farm.py)
+    1. _leaderboard.json (top 20 from the orchestrator)
     2. idea_lake.db (top N by primary_metric)
     """
     keep: Set[str] = set()
@@ -68,9 +67,10 @@ def get_top_idea_ids(results_dir: Path, primary_metric: str,
         try:
             conn = sqlite3.connect(str(lake_db_path), timeout=10)
             # Try primary_metric, then fallback without "adjusted_"
-            for metric in [primary_metric,
-                           primary_metric.replace("_adjusted_", "_"),
-                           "fedex_auc_roc", "auc_roc"]:
+            candidates = [primary_metric]
+            if "_adjusted_" in primary_metric:
+                candidates.append(primary_metric.replace("_adjusted_", "_"))
+            for metric in candidates:
                 rows = conn.execute(
                     "SELECT idea_id FROM ideas "
                     "WHERE json_extract(eval_metrics, ?) IS NOT NULL "
@@ -82,15 +82,6 @@ def get_top_idea_ids(results_dir: Path, primary_metric: str,
                         keep.add(r[0])
                     break
             
-            # Additional safety: always keep anything with AUC > 0.95
-            rows = conn.execute(
-                "SELECT idea_id FROM ideas "
-                "WHERE (json_extract(eval_metrics, '$.auc_roc') > 0.95 "
-                "OR json_extract(eval_metrics, '$.fedex_auc_roc') > 0.95)"
-            ).fetchall()
-            for r in rows:
-                keep.add(r[0])
-                
             conn.close()
         except Exception as e:
             logger.warning("Lake query failed: %s", e)
@@ -175,11 +166,22 @@ def gc_checkpoints(checkpoints_dir: Path, keep_ids: Set[str],
             except OSError:
                 pass
 
-    for idea_dir in sorted(dirs_to_check):
-        # Strip sweep suffix for keep check: idea-123~lr=0.001 → idea-123
-        base_id = idea_dir.name.split("~")[0]
+    # Expand keep_ids: for each full ID like "idea-123-ht-1", also keep "idea-123"
+    expanded_keep = set(keep_ids)
+    for kid in keep_ids:
+        base = kid.split("~")[0]
+        if "-ht-" in base:
+            base = base.split("-ht-")[0]
+        expanded_keep.add(base)
 
-        if base_id in keep_ids:
+    for idea_dir in sorted(dirs_to_check):
+        # Check full name first, then stripped base
+        full_name = idea_dir.name
+        base_id = full_name.split("~")[0]
+        if "-ht-" in base_id:
+            base_id = base_id.split("-ht-")[0]
+
+        if full_name in expanded_keep or base_id in expanded_keep:
             stats["kept"] += 1
             continue
 

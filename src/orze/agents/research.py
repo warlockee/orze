@@ -48,7 +48,6 @@ import re
 import sqlite3
 import sys
 import time
-import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -68,7 +67,7 @@ logger = logging.getLogger("orze.research_agent")
 # ---------------------------------------------------------------------------
 
 def load_status(results_dir: Path) -> dict:
-    """Load status.json written by farm.py."""
+    """Load status.json written by the orchestrator."""
     status_path = results_dir / "status.json"
     if status_path.exists():
         try:
@@ -580,15 +579,31 @@ def format_idea_markdown(idea_id: str, title: str, hypothesis: str,
     return "\n".join(lines)
 
 
-def append_ideas_to_md(ideas_md: list, ideas_path: Path) -> int:
-    """Append formatted idea markdown strings to ideas.md. Returns count."""
+def append_ideas_to_md(ideas_md: list, ideas_path: Path,
+                       results_dir: Optional[Path] = None) -> int:
+    """Append formatted idea markdown strings to ideas.md. Returns count.
+
+    Acquires filesystem lock to prevent race with orchestrator's
+    ideas.md consumption (which wipes the file after ingesting to SQLite).
+    """
     if not ideas_md:
         return 0
-    with open(ideas_path, "a", encoding="utf-8") as f:
-        f.write("\n")
-        for md in ideas_md:
-            f.write(md)
+    from orze.core.fs import _fs_lock, _fs_unlock
+    # Use same lock path as orchestrator: results_dir / ".ideas_md.lock"
+    if results_dir:
+        lock_dir = results_dir / ".ideas_md.lock"
+    else:
+        lock_dir = ideas_path.parent / ".ideas_md.lock"
+    locked = _fs_lock(lock_dir, stale_seconds=60)
+    try:
+        with open(ideas_path, "a", encoding="utf-8") as f:
             f.write("\n")
+            for md in ideas_md:
+                f.write(md)
+                f.write("\n")
+    finally:
+        if locked:
+            _fs_unlock(lock_dir)
     return len(ideas_md)
 
 
@@ -660,17 +675,31 @@ def parse_llm_ideas(response: str, start_id: int, cycle: int) -> list:
 
 
 def _try_parse_json(text: str) -> Optional[list]:
-    """Try to extract a JSON array from text."""
-    # Find the outermost [...] block
+    """Try to extract a JSON array from text, handling brackets inside strings."""
     start = text.find("[")
     if start == -1:
         return None
     depth = 0
+    in_string = False
+    escape = False
     end = start
     for i in range(start, len(text)):
-        if text[i] == "[":
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            if in_string:
+                escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "[":
             depth += 1
-        elif text[i] == "]":
+        elif c == "]":
             depth -= 1
             if depth == 0:
                 end = i + 1
@@ -998,7 +1027,7 @@ def run_research_cycle(
         ideas_md.append(md)
         logger.info("  %s: %s", idea["idea_id"], idea["title"][:60])
 
-    count = append_ideas_to_md(ideas_md, ideas_path)
+    count = append_ideas_to_md(ideas_md, ideas_path, results_dir=results_dir)
     logger.info("Appended %d ideas to %s", count, ideas_path)
 
     logger.info("Research cycle %d complete: %d new ideas", cycle, count)

@@ -255,7 +255,7 @@ Each role supports two modes: **script** or **claude**.
 
 ```
 ┌──────────────────────────────────────────────────┐
-│                    farm.py                        │
+│                      orze                         │
 │                                                   │
 │   ┌─────────┐     ┌─────────┐     ┌──────────┐  │
 │   │ Research │────>│  Train  │────>│ Evaluate │  │
@@ -353,26 +353,26 @@ model:
 
 ```bash
 # Run one research cycle and exit
-python farm.py -c orze.yaml --role-only research
+orze -c orze.yaml --role-only research
 
 # Legacy alias for the above
-python farm.py -c orze.yaml --research-only
+orze -c orze.yaml --research-only
 
 # Run only the documenter role once
-python farm.py -c orze.yaml --role-only documenter
+orze -c orze.yaml --role-only documenter
 
 # The full loop (all roles + train + eval, continuous)
-python farm.py -c orze.yaml
+orze -c orze.yaml
 ```
 
 ### Multi-Machine Setup
 On machines sharing a filesystem:
 ```bash
 # Machine 1 (commander — runs roles + training)
-python farm.py -c orze.yaml --gpus 0,1,2,3
+orze -c orze.yaml --gpus 0,1,2,3
 
 # Machine 2 (worker — just runs training, no roles configured)
-python farm.py -c orze.yaml --gpus 0,1,2,3
+orze -c orze.yaml --gpus 0,1,2,3
 ```
 
 Only one machine should have roles configured (the commander). Workers just train whatever ideas are in the queue. The atomic mkdir prevents duplicate claims.
@@ -569,7 +569,7 @@ Use cases: overlay generation, model export, additional analysis.
 ## CLI Quick Reference
 
 ```
-python farm.py [OPTIONS]
+orze [OPTIONS]
 
 Options:
   -c, --config-file PATH   Path to orze.yaml

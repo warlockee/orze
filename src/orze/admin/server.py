@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Orze Admin Panel — FastAPI backend.
 
-Reads filesystem state written by farm.py and exposes it via REST API.
+Reads filesystem state written by the orchestrator and exposes it via REST API.
 Serves the SPA frontend from orze/admin/ui/dist/.
 
 Usage:
@@ -16,27 +16,23 @@ import json
 import logging
 import os
 import re
-import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from orze.farm import (
-    atomic_write,
-    load_project_config,
-    parse_ideas,
-)
-try:
-    from scripts.dashcam_risk.backbone_registry import BACKBONE_REGISTRY
-except ImportError:
-    BACKBONE_REGISTRY = {}
-from orze.research_agent import append_ideas_to_md, format_idea_markdown
+from orze.core.fs import atomic_write
+from orze.core.config import load_project_config
+from orze.core.ideas import parse_ideas
+
+
+
+
+from orze.agents.research import append_ideas_to_md, format_idea_markdown
 
 logger = logging.getLogger("orze.admin")
 
@@ -47,7 +43,8 @@ _SENSITIVE_KEYS = {
     "ANTHROPIC_API_KEY", "LLM_API_KEY",
 }
 
-app = FastAPI(title="Orze Admin Panel", version="1.10.0")
+from orze import __version__
+app = FastAPI(title="Orze Admin Panel", version=__version__)
 
 from starlette.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -59,6 +56,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 @app.middleware("http")
@@ -83,60 +81,39 @@ def _ideas_file() -> str:
 
 
 # ---------------------------------------------------------------------------
-#  Backbone → HuggingFace mapping
+#  Backbone registry (loaded from config)
 # ---------------------------------------------------------------------------
 
-# Well-known HF model IDs for static registry entries without explicit repo
-_HF_KNOWN = {
-    "dinov2_vits14": "facebook/dinov2-small",
-    "dinov2_vitb14": "facebook/dinov2-base",
-    "dinov2_vitl14": "facebook/dinov2-large",
-    "dinov2_vitg14": "facebook/dinov2-giant",
-    "convnext_tiny": "facebook/convnext-tiny-224",
-    "convnext_small": "facebook/convnext-small-224",
-    "dinov3_vits16": "facebook/dinov3-vits16-pretrain-lvd1689m",
-    "dinov3_vitb16": "facebook/dinov3-vitb16-pretrain-lvd1689m",
-    "dinov3_vitl16": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-    "siglip2_vit_b16": "google/siglip2-base-patch16-224",
-    "siglip2_so400m": "google/siglip2-so400m-patch14-224",
-    "vjepa2_vitl": "facebook/vjepa2-vitl-fpc16-256-ssv2",
-    "c_radio_v4_so400m": "nvidia/C-RADIOv4-SO400M",
-    "videomae_v2_vitb": "MCG-NJU/videomae-v2-base",
-    "convnextv2_large": "facebook/convnextv2-large-22k-224",
-}
+_BACKBONE_REGISTRY: Dict[str, Any] = {}
+
+
+def _load_backbone_registry():
+    """Load backbone registry from config if available."""
+    global _BACKBONE_REGISTRY
+    registry_module = _cfg.get("backbone_registry_module")
+    if registry_module:
+        try:
+            import importlib
+            mod = importlib.import_module(registry_module)
+            _BACKBONE_REGISTRY = getattr(mod, "BACKBONE_REGISTRY", {})
+        except (ImportError, AttributeError):
+            pass
 
 
 def _get_hf_info(backbone_name: str) -> Optional[dict]:
-    """Look up HuggingFace model info for a backbone name."""
-    reg = BACKBONE_REGISTRY.get(backbone_name)
+    """Look up model info for a backbone name from the configured registry."""
+    reg = _BACKBONE_REGISTRY.get(backbone_name)
     if not reg:
         return None
-
-    feature_dim = reg.get("feature_dim")
-    img_size = reg.get("img_size")
-    source = reg.get("source")
-
-    # Determine HuggingFace model ID
-    model_id = None
-    if source == "hf_dynamic":
-        model_id = reg.get("hf_model_id")
-    elif source == "timm":
-        model_name = reg.get("model_name", "")
-        model_id = f"timm/{model_name}" if model_name else None
-    elif source == "hub":
-        model_id = _HF_KNOWN.get(backbone_name) or reg.get("repo")
-    else:
-        model_id = _HF_KNOWN.get(backbone_name)
-
+    model_id = reg.get("hf_model_id") or reg.get("repo")
     if not model_id:
         return None
-
     return {
         "model_id": model_id,
         "url": f"https://huggingface.co/{model_id}",
-        "feature_dim": feature_dim,
-        "img_size": img_size,
-        "source": source or "known",
+        "feature_dim": reg.get("feature_dim"),
+        "img_size": reg.get("img_size"),
+        "source": reg.get("source", "unknown"),
     }
 
 
@@ -215,7 +192,7 @@ async def get_status():
 
 
 def _read_admin_cache() -> Optional[dict]:
-    """Read the pre-aggregated admin cache written by farm.py."""
+    """Read the pre-aggregated admin cache written by the orchestrator."""
     return _read_json(_results_dir() / "_admin_cache.json")
 
 
@@ -289,10 +266,13 @@ async def get_runs(limit: int = 50):
 @app.get("/api/run/detail")
 async def get_run(idea_id: str):
     """Read metrics.json + claim.json for a specific idea."""
-    if not re.match(r"^idea-\d+", idea_id):
+    if not re.match(r"^idea-\d+(-ht-\d+)?(~\d+)?$", idea_id):
         raise HTTPException(400, "Invalid idea_id format")
 
     idea_dir = _results_dir() / idea_id
+    # Guard against path traversal
+    if not idea_dir.resolve().is_relative_to(_results_dir().resolve()):
+        raise HTTPException(400, "Invalid idea_id")
     if not idea_dir.is_dir():
         raise HTTPException(404, f"{idea_id} not found")
 
@@ -309,10 +289,12 @@ async def get_run(idea_id: str):
 @app.get("/api/run/log")
 async def get_run_log(idea_id: str):
     """Tail training.log (last 200 lines)."""
-    if not re.match(r"^idea-\d+", idea_id):
+    if not re.match(r"^idea-\d+(-ht-\d+)?(~\d+)?$", idea_id):
         raise HTTPException(400, "Invalid idea_id format")
 
     idea_dir = _results_dir() / idea_id
+    if not idea_dir.resolve().is_relative_to(_results_dir().resolve()):
+        raise HTTPException(400, "Invalid idea_id")
     # Try common log file names
     log_path = None
     for name in ("train_output.log", "training.log", "output.log"):
@@ -329,7 +311,7 @@ async def get_run_log(idea_id: str):
 
 @app.get("/api/leaderboard")
 async def get_leaderboard():
-    """Top models — reads _leaderboard.json written by farm.py update_report()."""
+    """Top models — reads _leaderboard.json written by the orchestrator update_report()."""
     def _read_lb():
         lb = _read_json(_results_dir() / "_leaderboard.json")
         if lb and lb.get("top"):
@@ -438,16 +420,32 @@ async def post_idea(request: Request):
     if not isinstance(config, dict):
         raise HTTPException(400, "config must be a dict")
 
-    # Determine next idea ID
+    # Determine next idea ID — use IdeaLake sequence if available
     ideas_path = Path(_ideas_file())
-    existing = parse_ideas(_ideas_file())
-    if existing:
-        max_num = max(
-            int(k.replace("idea-", "")) for k in existing.keys()
-        )
+    lake_path = ideas_path.parent / "idea_lake.db"
+    if lake_path.exists():
+        try:
+            from orze.idea_lake import IdeaLake
+            lake = IdeaLake(str(lake_path))
+            next_num = lake.get_next_id()
+            lake.close()
+        except Exception:
+            # Fallback to scanning ideas.md
+            existing = parse_ideas(_ideas_file())
+            max_num = 0
+            for k in existing:
+                m = re.match(r"^idea-(\d+)", k)
+                if m:
+                    max_num = max(max_num, int(m.group(1)))
+            next_num = max_num + 1
     else:
+        existing = parse_ideas(_ideas_file())
         max_num = 0
-    next_num = max_num + 1
+        for k in existing:
+            m = re.match(r"^idea-(\d+)", k)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+        next_num = max_num + 1
     idea_id = f"idea-{next_num:04d}"
 
     md = format_idea_markdown(
@@ -481,10 +479,12 @@ async def action_kill(request: Request):
         raise HTTPException(400, "Invalid JSON body")
 
     idea_id = body.get("idea_id")
-    if not idea_id or not re.match(r"^idea-\d+", idea_id):
+    if not idea_id or not re.match(r"^idea-\d+(-ht-\d+)?(~\d+)?$", idea_id):
         raise HTTPException(400, "Valid idea_id required (e.g. idea-0042)")
 
     idea_dir = _results_dir() / idea_id
+    if not idea_dir.resolve().is_relative_to(_results_dir().resolve()):
+        raise HTTPException(400, "Invalid idea_id")
     idea_dir.mkdir(parents=True, exist_ok=True)
     kill_path = idea_dir / ".kill"
     atomic_write(kill_path, datetime.datetime.now().isoformat())
@@ -509,6 +509,7 @@ def run_admin(cfg: dict, host: str = "0.0.0.0", port: int = 8787):
     """Start the admin panel server."""
     global _cfg
     _cfg = cfg
+    _load_backbone_registry()
 
     import uvicorn
 

@@ -6,10 +6,10 @@ an LLM CLI for natural language responses, and sends replies back.
 Built-in commands (/status, /top, /help, /ping) respond instantly
 without invoking the LLM.
 
-Runs alongside farm.py as a companion process.
+Runs alongside the orchestrator as a companion process.
 
 Usage:
-    python orze/bot.py -c orze.yaml
+    python -m orze.agents.bot -c orze.yaml
 """
 
 import argparse
@@ -23,11 +23,11 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional
 
 import yaml
 
-__version__ = "1.10.0"
+from orze import __version__
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,7 +58,7 @@ def load_config(config_path: str) -> dict:
     bot_token/chat_id falling back to the first Telegram notification
     channel.
     """
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 
     bot_cfg = {**DEFAULTS, **(cfg.get("telegram_bot") or {})}
@@ -241,7 +241,7 @@ def cmd_help(msg: Message, cfg: dict) -> str:
 def cmd_status(msg: Message, cfg: dict) -> str:
     status = _read_status(cfg)
     if not status:
-        return "No status.json found. Is farm.py running?"
+        return "No status.json found. Is the orchestrator running?"
 
     active = status.get("active", [])
     active_lines = []
@@ -277,7 +277,7 @@ def cmd_status(msg: Message, cfg: dict) -> str:
 def cmd_top(msg: Message, cfg: dict) -> str:
     status = _read_status(cfg)
     if not status:
-        return "No status.json found. Is farm.py running?"
+        return "No status.json found. Is the orchestrator running?"
 
     top = status.get("top_results", [])
     if not top:
@@ -328,7 +328,7 @@ def _build_system_prompt(cfg: dict) -> str:
 - Analyze results and provide insights
 
 ## What you must NOT do
-- Modify farm.py, bot.py, or orze.yaml
+- Modify orze source code, bot.py, or orze.yaml
 - Delete any files
 - Push to git
 - Run training or eval scripts
@@ -421,7 +421,10 @@ def _invoke_script(message: str, cfg: dict) -> str:
         "message": message,
     }
     for a in args:
-        cmd.append(str(a).format(**template_vars))
+        try:
+            cmd.append(str(a).format(**template_vars))
+        except (KeyError, IndexError, ValueError):
+            cmd.append(str(a))
 
     timeout = cfg.get("timeout", 120)
 
