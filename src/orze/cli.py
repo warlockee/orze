@@ -415,7 +415,12 @@ python: {sys.executable}
         # 5. Create results directory
         Path("results").mkdir(exist_ok=True)
 
-        print("\nDone! Run `python -m orze.cli` to start.")
+        print()
+        print("\033[32m✔ Initialization complete.\033[0m")
+        print()
+        print("\033[1mNext steps:\033[0m")
+        print("  Claude / Gemini / Codex CLI  →  \033[36m@orze/AGENT.md\033[0m")
+        print("  Terminal                     →  \033[36m$ orze\033[0m")
         return
 
     # Apply CLI overrides
