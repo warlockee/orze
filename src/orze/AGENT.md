@@ -2,7 +2,7 @@
 
 You are setting up **orze** — a system that automates the full research loop: generate ideas, train on GPUs, evaluate, learn from results, repeat.
 
-Read `RULES.md` for the complete technical specification.
+Read `ORZE-RULES.md` for the complete technical specification.
 
 > **Shortcut:** For a new project, run `orze --init` to scaffold `train.py`, `orze.yaml`, and `ideas.md` automatically, then jump to step 8.
 

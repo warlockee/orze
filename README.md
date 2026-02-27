@@ -65,7 +65,7 @@ python train.py --idea-id idea-001 --results-dir results --ideas-md ideas.md --c
 {"status": "COMPLETED", "test_accuracy": 0.92, "training_time": 142.5}
 ```
 
-See [**RULES.md**](RULES.md) for the full technical specification.
+See [**RULES.md**](src/orze/RULES.md) for the full technical specification.
 
 ## License
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orze"
-version = "2.1.6"
+version = "2.1.7"
 description = "GPU experiment orchestrator using filesystem coordination"
 readme = "README.md"
 license = "Apache-2.0"
@@ -37,6 +37,9 @@ orze = "orze.cli:main"
 [project.urls]
 Homepage = "https://orze.ai"
 Repository = "https://github.com/warlockee/orze"
+
+[tool.setuptools.package-data]
+orze = ["AGENT.md", "RULES.md"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -327,25 +327,17 @@ Examples:
         print("\n\033[1mOrze — Initialization\033[0m")
         print("---------------------")
 
-        # 1. Detect project type (shallow scan — skip venvs, node_modules, etc.)
+        # 1. Find/create training script (depth ≤ 2)
         _skip = {"venv", ".venv", "env", ".env", "node_modules", "__pycache__",
                  ".git", ".tox", ".nox", "results", "wandb", ".eggs", "dist", "build"}
-        py_files: list[Path] = []
+        train_scripts = []
         for entry in Path(".").iterdir():
-            if entry.is_file() and entry.suffix == ".py":
-                py_files.append(entry)
+            if entry.is_file() and entry.suffix == ".py" and entry.name.startswith("train") and "orze" not in str(entry):
+                train_scripts.append(str(entry))
             elif entry.is_dir() and entry.name not in _skip:
                 for child in entry.iterdir():
-                    if child.is_file() and child.suffix == ".py":
-                        py_files.append(child)
-        is_torch = any("torch" in f.read_text(errors="ignore") for f in py_files[:20])
-        print(f"Project context: {'PyTorch' if is_torch else 'Generic ML'}")
-
-        # 2. Find/create training script (depth ≤ 2)
-        train_scripts = []
-        for p in py_files:
-            if p.name.startswith("train") and "orze" not in str(p):
-                train_scripts.append(str(p))
+                    if child.is_file() and child.suffix == ".py" and child.name.startswith("train") and "orze" not in str(child):
+                        train_scripts.append(str(child))
 
         train_script = None
         if train_scripts:
@@ -403,11 +395,23 @@ python: {sys.executable}
         # 5. Create results directory
         Path("results").mkdir(exist_ok=True)
 
+        # 6. Copy AGENT.md and RULES.md into the project directory
+        pkg_dir = Path(__file__).resolve().parent
+        _copy_map = {"AGENT.md": "ORZE-AGENT.md", "RULES.md": "ORZE-RULES.md"}
+        for src_name, dst_name in _copy_map.items():
+            src = pkg_dir / src_name
+            dst = Path(dst_name)
+            if src.exists() and not dst.exists():
+                dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+                print(f"Copied {dst_name}")
+            elif dst.exists():
+                print(f"{dst_name} already exists — skipping")
+
         print()
         print("\033[32m✔ Initialization complete.\033[0m")
         print()
         print("\033[1mNext steps:\033[0m")
-        print("  If in Claude/Gemini/Codex CLI  →  do \033[36m@orze/AGENT.md\033[0m")
+        print("  If in Claude/Gemini/Codex CLI  →  do \033[36m@ORZE-AGENT.md\033[0m")
         print("  If not                         →  \033[36m$ orze\033[0m")
         return
 
