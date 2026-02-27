@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Example training script for research-farm.
+Example training script for orze.
 
 Trains a CIFAR-10 classifier based on config from ideas.md.
-Demonstrates the contract that farm.py expects:
+Demonstrates the contract that the orchestrator expects:
   - Input: CUDA_VISIBLE_DEVICES env, --idea-id, --results-dir, --ideas-md, --config
   - Output: results/{idea_id}/metrics.json with {"status": "COMPLETED"|"FAILED", ...}
 """
@@ -140,7 +140,7 @@ def build_model(model_cfg: dict) -> nn.Module:
 
 
 # ---------------------------------------------------------------------------
-# Ideas parsing (same logic as farm.py)
+# Ideas parsing (same logic as the orchestrator)
 # ---------------------------------------------------------------------------
 
 def get_idea_config(ideas_md: str, idea_id: str) -> dict:
@@ -367,7 +367,7 @@ def main():
     try:
         train(args)
     except Exception as e:
-        # Write failure metrics so farm.py knows what happened
+        # Write failure metrics so the orchestrator knows what happened
         results_dir = Path(args.results_dir) / args.idea_id
         results_dir.mkdir(parents=True, exist_ok=True)
         metrics = {

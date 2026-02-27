@@ -15,14 +15,12 @@ import json
 import logging
 import re
 import shutil
-import sys
 from pathlib import Path
 
 import yaml
 
-# Allow importing from parent dir
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from idea_lake import IdeaLake
+from orze.core.fs import deep_get
+from orze.idea_lake import IdeaLake
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,15 +75,6 @@ def parse_all_ideas(text: str):
     return ideas
 
 
-def _deep_get(obj, dotpath, default=None):
-    """Get nested dict value by dot path: 'a.b.c' -> obj[a][b][c]."""
-    for k in dotpath.split("."):
-        if isinstance(obj, dict):
-            obj = obj.get(k, default)
-        else:
-            return default
-    return obj
-
 
 def load_metrics(results_dir: Path, idea_id: str,
                  eval_reports: list, report_columns: list) -> dict:
@@ -104,7 +93,7 @@ def load_metrics(results_dir: Path, idea_id: str,
     metrics_path = idea_dir / "metrics.json"
     if metrics_path.exists():
         try:
-            m = json.loads(metrics_path.read_text())
+            m = json.loads(metrics_path.read_text(encoding="utf-8"))
             metrics["status"] = m.get("status", "COMPLETED").upper()
             tls = m.get("training_log_summary", {})
             if isinstance(tls, dict):
@@ -119,14 +108,14 @@ def load_metrics(results_dir: Path, idea_id: str,
         if not report_path.exists():
             continue
         try:
-            r = json.loads(report_path.read_text())
+            r = json.loads(report_path.read_text(encoding="utf-8"))
             for col in report_columns:
                 key = col.get("key", "")
                 src = col.get("source", "")
                 if ":" in src:
                     src_file, json_path = src.split(":", 1)
                     if src_file == report_file:
-                        val = _deep_get(r, json_path)
+                        val = deep_get(r, json_path)
                         if val is not None:
                             metrics[key] = val
         except (json.JSONDecodeError, OSError):
@@ -154,7 +143,7 @@ def main():
     report_columns = []
     if args.config and Path(args.config).exists():
         try:
-            cfg = yaml.safe_load(Path(args.config).read_text())
+            cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
             eval_output = cfg.get("eval_output", "eval_report.json")
             eval_reports.append(eval_output)
             report_columns = cfg.get("report", {}).get("columns", [])
@@ -272,7 +261,7 @@ def main():
     existing_idx = {}
     if archived_index.exists():
         try:
-            existing_idx = json.loads(archived_index.read_text())
+            existing_idx = json.loads(archived_index.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
     for idea in to_archive:

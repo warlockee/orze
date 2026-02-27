@@ -2,13 +2,13 @@
 """orze bug-fixer: continuously monitors an orze instance for stuck/zombie/deadlock
 conditions and self-heals.
 
-Platform-level tool — only diagnoses and fixes orze/farm.py bugs.
+Platform-level tool — only diagnoses and fixes orze bugs.
 Never touches project-specific scripts (train scripts, eval scripts, etc.).
 
-Reads orze.yaml for configuration. Runs forever alongside farm.py.
+Reads orze.yaml for configuration. Runs forever alongside the orchestrator.
 
 Usage:
-    python orze/bug_fixer.py -c orze.yaml
+    python -m orze.agents.bug_fixer -c orze.yaml
 """
 
 import argparse
@@ -46,7 +46,7 @@ DEFAULTS = {
 
 def load_config(config_path: str) -> dict:
     """Load orze.yaml and extract bug_fixer settings."""
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     bf_cfg = cfg.get("bug_fixer", {})
     merged = {**DEFAULTS, **bf_cfg}
@@ -54,11 +54,11 @@ def load_config(config_path: str) -> dict:
     return merged
 
 
-def run_cmd(cmd, timeout=30):
-    """Run a shell command and return (returncode, stdout, stderr)."""
+def run_cmd(cmd_args, timeout=30):
+    """Run a command (list of args) and return (returncode, stdout, stderr)."""
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            cmd_args, capture_output=True, text=True, timeout=timeout
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except subprocess.TimeoutExpired:
@@ -67,10 +67,15 @@ def run_cmd(cmd, timeout=30):
         return -1, "", str(e)
 
 
+def _pgrep_orze(config_file: str):
+    """Find orze processes by config file. Returns (returncode, stdout, stderr)."""
+    return run_cmd(["pgrep", "-f", f"orze.cli.*{config_file}"])
+
+
 # ─── Detectors (all generic — no project-specific logic) ─────────────────────
 
 def check_orze_alive(cfg):
-    """Check if the farm.py process is running and producing log output."""
+    """Check if the orchestrator process is running and producing log output."""
     issues = []
     orze_cfg = cfg["_orze"]
     config_file = cfg.get("_config_file", "orze.yaml")
@@ -88,21 +93,19 @@ def check_orze_alive(cfg):
         logger.debug("Shutdown sentinel found — orze was stopped intentionally")
         return issues
 
-    rc, out, _ = run_cmd(f"pgrep -f 'farm.py.*{config_file}'")
+    rc, out, _ = _pgrep_orze(config_file)
     if rc != 0 or not out.strip():
         issues.append({
             "type": "orze_dead",
             "severity": "critical",
-            "message": "Orze farm.py is not running!",
+            "message": "Orze orchestrator is not running!",
         })
         return issues
 
     # Check log freshness
-    results_dir = Path(orze_cfg.get("results_dir", "results"))
-    log_file = results_dir / "farm.log"
+    log_file = results_dir / "orze.log"
     if not log_file.exists():
-        # Try orze.log as fallback
-        log_file = results_dir / "orze.log"
+        log_file = results_dir / "farm.log"
     if log_file.exists():
         age_min = (time.time() - log_file.stat().st_mtime) / 60
         if age_min > cfg["heartbeat_timeout_min"]:
@@ -118,16 +121,17 @@ def check_orze_alive(cfg):
 def check_zombie_processes(cfg):
     """Check for zombie (defunct) python processes."""
     issues = []
-    rc, out, _ = run_cmd("ps aux | grep 'python' | grep '<defunct>' | grep -v grep")
-    if rc == 0 and out.strip():
-        zombies = [l for l in out.strip().split("\n") if l.strip()]
-        if zombies:
-            issues.append({
-                "type": "zombie_processes",
-                "severity": "medium",
-                "message": f"Found {len(zombies)} zombie python processes",
-                "details": "\n".join(zombies[:5]),
-            })
+    rc, out, _ = run_cmd(["ps", "aux"])
+    if rc != 0:
+        return issues
+    zombies = [l for l in out.split("\n") if "python" in l and "<defunct>" in l]
+    if zombies:
+        issues.append({
+            "type": "zombie_processes",
+            "severity": "medium",
+            "message": f"Found {len(zombies)} zombie python processes",
+            "details": "\n".join(zombies[:5]),
+        })
     return issues
 
 
@@ -136,53 +140,49 @@ def check_stuck_processes(cfg):
     issues = []
     orze_cfg = cfg["_orze"]
     train_script = Path(orze_cfg.get("train_script", "train.py")).name
-    eval_script = Path(orze_cfg.get("eval_script", "")).name if orze_cfg.get("eval_script") else None
+    eval_script_raw = orze_cfg.get("eval_script", "")
+    eval_script = Path(eval_script_raw).name if eval_script_raw else None
 
-    # Check training
-    rc, out, _ = run_cmd(
-        f"ps -eo pid,etimes,args --sort=-etimes | grep '{train_script}' | grep -v grep"
-    )
-    if rc == 0 and out.strip():
-        for line in out.strip().split("\n"):
-            parts = line.split(None, 2)
-            if len(parts) < 3:
-                continue
-            pid, elapsed_sec, cmd = parts[0], int(parts[1]), parts[2]
-            elapsed_min = elapsed_sec / 60
-            if elapsed_min > cfg["stale_training_min"]:
-                rc2, cpu_out, _ = run_cmd(f"ps -p {pid} -o %cpu --no-headers")
-                cpu_pct = float(cpu_out.strip()) if cpu_out.strip() else 0
-                if cpu_pct < 5.0:
-                    idea_match = re.search(r"idea-\S+", cmd)
-                    idea_id = idea_match.group() if idea_match else "unknown"
-                    issues.append({
-                        "type": "stuck_training",
-                        "severity": "high",
-                        "message": f"Training {idea_id} stuck {elapsed_min:.0f}min (CPU={cpu_pct:.1f}%)",
-                        "pid": pid,
-                    })
+    rc, out, _ = run_cmd(["ps", "-eo", "pid,etimes,args", "--sort=-etimes"])
+    if rc != 0 or not out.strip():
+        return issues
 
-    # Check evals
-    if eval_script:
-        rc, out, _ = run_cmd(
-            f"ps -eo pid,etimes,args --sort=-etimes | grep '{eval_script}' | grep -v grep"
-        )
-        if rc == 0 and out.strip():
-            for line in out.strip().split("\n"):
-                parts = line.split(None, 2)
-                if len(parts) < 3:
-                    continue
-                pid, elapsed_sec, cmd = parts[0], int(parts[1]), parts[2]
-                elapsed_min = elapsed_sec / 60
-                if elapsed_min > cfg["stale_eval_min"]:
-                    idea_match = re.search(r"idea-\S+", cmd)
-                    idea_id = idea_match.group() if idea_match else "unknown"
-                    issues.append({
-                        "type": "stuck_eval",
-                        "severity": "high",
-                        "message": f"Eval {idea_id} stuck {elapsed_min:.0f}min",
-                        "pid": pid,
-                    })
+    for line in out.strip().split("\n"):
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid_str, elapsed_str, cmd = parts[0], parts[1], parts[2]
+        try:
+            pid = int(pid_str)
+            elapsed_sec = int(elapsed_str)
+        except ValueError:
+            continue
+        elapsed_min = elapsed_sec / 60
+
+        # Check training
+        if train_script in cmd and elapsed_min > cfg["stale_training_min"]:
+            rc2, cpu_out, _ = run_cmd(["ps", "-p", str(pid), "-o", "%cpu", "--no-headers"])
+            cpu_pct = float(cpu_out.strip()) if cpu_out.strip() else 0
+            if cpu_pct < 5.0:
+                idea_match = re.search(r"idea-\S+", cmd)
+                idea_id = idea_match.group() if idea_match else "unknown"
+                issues.append({
+                    "type": "stuck_training",
+                    "severity": "high",
+                    "message": f"Training {idea_id} stuck {elapsed_min:.0f}min (CPU={cpu_pct:.1f}%)",
+                    "pid": str(pid),
+                })
+
+        # Check evals
+        if eval_script and eval_script in cmd and elapsed_min > cfg["stale_eval_min"]:
+            idea_match = re.search(r"idea-\S+", cmd)
+            idea_id = idea_match.group() if idea_match else "unknown"
+            issues.append({
+                "type": "stuck_eval",
+                "severity": "high",
+                "message": f"Eval {idea_id} stuck {elapsed_min:.0f}min",
+                "pid": str(pid),
+            })
     return issues
 
 
@@ -229,31 +229,34 @@ def check_stale_claims(cfg):
 
 
 def check_orze_errors(cfg):
-    """Scan orze log for errors originating in farm.py."""
+    """Scan orze log for recent errors."""
     issues = []
     results_dir = Path(cfg["_orze"].get("results_dir", "results"))
-    log_file = results_dir / "farm.log"
+    log_file = results_dir / "orze.log"
     if not log_file.exists():
-        log_file = results_dir / "orze.log"
+        log_file = results_dir / "farm.log"
     if not log_file.exists():
         return issues
 
-    # Grab recent ERROR/CRITICAL lines — don't classify them here,
-    # the LLM agent will read the log and decide what to do.
-    rc, out, _ = run_cmd(
-        f"tail -300 {log_file} | grep -E '\\[ERROR\\]|\\[CRITICAL\\]|Traceback' | tail -10"
-    )
-    if rc == 0 and out.strip():
-        # Deduplicate by exact line to avoid flooding
-        seen = set()
-        for line in out.strip().split("\n"):
+    try:
+        # Read last 16KB for error scanning
+        size = log_file.stat().st_size
+        with open(log_file, "rb") as f:
+            f.seek(max(0, size - 16384))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return issues
+
+    seen = set()
+    for line in tail.split("\n"):
+        if any(kw in line for kw in ["[ERROR]", "[CRITICAL]", "Traceback"]):
             line_key = line.strip()[:100]
             if line_key not in seen:
                 seen.add(line_key)
                 issues.append({
                     "type": "orze_error",
                     "severity": "high",
-                    "message": f"farm.py error detected",
+                    "message": "Orchestrator error detected",
                     "details": line[:300],
                     "log_file": str(log_file),
                 })
@@ -286,38 +289,44 @@ def save_issue(issue, cfg):
     issues_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     p = issues_dir / f"{ts}_{issue['type']}.json"
-    p.write_text(json.dumps(issue, indent=2, default=str))
+    p.write_text(json.dumps(issue, indent=2, default=str), encoding="utf-8")
     return p
 
 
-def kill_process(pid):
-    logger.info("Killing stuck PID=%s", pid)
-    run_cmd(f"kill {pid}")
+def kill_process(pid_str):
+    logger.info("Killing stuck PID=%s", pid_str)
+    try:
+        pid = int(pid_str)
+        os.kill(pid, signal.SIGTERM)
+    except (ValueError, ProcessLookupError, PermissionError):
+        return False
     time.sleep(2)
-    rc, _, _ = run_cmd(f"ps -p {pid} -o pid= 2>/dev/null")
-    if rc != 0:
-        logger.info("PID=%s terminated", pid)
-        return True
-    run_cmd(f"kill -9 {pid}")
-    time.sleep(1)
+    try:
+        os.kill(pid, 0)  # check if alive
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except (ValueError, PermissionError):
+        return False
+    logger.info("PID=%s terminated", pid_str)
     return True
 
 
 def restart_orze(cfg):
-    """Restart the orze farm.py process."""
+    """Restart the orze orchestrator process."""
     config_file = cfg.get("_config_file", "orze.yaml")
     python = cfg["_orze"].get("python", sys.executable)
     project_dir = cfg.get("_project_dir", ".")
     results_dir = Path(cfg["_orze"].get("results_dir", "results"))
-    log_file = results_dir / "farm.log"
+    log_file = results_dir / "orze.log"
 
-    # Respect persistent disable flag — never restart if disabled
+    # Respect persistent disable flag
     disabled_file = results_dir / ".orze_disabled"
     if disabled_file.exists():
         logger.info("Orze is disabled (.orze_disabled exists) — will not restart")
         return False
 
-    # Clear shutdown sentinel so farm.py starts fresh
+    # Clear shutdown sentinel so orze starts fresh
     sentinel = results_dir / ".orze_shutdown"
     if sentinel.exists():
         try:
@@ -326,19 +335,22 @@ def restart_orze(cfg):
             pass
 
     logger.info("Restarting Orze...")
-    run_cmd(f"pkill -f 'farm.py.*{config_file}'")
-    time.sleep(5)
-    run_cmd(f"pkill -9 -f 'farm.py.*{config_file}'")
-    time.sleep(2)
-
-    orze_script = Path(project_dir) / "orze" / "farm.py"
-    run_cmd(
-        f"cd {project_dir} && nohup {python} {orze_script} -c {config_file} "
-        f">> {log_file} 2>&1 &",
-        timeout=10,
-    )
+    # Kill existing processes
+    rc, pids, _ = _pgrep_orze(config_file)
+    if rc == 0 and pids.strip():
+        for pid_str in pids.strip().split("\n"):
+            kill_process(pid_str.strip())
     time.sleep(3)
-    rc, pid_out, _ = run_cmd(f"pgrep -f 'farm.py.*{config_file}'")
+
+    # Restart via python -m orze.cli
+    with open(log_file, "a", encoding="utf-8") as lf:
+        subprocess.Popen(
+            [python, "-m", "orze.cli", "-c", config_file],
+            stdout=lf, stderr=subprocess.STDOUT,
+            cwd=project_dir, start_new_session=True,
+        )
+    time.sleep(3)
+    rc, pid_out, _ = _pgrep_orze(config_file)
     if pid_out.strip():
         logger.info("Orze restarted, PID=%s", pid_out.strip())
         return True
@@ -347,22 +359,29 @@ def restart_orze(cfg):
 
 
 def spawn_claude_fix(issue, cfg):
-    """Spawn Claude CLI to diagnose and fix a farm.py bug."""
+    """Spawn Claude CLI to diagnose and fix an orchestrator bug."""
     h = issue_hash(issue)
     save_issue(issue, cfg)
 
     results_dir = Path(cfg["_orze"].get("results_dir", "results"))
-    log_file = results_dir / "farm.log"
+    log_file = results_dir / "orze.log"
     if not log_file.exists():
-        log_file = results_dir / "orze.log"
+        log_file = results_dir / "farm.log"
     orze_dir = cfg.get("_orze_dir", "orze")
 
-    rc, log_tail, _ = run_cmd(f"tail -200 {log_file}")
+    # Read log tail safely
+    log_tail = ""
+    try:
+        size = log_file.stat().st_size
+        with open(log_file, "rb") as f:
+            f.seek(max(0, size - 8192))
+            log_tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        pass
 
-    # Include PID info if available (for stuck processes)
     pid_info = ""
     if issue.get("pid"):
-        pid_info = f"\n- **PID**: {issue['pid']} (you may kill it with `kill {issue['pid']}` if needed)"
+        pid_info = f"\n- **PID**: {issue['pid']}"
 
     prompt = f"""You are the Orze platform bug-fixer. An issue was detected in the running Orze system.
 
@@ -373,7 +392,7 @@ def spawn_claude_fix(issue, cfg):
 - **Details**: {issue.get('details', 'N/A')}{pid_info}
 
 ## Log file
-{issue.get('log_file', log_file)}
+{issue.get('log_file', str(log_file))}
 
 ## Recent Orze Log
 ```
@@ -383,23 +402,19 @@ def spawn_claude_fix(issue, cfg):
 ## Your Task
 1. Read the log file and diagnose what happened.
 2. Decide the appropriate action:
-   a) **Code bug in farm.py** → fix it with a minimal patch
+   a) **Code bug in the orchestrator** → fix it with a minimal patch
    b) **Stuck/hung process** → kill the PID if one is provided and it looks genuinely stuck
-      (check with `ps -p PID -o pid,etimes,%cpu` first — only kill if CPU is near zero
-      for a long time, not if it's legitimately working)
    c) **Operational issue** (disk, network, transient error) → just report, don't change code
-   d) **Error from user's training script** (not farm.py) → report "Not an orze bug" and exit
+   d) **Error from user's training script** (not orze) → report "Not an orze bug" and exit
 3. Explain your reasoning briefly.
 
 ## CRITICAL RULES
-- You may ONLY modify `{orze_dir}/farm.py` — this is the orze platform
+- You may ONLY modify files under `{orze_dir}/src/orze/` — this is the orze platform
 - NEVER modify project scripts (train scripts, eval scripts, dataset loaders, etc.)
-- NEVER modify orze.yaml, ideas.md, RESEARCH_RULES.md, or any user files
+- NEVER modify orze.yaml, ideas.md, or any user files
 - Keep fixes minimal — only fix the specific bug, don't refactor
-- Verify syntax: python3 -c "import ast; ast.parse(open('{orze_dir}/farm.py').read())"
-- Commit locally: cd {orze_dir} && git add farm.py && git commit -m "fix(auto): <description>"
 - Do NOT push — local commits only, human will review and push
-- If this is NOT a farm.py bug, just say so and exit without changes
+- If this is NOT an orze bug, just say so and exit without changes
 """
 
     logger.info("Spawning Claude to diagnose: %s", issue["message"])
@@ -421,7 +436,7 @@ def spawn_claude_fix(issue, cfg):
         logger.info("Claude response:\n%s", response[:2000])
 
         resp_file = issues_dir / f"response_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        resp_file.write_text(response)
+        resp_file.write_text(response, encoding="utf-8")
 
         _fixed_issues.add(h)
         _fix_timestamps.append(time.time())
@@ -451,23 +466,14 @@ def run_all_checks(cfg):
 
 
 def handle_issue(issue, cfg):
-    """Route an issue to the appropriate action.
-
-    Only two actions are taken without LLM involvement:
-      - ``orze_dead`` → restart (binary: either farm.py is running or not)
-      - everything else → delegate to Claude for diagnosis + action
-
-    The LLM agent decides whether to kill a process, fix code, or just log.
-    """
+    """Route an issue to the appropriate action."""
     itype = issue["type"]
 
-    # Orze dead is unambiguous — restart it.
     if itype == "orze_dead":
         restart_orze(cfg)
         save_issue({**issue, "action": "auto_restarted"}, cfg)
         return
 
-    # Everything else: delegate to LLM agent for diagnosis.
     if should_fix(issue, cfg):
         spawn_claude_fix(issue, cfg)
         return

@@ -114,7 +114,7 @@ def _read_cache(path: str, ttl: int) -> Optional[List[Dict[str, Any]]]:
         age = time.time() - p.stat().st_mtime
         if age > ttl:
             return None
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
 
@@ -124,7 +124,7 @@ def _write_cache(path: str, data: List[Dict[str, Any]]) -> None:
     try:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=2))
+        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception as exc:
         logger.warning("Failed to write cache to %s: %s", path, exc)
 

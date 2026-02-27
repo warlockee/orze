@@ -7,17 +7,19 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
-dist/
+/dist/
 build/
-src/
 
-# Admin UI exceptions
-!admin/ui/src/
-!admin/ui/dist/
+# Keep admin UI build output
+!src/orze/admin/ui/dist/
 
 # Config (may contain secrets)
 orze.yaml
 .env
+
+# User-generated
+ideas.md
+idea_lake.db
 
 # OS
 .DS_Store
