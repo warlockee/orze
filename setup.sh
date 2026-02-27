@@ -4,15 +4,7 @@
 set -e
 
 echo "Installing orze..."
-pip install orze
+pip install --quiet orze
 
 echo ""
-echo "Done! orze is installed."
-echo ""
-echo "Initializing project..."
 orze --init
-
-echo ""
-echo "To launch:"
-echo "  orze"
-echo ""
