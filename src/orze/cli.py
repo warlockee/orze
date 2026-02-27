@@ -208,15 +208,53 @@ def _do_uninstall(cfg: dict):
         print(f"  {lake_path} (idea archive database)")
 
 
-def _do_upgrade():
-    """Upgrade orze to the latest version from PyPI."""
+def _stop_running_instance(results_dir: Path) -> bool:
+    """Stop a running orze instance via PID file. Returns True if one was stopped."""
+    import time as _time
+    pid_file = results_dir / ".orze.pid"
+    if not pid_file.exists():
+        return False
+    try:
+        old_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return False
+    print(f"Stopping orze (PID {old_pid})...")
+    try:
+        os.kill(old_pid, 15)  # SIGTERM
+    except ProcessLookupError:
+        print("  Process already exited.")
+        return False
+    for _ in range(30):  # 15s
+        try:
+            os.kill(old_pid, 0)
+            _time.sleep(0.5)
+        except ProcessLookupError:
+            break
+    else:
+        print("  Still running after 15s, sending SIGKILL...")
+        try:
+            os.kill(old_pid, 9)
+            _time.sleep(1)
+        except ProcessLookupError:
+            pass
+    print("  Stopped.")
+    return True
+
+
+def _do_upgrade(cfg: dict):
+    """Upgrade orze to the latest version from PyPI, then restart if running."""
     import subprocess
 
     print(f"\n\033[1mOrze — Upgrade\033[0m")
     print("---------------")
     print(f"Current version: {__version__}")
-    print("Upgrading via pip...\n")
 
+    # 1. Stop running instance first (so new code loads on restart)
+    results_dir = Path(cfg["results_dir"])
+    was_running = _stop_running_instance(results_dir)
+
+    # 2. Upgrade
+    print("Upgrading via pip...\n")
     try:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "orze"],
@@ -237,6 +275,12 @@ def _do_upgrade():
         print(f"\nAlready up-to-date (v{__version__}).")
     else:
         print(f"\n\033[32mUpgraded: v{__version__} -> v{new_ver}\033[0m")
+
+    # 3. Restart if it was running
+    if was_running:
+        print("\nRestarting orze with new version...")
+        os.execv(sys.executable, [sys.executable, "-m", "orze.cli",
+                                  "-c", str(cfg.get("_config_path", "orze.yaml"))])
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +313,8 @@ Examples:
                         help="Run one cycle and exit")
     parser.add_argument("--stop", action="store_true",
                         help="Gracefully stop a running orze instance")
+    parser.add_argument("--restart", action="store_true",
+                        help="Stop the running instance and start a new one")
     parser.add_argument("--disable", action="store_true",
                         help="Stop and persistently disable Orze (survives restarts)")
     parser.add_argument("--enable", action="store_true",
@@ -312,9 +358,9 @@ Examples:
         run_admin(cfg)
         return
 
-    # --upgrade: upgrade orze from PyPI
+    # --upgrade: upgrade orze from PyPI (stops + restarts if running)
     if args.upgrade:
-        _do_upgrade()
+        _do_upgrade(cfg)
         return
 
     # --uninstall: full cleanup, keep only research results
@@ -452,6 +498,11 @@ python: {sys.executable}
         atomic_write(stop_path, datetime.datetime.now().isoformat())
         print(f"Stop sentinel written to {stop_path}")
         return
+
+    # --restart: stop running instance, then continue to start a new one
+    if args.restart:
+        _stop_running_instance(Path(cfg["results_dir"]))
+        print("Starting new orze instance...")
 
     # --disable
     if args.disable:

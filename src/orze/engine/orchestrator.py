@@ -9,6 +9,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -119,6 +120,9 @@ class Orze:
 
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
+        # Event used to interrupt poll sleep instantly on shutdown signal
+        self._stop_event = threading.Event()
+
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
 
@@ -139,14 +143,14 @@ class Orze:
             rp.close_log()
 
     def _shutdown(self, signum, frame):
-        """Signal handler — just sets flag so the main loop exits cleanly."""
+        """Signal handler — sets flag and wakes poll sleep immediately."""
         if not self.running:
             # Second signal = force exit
             logger.warning("Forced exit (second signal).")
             sys.exit(1)
-        logger.info("Received signal %d, will shut down after current step...",
-                     signum)
+        logger.info("Received signal %d, shutting down...", signum)
         self.running = False
+        self._stop_event.set()  # wake from poll sleep instantly
 
     def _graceful_shutdown(self):
         """Terminate all child processes, save state, and clean up.
@@ -173,8 +177,8 @@ class Orze:
                         role_name, rp.process.pid)
             _kill_pg(rp.process, signal.SIGTERM)
 
-        # 2. Wait for graceful exit (up to 30s), then SIGKILL stragglers
-        deadline = time.time() + 30
+        # 2. Wait for graceful exit (up to 10s), then SIGKILL stragglers
+        deadline = time.time() + 10
         for gpu, tp in self.active.items():
             remaining = max(1, deadline - time.time())
             try:
@@ -1050,11 +1054,17 @@ class Orze:
             for idea_id, gpu in eval_finished:
                 run_post_scripts(idea_id, gpu, self.results_dir, cfg)
 
+            if not self.running:
+                break
+
             # 4. Run agent roles (research, documenter, etc.)
             try:
                 self._run_all_roles()
             except Exception as e:
                 logger.error("Error in _run_all_roles: %s — continuing", e)
+
+            if not self.running:
+                break
 
             # 5. Sync ideas from ideas.md to idea_lake.db (ingestion)
             raw_ideas = parse_ideas(cfg["ideas_file"])
@@ -1545,7 +1555,10 @@ class Orze:
                 logger.info("Done.")
                 break
 
-            time.sleep(cfg["poll"])
+            # Interruptible sleep — wakes instantly on shutdown signal
+            self._stop_event.wait(cfg["poll"])
+            if self._stop_event.is_set():
+                break
 
         # Main loop exited (signal received or --once finished)
         if self.active or self.active_evals or self.active_roles:
