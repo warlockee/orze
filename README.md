@@ -15,7 +15,7 @@ curl -sL https://orze.ai/setup.sh | bash
 ## Quick Start
 **If you are in Claude/Gemini/Codex Cli**
 ```bash
-do @orze/AGENT.md
+do @ORZE-AGENT.md
 ```
 **If not**
 ```bash
