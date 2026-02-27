@@ -407,8 +407,8 @@ python: {sys.executable}
         print("\033[32m✔ Initialization complete.\033[0m")
         print()
         print("\033[1mNext steps:\033[0m")
-        print("  Claude / Gemini / Codex CLI  →  \033[36m@orze/AGENT.md\033[0m")
-        print("  Terminal                     →  \033[36m$ orze\033[0m")
+        print("  If in Claude/Gemini/Codex CLI  →  do \033[36m@orze/AGENT.md\033[0m")
+        print("  If not                         →  \033[36m$ orze\033[0m")
         return
 
     # Apply CLI overrides
