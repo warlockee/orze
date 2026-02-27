@@ -107,8 +107,7 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 
     rows = []
     def _id_sort_key(x):
-        match = re.search(r"\d+", x)
-        return int(match.group()) if match else 999999
+        return x
 
     # Include archived ideas from cached index
     all_ideas = dict(ideas)

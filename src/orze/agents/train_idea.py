@@ -149,7 +149,7 @@ def get_idea_config(ideas_md: str, idea_id: str) -> dict:
         text = Path(ideas_md).read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
-    pattern = re.compile(r"^## (idea-\d+):\s*(.+?)$", re.MULTILINE)
+    pattern = re.compile(r"^## (idea-[a-z0-9]+):\s*(.+?)$", re.MULTILINE)
     matches = list(pattern.finditer(text))
 
     for i, m in enumerate(matches):

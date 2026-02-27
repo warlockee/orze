@@ -68,7 +68,7 @@ def _check_ideas_integrity(ideas_file: str, rp: "RoleProcess"):
     # File shrunk — check idea count to confirm corruption
     try:
         current_text = ideas_path.read_text(encoding="utf-8")
-        current_count = len(re.findall(r"^## idea-\d+:", current_text,
+        current_count = len(re.findall(r"^## idea-[a-z0-9]+:", current_text,
                                        re.MULTILINE))
     except OSError:
         current_count = 0
@@ -92,7 +92,7 @@ def _check_ideas_integrity(ideas_file: str, rp: "RoleProcess"):
     if backup_path.exists():
         try:
             backup_text = backup_path.read_text(encoding="utf-8")
-            backup_count = len(re.findall(r"^## idea-\d+:", backup_text,
+            backup_count = len(re.findall(r"^## idea-[a-z0-9]+:", backup_text,
                                           re.MULTILINE))
         except OSError:
             backup_count = 0
