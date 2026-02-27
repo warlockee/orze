@@ -301,17 +301,25 @@ Examples:
         print("\n\033[1mOrze — Initialization\033[0m")
         print("---------------------")
 
-        # 1. Detect project type
-        py_files = list(Path(".").rglob("*.py"))
+        # 1. Detect project type (shallow scan — skip venvs, node_modules, etc.)
+        _skip = {"venv", ".venv", "env", ".env", "node_modules", "__pycache__",
+                 ".git", ".tox", ".nox", "results", "wandb", ".eggs", "dist", "build"}
+        py_files: list[Path] = []
+        for entry in Path(".").iterdir():
+            if entry.is_file() and entry.suffix == ".py":
+                py_files.append(entry)
+            elif entry.is_dir() and entry.name not in _skip:
+                for child in entry.iterdir():
+                    if child.is_file() and child.suffix == ".py":
+                        py_files.append(child)
         is_torch = any("torch" in f.read_text(errors="ignore") for f in py_files[:20])
         print(f"Project context: {'PyTorch' if is_torch else 'Generic ML'}")
 
-        # 2. Find/create training script
+        # 2. Find/create training script (depth ≤ 2)
         train_scripts = []
-        for p in Path(".").glob("**/train*.py"):
-            if "orze" in str(p):
-                continue
-            train_scripts.append(str(p))
+        for p in py_files:
+            if p.name.startswith("train") and "orze" not in str(p):
+                train_scripts.append(str(p))
 
         train_script = None
         if train_scripts:
