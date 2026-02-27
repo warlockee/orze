@@ -160,8 +160,15 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
                          "status": "IN_PROGRESS", "values": {}})
             continue
 
-        # Check cache: {idea_id: {mtime: float, row: dict}}
+        # Check cache: invalidate if metrics.json OR any source file changed
         mtime = metrics_path.stat().st_mtime
+        # Also track mtime of external source files (e.g. fedex_test_report.json)
+        for col in columns:
+            src = col.get("source", "")
+            if src and ":" in src:
+                src_file = idea_dir / src.split(":", 1)[0]
+                if src_file.exists():
+                    mtime = max(mtime, src_file.stat().st_mtime)
         cached = cache.get(idea_id)
         if cached and cached.get("mtime") == mtime:
             rows.append(cached["row"])

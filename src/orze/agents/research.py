@@ -728,9 +728,15 @@ def _post_json(url: str, payload: dict, headers: dict,
 
 def call_gemini(prompt: str, api_key: str,
                 model: str = "gemini-2.5-flash",
-                max_tokens: int = 8192) -> str:
-    """Call Gemini API. Tries multiple models on failure."""
-    models = [model, "gemini-2.5-flash", "gemini-2.5-pro"]
+                max_tokens: int = 8192,
+                web_search: bool = False) -> str:
+    """Call Gemini API. Tries multiple models on failure.
+
+    Args:
+        web_search: Enable Google Search grounding so Gemini can fetch
+            live web results alongside its own knowledge.
+    """
+    models = [model, "gemini-3-flash-preview", "gemini-2.5-flash"]
     # Deduplicate while preserving order
     seen = set()
     unique_models = []
@@ -747,9 +753,12 @@ def call_gemini(prompt: str, api_key: str,
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"maxOutputTokens": max_tokens},
             }
+            if web_search:
+                payload["tools"] = [{"google_search": {}}]
             result = _post_json(url, payload, {"Content-Type": "application/json"})
-            text = (result.get("candidates", [{}])[0]
-                    .get("content", {}).get("parts", [{}])[0].get("text", ""))
+            parts = (result.get("candidates", [{}])[0]
+                     .get("content", {}).get("parts", []))
+            text = "\n".join(p.get("text", "") for p in (parts or []) if p.get("text"))
             if text:
                 logger.info("Gemini (%s) returned %d chars", m, len(text))
                 return text
@@ -837,7 +846,8 @@ def call_llm(prompt: str, backend: str, api_key: str = "",
         if not key:
             logger.error("GEMINI_API_KEY not set")
             return ""
-        return call_gemini(prompt, key, model=model or "gemini-2.5-flash")
+        return call_gemini(prompt, key, model=model or "gemini-2.5-flash",
+                          web_search=True)
 
     elif backend == "openai":
         key = api_key or os.environ.get("OPENAI_API_KEY", "")
