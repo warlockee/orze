@@ -410,6 +410,21 @@ python: {sys.executable}
         print()
         print("\033[32m✔ Initialization complete.\033[0m")
         print()
+        admin_port = os.environ.get("ORZE_ADMIN_PORT", "8787")
+        print("\033[1mWhen orze is running:\033[0m")
+        print(f"  Admin UI  →  \033[36mhttp://localhost:{admin_port}\033[0m")
+        print()
+        print("\033[1mTelegram notifications (optional):\033[0m")
+        print("  Add to your \033[36morze.yaml\033[0m:")
+        print("    notifications:")
+        print("      enabled: true")
+        print("      on: [completed, failed, new_best]")
+        print("      channels:")
+        print("        - type: telegram")
+        print("          bot_token: \"YOUR_BOT_TOKEN\"")
+        print("          chat_id: \"YOUR_CHAT_ID\"")
+        print("  See README for setup instructions.")
+        print()
         print("\033[1mNext steps:\033[0m")
         print("  If in Claude/Gemini/Codex CLI  →  do \033[36m@ORZE-AGENT.md\033[0m")
         print("  If not                         →  \033[36m$ orze\033[0m")
@@ -485,6 +500,25 @@ python: {sys.executable}
     if not gpu_ids:
         logger.error("No GPUs detected. Use --gpus to specify manually.")
         sys.exit(1)
+
+    # Start admin panel in background thread (unless --role-only or --admin-off)
+    if not args.role_only and not getattr(args, 'no_admin', False):
+        try:
+            import threading
+            from orze.admin.server import run_admin as _run_admin_server
+            admin_port = int(os.environ.get("ORZE_ADMIN_PORT", "8787"))
+
+            def _admin_thread():
+                try:
+                    _run_admin_server(cfg, port=admin_port)
+                except Exception as e:
+                    logger.warning("Admin panel failed to start: %s", e)
+
+            t = threading.Thread(target=_admin_thread, daemon=True)
+            t.start()
+            logger.info("Admin panel starting on http://0.0.0.0:%d", admin_port)
+        except Exception as e:
+            logger.warning("Could not start admin panel: %s", e)
 
     # Launch orchestrator
     from orze.engine.orchestrator import Orze

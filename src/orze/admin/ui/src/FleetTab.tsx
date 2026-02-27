@@ -1,16 +1,16 @@
 import { Monitor } from 'lucide-react';
-import { useFleet } from './hooks';
+import { useNodes } from './hooks';
 import { Badge, Card, Pill, Reveal, GpuCard, LoadingState, statusColor, fmtRunName, fmtTime } from './components';
 
 export default function FleetTab() {
-  const fleet = useFleet();
-  if (fleet._loading) return <LoadingState label="Loading fleet…" />;
-  const hosts = fleet.heartbeats;
-  const localGpus = fleet.local_gpus;
+  const nodes = useNodes();
+  if (nodes._loading) return <LoadingState label="Loading nodes…" />;
+  const hosts = nodes.heartbeats;
+  const localGpus = nodes.local_gpus;
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-bold">Fleet</h2>
+      <h2 className="text-lg font-bold">Nodes</h2>
       {hosts.length === 0 && (
         <Card><p className="text-sm text-gray-500">No hosts reporting. Waiting for heartbeats...</p></Card>
       )}

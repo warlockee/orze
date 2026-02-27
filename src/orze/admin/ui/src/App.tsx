@@ -47,7 +47,7 @@ export default function OrzeAdminPanel() {
 
   const tabs: { key: Tab; label: string; icon: any }[] = [
     { key: 'overview', label: 'Overview', icon: Activity },
-    { key: 'fleet', label: 'Nodes', icon: Server },
+    { key: 'nodes', label: 'Nodes', icon: Server },
     { key: 'runs', label: 'Runs', icon: Play },
     { key: 'queue', label: 'Queue', icon: ListOrdered },
     { key: 'leaderboard', label: 'Leaderboard', icon: Award },
@@ -142,7 +142,7 @@ export default function OrzeAdminPanel() {
       <main className="mx-auto max-w-7xl px-6 py-6">
         <Suspense fallback={<TabFallback />}>
           {tab === 'overview' && <OverviewTab />}
-          {tab === 'fleet' && <FleetTab />}
+          {tab === 'nodes' && <FleetTab />}
           {tab === 'runs' && <RunsTab />}
           {tab === 'queue' && <QueueTabView />}
           {tab === 'leaderboard' && <LeaderboardTab />}
