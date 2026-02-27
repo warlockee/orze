@@ -86,6 +86,141 @@ def setup_logging(verbose: bool = False):
 
 
 # ---------------------------------------------------------------------------
+# Uninstall
+# ---------------------------------------------------------------------------
+
+# Files inside each idea dir to keep (research results)
+_IDEA_KEEP = {
+    "metrics.json",
+    "eval_report.json",
+    "eval_output.log",
+}
+
+# Top-level results_dir files to keep
+_RESULTS_KEEP = {"report.md", "status.json"}
+
+
+def _do_uninstall(cfg: dict):
+    """Full uninstall: stop orze, strip runtime files, pip uninstall.
+
+    Preserves research results:
+        - results/{idea-*}/metrics.json  (core experiment data)
+        - results/{idea-*}/eval_report.json, eval_output.log
+        - results/report.md, status.json
+        - ideas.md, idea_lake.db
+    """
+    import shutil
+    import subprocess
+
+    results_dir = Path(cfg["results_dir"])
+    print("\n\033[1mOrze — Uninstall\033[0m")
+    print("-----------------")
+    print(f"Results dir : {results_dir.resolve()}")
+    print(f"Config      : {cfg.get('_config_path', 'orze.yaml')}")
+    print()
+
+    # --- 1. Stop running instances -----------------------------------
+    print("[1/4] Stopping running orze instances...")
+    stop_path = results_dir / ".orze_stop_all"
+    if results_dir.exists():
+        stop_path.write_text("uninstall", encoding="utf-8")
+        # Also send SIGTERM to any PID files we find
+        for pid_file in results_dir.glob(".orze.pid*"):
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+                os.kill(pid, 15)  # SIGTERM
+                print(f"  Sent SIGTERM to PID {pid}")
+            except (ValueError, ProcessLookupError, PermissionError, OSError):
+                pass
+    import time
+    time.sleep(2)  # give processes a moment to exit
+
+    # --- 2. Clean results directory ----------------------------------
+    print("[2/4] Cleaning runtime files from results/...")
+    removed = 0
+    if results_dir.exists():
+        # Remove orze system files (dot-files and underscore-prefixed)
+        for p in sorted(results_dir.iterdir()):
+            name = p.name
+            # Keep the report/status summaries
+            if name in _RESULTS_KEEP:
+                continue
+            # System dot-files (.orze_*, .orze.pid*)
+            if name.startswith(".orze"):
+                p.unlink(missing_ok=True)
+                removed += 1
+                continue
+            # Underscore-prefixed system files/dirs (_leaderboard.json,
+            # _results_cache.json, _host_*.json, _*_lock/, _*_logs/, etc.)
+            if name.startswith("_"):
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+                removed += 1
+                continue
+            # Log files at top level (orze.log, bug_fixer.log, etc.)
+            if name.endswith(".log"):
+                p.unlink(missing_ok=True)
+                removed += 1
+                continue
+            # Idea directories — strip everything except research results
+            if p.is_dir():
+                for child in sorted(p.iterdir()):
+                    if child.name in _IDEA_KEEP:
+                        continue
+                    # Keep subdirectories produced by eval/post-scripts
+                    # (overlays/, checkpoints user explicitly asked to keep, etc.)
+                    if child.is_dir():
+                        continue
+                    child.unlink(missing_ok=True)
+                    removed += 1
+
+        # Remove empty idea dirs (no metrics.json means no results)
+        for p in sorted(results_dir.iterdir()):
+            if p.is_dir() and not any(p.iterdir()):
+                p.rmdir()
+                removed += 1
+
+    print(f"  Removed {removed} runtime file(s)")
+
+    # --- 3. Remove orze config file ----------------------------------
+    print("[3/4] Removing orze config...")
+    config_path = Path(cfg.get("_config_path", "orze.yaml"))
+    if config_path.exists():
+        config_path.unlink()
+        print(f"  Removed {config_path}")
+    else:
+        print("  No config file found")
+
+    # --- 4. Pip uninstall --------------------------------------------
+    print("[4/4] Uninstalling orze package...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "orze", "-y"],
+            check=True,
+        )
+        print("  orze package removed")
+    except subprocess.CalledProcessError:
+        print("  WARNING: pip uninstall failed — you may need to run manually:")
+        print("    pip uninstall orze")
+
+    # --- Summary -----------------------------------------------------
+    print()
+    print("\033[1mUninstall complete.\033[0m")
+    print("Preserved research results:")
+    if results_dir.exists():
+        kept = list(results_dir.rglob("metrics.json"))
+        print(f"  {len(kept)} experiment result(s) in {results_dir}/")
+    ideas_file = Path(cfg.get("ideas_file", "ideas.md"))
+    if ideas_file.exists():
+        print(f"  {ideas_file} (experiment definitions)")
+    lake_path = ideas_file.parent / "idea_lake.db"
+    if lake_path.exists():
+        print(f"  {lake_path} (idea archive database)")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -137,6 +272,9 @@ Examples:
                         help="Initialize a new orze project in the current directory")
     parser.add_argument("--admin", action="store_true",
                         help="Launch admin panel instead of farm loop")
+    parser.add_argument("--uninstall", action="store_true",
+                        help="Full uninstall: stop orze, remove runtime files, "
+                             "pip uninstall — keeps only research results")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
     args = parser.parse_args()
@@ -151,6 +289,11 @@ Examples:
     if args.admin:
         from orze.admin.server import run_admin
         run_admin(cfg)
+        return
+
+    # --uninstall: full cleanup, keep only research results
+    if args.uninstall:
+        _do_uninstall(cfg)
         return
 
     # --init: initialize a new project in the current directory
