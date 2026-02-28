@@ -16,11 +16,11 @@ import { useAlerts } from './hooks';
 import { stopAll } from './api';
 import { Segmented, GlowBlob, FloatingGrid } from './components';
 import type { Tab } from './types';
+import QueueTabView from './QueueTabView';
 
 const OverviewTab = lazy(() => import('./OverviewTab'));
 const NodesTab = lazy(() => import('./NodesTab'));
 const RunsTab = lazy(() => import('./RunsTab'));
-const QueueTabView = lazy(() => import('./QueueTabView'));
 const LeaderboardTab = lazy(() => import('./LeaderboardTab'));
 const AlertsTab = lazy(() => import('./AlertsTab'));
 const SettingsTab = lazy(() => import('./SettingsTab'));

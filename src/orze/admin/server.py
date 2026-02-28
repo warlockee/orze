@@ -63,7 +63,7 @@ app.add_middleware(
 async def cache_static_assets(request: Request, call_next):
     response = await call_next(request)
     # Hashed asset filenames are immutable — cache forever
-    if "/assets/" in request.url.path:
+    if "/assets/" in request.url.path and response.status_code == 200:
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
@@ -483,13 +483,53 @@ async def action_kill(request: Request):
 
 
 # ---------------------------------------------------------------------------
+#  UI chunk endpoint (bypasses static file serving for lazy-loaded modules)
+# ---------------------------------------------------------------------------
+
+_chunks_dir = Path(__file__).parent / "ui" / "dist" / "_chunks"
+
+@app.get("/api/_chunk/{filename:path}")
+async def serve_chunk(filename: str):
+    """Serve lazy-loaded JS chunks via API routing to bypass proxy caching issues."""
+    from fastapi.responses import Response
+    safe = (_chunks_dir / filename).resolve()
+    if not safe.is_relative_to(_chunks_dir.resolve()) or not safe.is_file():
+        raise HTTPException(404, "Chunk not found")
+    content = safe.read_bytes()
+    return Response(
+        content=content,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+# ---------------------------------------------------------------------------
 #  Static files (SPA frontend)
 # ---------------------------------------------------------------------------
 
 _ui_dist = Path(__file__).parent / "ui" / "dist"
 
 if _ui_dist.is_dir() and (_ui_dist / "index.html").exists():
-    app.mount("/", StaticFiles(directory=str(_ui_dist), html=True), name="spa")
+    from fastapi.responses import FileResponse, Response
+
+    # Explicit route for /assets/* so it doesn't depend on StaticFiles mount behavior
+    @app.get("/assets/{file_path:path}")
+    async def serve_asset(file_path: str):
+        safe = (_ui_dist / "assets" / file_path).resolve()
+        if not safe.is_relative_to((_ui_dist / "assets").resolve()) or not safe.is_file():
+            raise HTTPException(404, "Not found")
+        media = "application/javascript" if safe.suffix == ".js" else \
+                "text/css" if safe.suffix == ".css" else None
+        return FileResponse(safe, media_type=media)
+
+    # SPA catch-all: serve index.html for any non-API, non-asset route
+    @app.get("/{full_path:path}")
+    async def spa_catchall(full_path: str):
+        file_path = _ui_dist / full_path
+        if full_path and file_path.is_file() and file_path.resolve().is_relative_to(_ui_dist.resolve()):
+            return FileResponse(file_path)
+        return FileResponse(_ui_dist / "index.html")
+
     logger.info("UI mounted from %s", _ui_dist)
 else:
     logger.warning("UI dist not found at %s — dashboard will return 404", _ui_dist)

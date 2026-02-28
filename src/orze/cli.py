@@ -671,7 +671,6 @@ epochs: 10
     # --check: validate config and environment, then exit
     if args.check:
         from orze.core.config import _validate_config, find_dotenv
-        from orze.hardware.gpu import detect_all_gpus
 
         print(f"\n\033[1mOrze v{__version__} — Config Check\033[0m")
         print("=" * 50)
