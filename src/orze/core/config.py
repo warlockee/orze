@@ -46,6 +46,8 @@ def _load_dotenv(config_path: Optional[str] = None) -> int:
             continue
         if "=" not in line:
             continue
+        if line.startswith("export "):
+            line = line[7:]
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip("'\"")
