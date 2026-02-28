@@ -84,6 +84,8 @@ class Orze:
         self._hb_completed_count: int = 0  # for heartbeat rate calc
         self._last_milestone: int = 0      # last milestone boundary hit
         self._last_disk_warning: float = 0.0
+        self._last_upgrade_check: float = 0.0
+        self._pending_upgrade: Optional[str] = None
 
         # Initialize Idea Lake for archival
         try:
@@ -947,6 +949,107 @@ class Orze:
             return True
         return False
 
+    def _check_auto_upgrade(self):
+        """Check PyPI for a newer orze version. Rate-limited. Never raises."""
+        au_cfg = self.cfg.get("auto_upgrade")
+        if not au_cfg:
+            return
+        if isinstance(au_cfg, bool):
+            interval = 3600
+        else:
+            interval = int(au_cfg.get("interval", 3600))
+
+        if time.time() - self._last_upgrade_check < interval:
+            return
+        self._last_upgrade_check = time.time()
+
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "https://pypi.org/pypi/orze/json",
+                headers={"User-Agent": f"orze/{__version__}"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            latest = data["info"]["version"]
+        except Exception as exc:
+            logger.debug("PyPI version check failed: %s", exc)
+            return
+
+        def _ver(s):
+            try:
+                return tuple(int(x) for x in s.split(".")[:3])
+            except (ValueError, AttributeError):
+                return (0,)
+
+        if _ver(latest) > _ver(__version__):
+            if self._pending_upgrade != latest:
+                logger.info("Auto-upgrade: v%s available (current v%s)",
+                            latest, __version__)
+            self._pending_upgrade = latest
+        else:
+            self._pending_upgrade = None
+
+    def _do_auto_upgrade(self):
+        """Install pending upgrade and restart via os.execv.
+        Only call when fully idle (no active training/evals/roles)."""
+        target = self._pending_upgrade
+        logger.info("Auto-upgrade: installing orze==%s (current v%s)...",
+                     target, __version__)
+
+        try:
+            notify("upgrading", {
+                "host": socket.gethostname(),
+                "from_version": __version__,
+                "to_version": target,
+                "message": f"Upgrading v{__version__} -> v{target}, restarting",
+            }, self.cfg)
+        except Exception:
+            pass
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", f"orze=={target}",
+             "--quiet"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            logger.error("Auto-upgrade pip install failed (rc=%d): %s",
+                         result.returncode, result.stderr[:500])
+            self._pending_upgrade = None
+            return
+
+        logger.info("Auto-upgrade: pip install succeeded, saving state...")
+
+        try:
+            save_state(self.results_dir, {
+                "iteration": self.iteration,
+                "failure_counts": self.failure_counts,
+                "fix_counts": self.fix_counts,
+                "roles": self.role_states,
+                "best_idea_id": self._best_idea_id,
+            })
+        except Exception as e:
+            logger.warning("Auto-upgrade: state save failed: %s", e)
+
+        if self.lake:
+            try:
+                self.lake.close()
+            except Exception:
+                pass
+
+        self._remove_pid_file()
+
+        config_path = str(self.cfg.get("_config_path", "orze.yaml"))
+        logger.info("Auto-upgrade: restarting with v%s (config: %s)",
+                     target, config_path)
+        try:
+            os.execv(sys.executable,
+                     [sys.executable, "-m", "orze.cli", "-c", config_path])
+        except OSError as exc:
+            logger.error("Auto-upgrade: os.execv failed: %s — restart manually",
+                         exc)
+            sys.exit(1)
+
     def run(self):
         cfg = self.cfg
         self._write_pid_file()
@@ -1016,6 +1119,9 @@ class Orze:
             except Exception:
                 pass
 
+            # 0b. Auto-upgrade check (rate-limited)
+            self._check_auto_upgrade()
+
             # 0. Check for filesystem stop/disable signals (multi-machine)
             if self._check_stop_all() or self._check_disabled():
                 break
@@ -1067,6 +1173,14 @@ class Orze:
 
             if not self.running:
                 break
+
+            # 3c. Auto-upgrade: trigger if pending and fully idle
+            if (self._pending_upgrade
+                    and not self.active
+                    and not self.active_evals
+                    and not self.active_roles):
+                self._do_auto_upgrade()
+                self._pending_upgrade = None
 
             # 4. Run agent roles (research, documenter, etc.)
             try:

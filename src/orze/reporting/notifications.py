@@ -79,6 +79,10 @@ def _format_slack(event: str, data: dict) -> dict:
     if event == "role_summary":
         return {"text": f":test_tube: *{data.get('role', '?')}* finished | "
                         f"{data.get('new_ideas', 0)} new ideas | {data.get('queued', '?')} queued"}
+    if event == "upgrading":
+        host = data.get("host", socket.gethostname())
+        return {"text": f":arrows_counterclockwise: *Orze upgrading* on `{host}`: "
+                        f"v{data.get('from_version', '?')} -> v{data.get('to_version', '?')}"}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         text = (f":trophy: *NEW BEST* `{data['idea_id']}`: {data['title']}\n"
@@ -132,6 +136,10 @@ def _format_discord(event: str, data: dict) -> dict:
     if event == "role_summary":
         return {"content": f"\U0001f9ea **{data.get('role', '?')}** finished | "
                            f"{data.get('new_ideas', 0)} new ideas | {data.get('queued', '?')} queued"}
+    if event == "upgrading":
+        host = data.get("host", socket.gethostname())
+        return {"content": f"\U0001f504 **Orze upgrading** on `{host}`: "
+                           f"v{data.get('from_version', '?')} -> v{data.get('to_version', '?')}"}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         content = (f"**NEW BEST** `{data['idea_id']}`: {data['title']}\n"
@@ -219,6 +227,14 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
                 f"{data.get('queued', '?')} queued")
         return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 
+    if event == "upgrading":
+        host = esc(data.get("host", socket.gethostname()))
+        frm = esc(str(data.get("from_version", "?")))
+        to = esc(str(data.get("to_version", "?")))
+        text = (f"\U0001f504 <b>Orze upgrading</b> on <code>{host}</code>\n"
+                f"v{frm} -> v{to}")
+        return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+
     idea_id = esc(str(data.get("idea_id", "")))
     title = esc(str(data.get("title", "")))
 
@@ -264,7 +280,7 @@ def notify(event: str, data: dict, cfg: dict):
         global_on = ncfg.get("on") or ["completed", "failed", "new_best"]
         # Lifecycle/system events always delivered (not filtered)
         lifecycle = {"started", "shutdown", "heartbeat", "milestone",
-                     "disk_warning", "stall", "role_summary"}
+                     "disk_warning", "stall", "role_summary", "upgrading"}
 
         for ch in (ncfg.get("channels") or []):
             ch_on = ch.get("on") or global_on

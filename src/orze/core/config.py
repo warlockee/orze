@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
     "min_disk_gb": 0,           # 0 = disabled
     "orphan_timeout_hours": 0,  # 0 = disabled
     "roles": {},
+    "auto_upgrade": False,
     "notifications": {
         "enabled": False,
         "on": ["completed", "failed", "new_best"],
