@@ -168,8 +168,8 @@ def check_stuck_processes(cfg):
 
         # Check training
         if train_script in cmd and elapsed_min > cfg["stale_training_min"]:
-            idea_match = re.search(r"idea-\S+", cmd)
-            idea_id = idea_match.group() if idea_match else "unknown"
+            idea_match = re.search(r"--idea-id\s+(\S+)", cmd)
+            idea_id = idea_match.group(1) if idea_match else "unknown"
             # CPU is near-zero for GPU-bound training — use log staleness instead.
             results_dir = Path(orze_cfg.get("results_dir", "results"))
             log_path = results_dir / idea_id / "train_output.log"
@@ -188,8 +188,8 @@ def check_stuck_processes(cfg):
 
         # Check evals
         if eval_script and eval_script in cmd and elapsed_min > cfg["stale_eval_min"]:
-            idea_match = re.search(r"idea-\S+", cmd)
-            idea_id = idea_match.group() if idea_match else "unknown"
+            idea_match = re.search(r"--idea-id\s+(\S+)", cmd)
+            idea_id = idea_match.group(1) if idea_match else "unknown"
             issues.append({
                 "type": "stuck_eval",
                 "severity": "high",
