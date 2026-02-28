@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import sqlite3
+import time
 from typing import Any, Dict, List, Optional, Set
 
 import yaml
@@ -74,6 +75,21 @@ _KNOWN_META_COLS = {
 }
 
 
+def _retry_on_busy(func, max_retries=5, base_delay=0.5):
+    """Retry a callable on SQLITE_BUSY / OperationalError with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.warning("SQLite busy (attempt %d/%d), retrying in %.1fs",
+                               attempt + 1, max_retries, delay)
+                time.sleep(delay)
+            else:
+                raise
+
+
 class IdeaLake:
     """SQLite-backed archive for ideas."""
 
@@ -81,8 +97,10 @@ class IdeaLake:
         self.db_path = str(db_path)
         self.conn = sqlite3.connect(self.db_path, timeout=30)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=10000")
+        # DELETE journal mode is safe on network filesystems (Lustre/NFS).
+        # WAL mode requires shared-memory (mmap) which Lustre does not support.
+        self.conn.execute("PRAGMA journal_mode=DELETE")
+        self.conn.execute("PRAGMA busy_timeout=15000")
         self._ensure_schema()
 
     def _ensure_schema(self):
@@ -187,37 +205,39 @@ class IdeaLake:
             except yaml.YAMLError:
                 pass
 
-        self.conn.execute(
-            """INSERT OR REPLACE INTO ideas (
-                idea_id, id_num, title, priority, category, parent, hypothesis,
-                config, raw_markdown,
-                config_summary, eval_metrics,
-                status, training_time, archived_at, created_at
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?,
-                ?, ?,
-                ?, ?,
-                ?, ?, ?, ?
-            )""",
-            (
-                idea_id,
-                id_num,
-                title,
-                priority,
-                category,
-                parent,
-                hypothesis,
-                config_yaml,
-                raw_markdown,
-                json.dumps(config_summary) if config_summary else None,
-                json.dumps(eval_metrics) if eval_metrics else None,
-                status,
-                training_time,
-                datetime.datetime.now().isoformat(),
-                created_at or datetime.datetime.now().isoformat(),
-            ),
-        )
-        self.conn.commit()
+        def _do_insert():
+            self.conn.execute(
+                """INSERT OR REPLACE INTO ideas (
+                    idea_id, id_num, title, priority, category, parent, hypothesis,
+                    config, raw_markdown,
+                    config_summary, eval_metrics,
+                    status, training_time, archived_at, created_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?
+                )""",
+                (
+                    idea_id,
+                    id_num,
+                    title,
+                    priority,
+                    category,
+                    parent,
+                    hypothesis,
+                    config_yaml,
+                    raw_markdown,
+                    json.dumps(config_summary) if config_summary else None,
+                    json.dumps(eval_metrics) if eval_metrics else None,
+                    status,
+                    training_time,
+                    datetime.datetime.now().isoformat(),
+                    created_at or datetime.datetime.now().isoformat(),
+                ),
+            )
+            self.conn.commit()
+        _retry_on_busy(_do_insert)
 
     def get(self, idea_id: str) -> Optional[dict]:
         """Get a single idea by ID."""
@@ -361,20 +381,23 @@ class IdeaLake:
 
     def get_next_id(self) -> int:
         """Atomically get and increment the next idea ID number.
-        Uses BEGIN IMMEDIATE to prevent concurrent readers from getting the same ID."""
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
-            cur = self.conn.execute("SELECT next_id FROM id_sequence LIMIT 1")
-            row = cur.fetchone()
-            next_id = row[0] if row else 1
-            self.conn.execute(
-                "UPDATE id_sequence SET next_id = ?", (next_id + 1,)
-            )
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
-        return next_id
+        Uses BEGIN IMMEDIATE to prevent concurrent readers from getting the same ID.
+        Retries on SQLITE_BUSY for network filesystem safety."""
+        def _do_get_next():
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = self.conn.execute("SELECT next_id FROM id_sequence LIMIT 1")
+                row = cur.fetchone()
+                next_id = row[0] if row else 1
+                self.conn.execute(
+                    "UPDATE id_sequence SET next_id = ?", (next_id + 1,)
+                )
+                self.conn.commit()
+                return next_id
+            except Exception:
+                self.conn.rollback()
+                raise
+        return _retry_on_busy(_do_get_next)
 
     def set_next_id(self, n: int):
         """Set the next ID sequence value."""
@@ -438,7 +461,7 @@ class IdeaLake:
                     (eval_metrics or {}).get("created_at"),
                 ),
             )
-        self.conn.commit()
+        _retry_on_busy(self.conn.commit)
         logger.info("Bulk inserted %d ideas", len(ideas))
 
     def ensure_config_summaries(self, force: bool = False):

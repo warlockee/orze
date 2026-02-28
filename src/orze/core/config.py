@@ -9,6 +9,55 @@ logger = logging.getLogger("orze")
 
 import sys
 
+def find_dotenv(config_path: Optional[str] = None) -> Optional[Path]:
+    """Find .env file: next to config, CWD, or {mount}/.orze/.env. Returns path or None."""
+    candidates = []
+    if config_path:
+        candidates.append(Path(config_path).resolve().parent / ".env")
+    candidates.append(Path.cwd() / ".env")
+    # Walk up looking for .orze/.env (shared storage root)
+    p = Path(config_path).resolve().parent if config_path else Path.cwd()
+    for _ in range(10):
+        orze_env = p / ".orze" / ".env"
+        if orze_env.is_file():
+            candidates.append(orze_env)
+            break
+        parent = p.parent
+        if parent == p:
+            break
+        p = parent
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def _load_dotenv(config_path: Optional[str] = None) -> int:
+    """Load .env file. Only sets vars NOT already in os.environ. Returns count loaded."""
+    env_file = find_dotenv(config_path)
+
+    if not env_file:
+        return 0
+
+    loaded = 0
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded += 1
+
+    if loaded:
+        logger.info("Loaded %d env var(s) from %s", loaded, env_file)
+    return loaded
+
+
 DEFAULT_CONFIG = {
     "train_script": "train.py",
     "ideas_file": "ideas.md",
@@ -58,6 +107,7 @@ DEFAULT_CONFIG = {
 }
 def load_project_config(path: Optional[str] = None) -> dict:
     """Load orze.yaml and merge with defaults. Returns full config dict."""
+    _load_dotenv(path)
     cfg = copy.deepcopy(DEFAULT_CONFIG)
 
     if not path and Path("orze.yaml").exists():
@@ -121,9 +171,12 @@ def load_project_config(path: Optional[str] = None) -> dict:
     return cfg
 
 
-def _validate_config(cfg: dict) -> list:
-    """Validate orze config on startup. Returns list of error strings."""
+def _validate_config(cfg: dict) -> tuple:
+    """Validate orze config on startup. Returns (errors, warnings) tuple."""
     errors = []
+    warnings = []
+
+    # --- Errors: things that will break ---
 
     # Validate roles
     roles = cfg.get("roles")
@@ -156,7 +209,59 @@ def _validate_config(cfg: dict) -> list:
     if cfg.get("eval_script") and not cfg.get("eval_output"):
         errors.append("eval_script is set but eval_output is missing")
 
-    return errors
+    # train_script must exist
+    ts = cfg.get("train_script")
+    if ts and not Path(ts).exists():
+        errors.append(f"train_script not found: {ts}")
+
+    # --- Warnings: things that might be unintentional ---
+
+    bc = cfg.get("base_config")
+    if bc and not Path(bc).exists():
+        warnings.append(f"base_config not found: {bc}")
+
+    es = cfg.get("eval_script")
+    if es and not Path(es).exists():
+        warnings.append(f"eval_script not found: {es}")
+
+    if not roles:
+        warnings.append("No roles configured — idea generation disabled")
+
+    # Check for API keys if research roles exist
+    has_research = roles and any(
+        isinstance(rc, dict) and rc.get("mode") == "research"
+        for rc in roles.values()
+    )
+    if has_research:
+        has_key = any(os.environ.get(k) for k in
+                      ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"))
+        if not has_key:
+            warnings.append("Research role configured but no API keys found in environment")
+
+    ncfg = cfg.get("notifications", {})
+    if not ncfg.get("enabled"):
+        warnings.append("Notifications disabled")
+    else:
+        channels = ncfg.get("channels", [])
+        if not channels:
+            warnings.append("Notifications enabled but no channels configured")
+        for ch in channels:
+            if not isinstance(ch, dict):
+                continue
+            ch_type = ch.get("type", "?")
+            if ch_type == "telegram":
+                if not ch.get("bot_token"):
+                    warnings.append(f"Notification channel '{ch_type}': missing bot_token")
+                if not ch.get("chat_id"):
+                    warnings.append(f"Notification channel '{ch_type}': missing chat_id")
+            elif ch_type in ("slack", "discord"):
+                if not ch.get("webhook_url"):
+                    warnings.append(f"Notification channel '{ch_type}': missing webhook_url")
+            elif ch_type == "webhook":
+                if not ch.get("url"):
+                    warnings.append(f"Notification channel '{ch_type}': missing url")
+
+    return errors, warnings
 
 def _sanitize_config(config: dict) -> dict:
     """Sanitize config by replacing invalid numeric values with defaults.

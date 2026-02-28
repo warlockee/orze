@@ -1,6 +1,11 @@
+import errno
 import json
 import logging
+import os
 import shutil
+import socket
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +13,9 @@ from orze.engine.process import TrainingProcess
 from orze.core.fs import tail_file
 
 logger = logging.getLogger("orze")
+
+# Errno codes for filesystem health checks
+_FS_RETRIABLE_ERRNOS = {errno.EROFS, errno.ENOSPC, errno.EIO, errno.ESTALE}
 
 
 def check_stalled(tp: TrainingProcess, stall_minutes: int) -> bool:
@@ -104,3 +112,123 @@ def _adaptive_stall_minutes(results_dir: Path, configured: int) -> int:
         logger.debug("Adaptive stall: median=%.1fm -> effective=%dm (configured=%dm)",
                      median_min, effective, configured)
     return effective
+
+
+def fs_check_writable(path: Path) -> bool:
+    """Verify the filesystem at *path* is writable by writing a probe file.
+    Returns True if writable, False on EROFS/ENOSPC/EIO/ESTALE."""
+    probe = path / f".orze_probe_{socket.gethostname()}_{os.getpid()}.tmp"
+    try:
+        fd = os.open(str(probe), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, b"ok")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        # Read it back to verify
+        content = probe.read_bytes()
+        probe.unlink(missing_ok=True)
+        return content == b"ok"
+    except OSError as e:
+        if e.errno in _FS_RETRIABLE_ERRNOS:
+            logger.error("Filesystem health check FAILED at %s: %s (errno %d)",
+                         path, os.strerror(e.errno), e.errno)
+        else:
+            logger.warning("Filesystem probe error at %s: %s", path, e)
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def fs_startup_check(path: Path) -> bool:
+    """Full startup filesystem validation: write, read-back, delete.
+    Raises SystemExit if the shared filesystem is not usable."""
+    if not path.exists():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error("Cannot create results directory %s: %s", path, e)
+            return False
+
+    probe = path / f".orze_startup_probe_{uuid.uuid4().hex[:8]}.tmp"
+    token = uuid.uuid4().hex
+    try:
+        probe.write_text(token, encoding="utf-8")
+        readback = probe.read_text(encoding="utf-8")
+        probe.unlink()
+        if readback != token:
+            logger.error("Filesystem integrity check FAILED: wrote %r, read %r",
+                         token, readback)
+            return False
+        return True
+    except OSError as e:
+        logger.error("Filesystem startup check FAILED at %s: %s", path, e)
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def cleanup_stale_locks(results_dir: Path, hostname: str):
+    """Remove stale lock directories that belong to our hostname.
+    Called at startup to recover from unclean shutdowns."""
+    cleaned = 0
+    now = time.time()
+    try:
+        for entry in results_dir.iterdir():
+            if not entry.is_dir() or not entry.name.startswith("_"):
+                continue
+            if not entry.name.endswith("_lock"):
+                continue
+            lock_meta = entry / "lock.json"
+            if not lock_meta.exists():
+                continue
+            try:
+                meta = json.loads(lock_meta.read_text(encoding="utf-8"))
+                if meta.get("host") == hostname:
+                    age = now - meta.get("time", 0)
+                    logger.info("Cleaning stale lock from our host: %s (age %.0fs)",
+                                entry.name, age)
+                    shutil.rmtree(entry, ignore_errors=True)
+                    cleaned += 1
+            except (json.JSONDecodeError, OSError):
+                continue
+    except OSError:
+        pass
+    if cleaned:
+        logger.info("Cleaned %d stale lock(s) from %s", cleaned, hostname)
+    return cleaned
+
+
+class HealthMonitor:
+    """Lightweight per-iteration filesystem health monitor."""
+
+    def __init__(self, results_dir: Path, retry_delay: float = 30.0):
+        self.results_dir = results_dir
+        self.retry_delay = retry_delay
+        self._last_fail_time: float = 0.0
+        self._consecutive_fails: int = 0
+
+    def check_before_write(self) -> bool:
+        """Check filesystem health before coordination writes.
+        Returns True if OK to proceed, False if should pause."""
+        ok = fs_check_writable(self.results_dir)
+        if ok:
+            if self._consecutive_fails > 0:
+                logger.info("Filesystem recovered after %d failed check(s)",
+                            self._consecutive_fails)
+            self._consecutive_fails = 0
+            return True
+
+        self._consecutive_fails += 1
+        self._last_fail_time = time.time()
+        logger.error("Filesystem unhealthy (fail #%d). Pausing %.0fs before retry.",
+                     self._consecutive_fails, self.retry_delay)
+        return False
+
+    @property
+    def healthy(self) -> bool:
+        return self._consecutive_fails == 0

@@ -4,7 +4,8 @@ You are setting up **orze** — a system that automates the full research loop: 
 
 Read `ORZE-RULES.md` for the complete technical specification.
 
-> **Shortcut:** For a new project, run `orze --init` to scaffold `train.py`, `orze.yaml`, and `ideas.md` automatically, then jump to step 8.
+> **Shortcut:** Run `orze --init /path/to/shared/storage/project` to scaffold everything, then jump to step 8.
+> If you omit the path, orze auto-detects shared storage (FSX, NFS, EFS) when root disk is small.
 
 ## What to do
 
@@ -17,6 +18,7 @@ Explore the codebase silently. Find:
 - What training scripts exist
 - What Python environment (venv, conda, system)
 - How many GPUs: run `nvidia-smi --query-gpu=index --format=csv,noheader`
+- Where shared storage is mounted (check `df -h` — look for FSX, NFS, EFS mounts with >100GB)
 
 ### 2. Determine the research goal
 

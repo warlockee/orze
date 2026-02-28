@@ -6,14 +6,23 @@ import time
 import datetime
 import platform
 import shutil
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
+from orze import __version__
 from orze.core.fs import atomic_write
 from orze.hardware.gpu import _query_gpu_details
 
 TrainingProcess = Any  # type alias to avoid circular import
 
 logger = logging.getLogger("orze")
+
+
+def _parse_version(v: str) -> Tuple[int, ...]:
+    """Parse a semver string into a tuple of ints. Returns (0,) on failure."""
+    try:
+        return tuple(int(x) for x in v.split(".")[:3])
+    except (ValueError, AttributeError):
+        return (0,)
 
 
 def write_host_heartbeat(results_dir: Path, hostname: str,
@@ -26,6 +35,7 @@ def write_host_heartbeat(results_dir: Path, hostname: str,
         "pid": pid,
         "timestamp": datetime.datetime.now().isoformat(),
         "epoch": now,
+        "orze_version": __version__,
         "active": [
             {
                 "idea_id": tp.idea_id,
@@ -43,43 +53,73 @@ def write_host_heartbeat(results_dir: Path, hostname: str,
 
 
 def _read_all_heartbeats(results_dir: Path,
-                         stale_seconds: float = 300) -> list:
+                         stale_seconds: float = 900) -> list:
     """Read heartbeat files, keeping only the freshest per host.
-    Removes stale and superseded heartbeat files."""
+    Removes superseded heartbeat files (older duplicates for the same host).
+    Only removes stale files after 2x stale_seconds to avoid premature cleanup
+    during long iterations on Lustre."""
     now = time.time()
     # Collect all valid heartbeats, keyed by host
     by_host: dict = {}  # host -> (epoch, hb_dict, hb_path)
+    superseded_paths = []
     stale_paths = []
     for hb_path in results_dir.glob("_host_*.json"):
         try:
             hb = json.loads(hb_path.read_text(encoding="utf-8"))
             age = now - hb.get("epoch", 0)
-            if age > stale_seconds:
-                stale_paths.append(hb_path)
-                continue
             host = hb.get("host", "unknown")
             epoch = hb.get("epoch", 0)
+            if age > stale_seconds * 2:
+                # Truly dead — safe to remove
+                stale_paths.append(hb_path)
+                continue
             prev = by_host.get(host)
             if prev is None or epoch > prev[0]:
                 if prev:
-                    stale_paths.append(prev[2])
+                    superseded_paths.append(prev[2])
                 by_host[host] = (epoch, hb, hb_path)
             else:
-                stale_paths.append(hb_path)
+                superseded_paths.append(hb_path)
         except Exception:
             try:
-                if now - hb_path.stat().st_mtime > stale_seconds:
+                if now - hb_path.stat().st_mtime > stale_seconds * 2:
                     stale_paths.append(hb_path)
             except OSError:
                 pass
             continue
-    # Clean up stale/superseded files
-    for p in stale_paths:
+    # Clean up superseded (same-host duplicates) and truly stale files
+    for p in superseded_paths + stale_paths:
         try:
             p.unlink()
         except OSError:
             pass
     return [v[1] for v in by_host.values()]
+
+
+def check_heartbeat_versions(heartbeats: list) -> List[str]:
+    """Check version compatibility across cluster heartbeats.
+    Returns list of incompatible hostnames (major version mismatch).
+    Logs warnings for any version mismatches."""
+    my_ver = _parse_version(__version__)
+    incompatible = []
+    for hb in heartbeats:
+        peer_ver_str = hb.get("orze_version")
+        if not peer_ver_str:
+            continue  # old node without version — skip silently
+        peer_host = hb.get("host", "unknown")
+        peer_ver = _parse_version(peer_ver_str)
+        if peer_ver == my_ver:
+            continue
+        if peer_ver[0] != my_ver[0]:
+            logger.warning("INCOMPATIBLE: %s runs orze v%s (major %d) vs our v%s (major %d). "
+                           "Refusing coordination with this node.",
+                           peer_host, peer_ver_str, peer_ver[0],
+                           __version__, my_ver[0])
+            incompatible.append(peer_host)
+        else:
+            logger.warning("Version mismatch: %s runs orze v%s, we run v%s",
+                           peer_host, peer_ver_str, __version__)
+    return incompatible
 
 
 def write_status_json(results_dir: Path, iteration: int,

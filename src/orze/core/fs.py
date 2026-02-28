@@ -4,6 +4,7 @@ import os
 import shutil
 import socket
 import time
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger("orze")
@@ -11,7 +12,8 @@ logger = logging.getLogger("orze")
 def _fs_lock(lock_dir: Path, stale_seconds: float = 600) -> bool:
     """Acquire a filesystem lock via atomic mkdir.
     Returns True if acquired, False if held by another.
-    Auto-breaks stale locks older than stale_seconds."""
+    Auto-breaks stale locks older than stale_seconds using atomic rename
+    to avoid TOCTOU races between nodes."""
     try:
         lock_dir.mkdir(parents=True, exist_ok=False)
         meta = {"host": socket.gethostname(), "pid": os.getpid(), "time": time.time()}
@@ -26,11 +28,22 @@ def _fs_lock(lock_dir: Path, stale_seconds: float = 600) -> bool:
                 if time.time() - meta.get("time", 0) > stale_seconds:
                     logger.warning("Breaking stale lock: %s (age %.0fs)",
                                    lock_dir, time.time() - meta["time"])
+                    # Atomic takeover: rename the stale lock dir to a unique name.
+                    # Only one node can succeed at this rename — the loser gets OSError.
+                    stale_name = lock_dir.with_name(
+                        f"{lock_dir.name}._stale_{uuid.uuid4().hex[:12]}"
+                    )
                     try:
-                        shutil.rmtree(lock_dir)
+                        os.rename(str(lock_dir), str(stale_name))
                     except OSError:
+                        # Another node already renamed it — they'll get the lock
                         return False
-                    # Non-recursive retry: attempt mkdir once
+                    # We won the rename race. Clean up the stale dir.
+                    try:
+                        shutil.rmtree(stale_name)
+                    except OSError:
+                        pass
+                    # Now acquire the (now-free) lock dir
                     try:
                         lock_dir.mkdir(parents=True, exist_ok=False)
                         new_meta = {"host": socket.gethostname(), "pid": os.getpid(), "time": time.time()}
@@ -43,12 +56,24 @@ def _fs_lock(lock_dir: Path, stale_seconds: float = 600) -> bool:
         return False
 
 def atomic_write(path: Path, content: str):
-    """Write content atomically via tmp+replace (safe across machines)."""
+    """Write content atomically via tmp+rename with fsync for Lustre safety."""
     path.parent.mkdir(parents=True, exist_ok=True)
     safe_host = "".join(c if c.isalnum() else "_" for c in socket.gethostname())
     tmp = path.with_name(f"{path.name}.{safe_host}.{os.getpid()}.tmp")
-    tmp.write_text(content, encoding="utf-8")
+    # Write with explicit fsync before close so other Lustre clients see full content
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     tmp.replace(path)
+    # fsync parent directory so the rename is durable and visible on other nodes
+    dir_fd = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 def tail_file(path: Path, n_bytes: int = 4096) -> str:
     """Read last n_bytes of a file."""
     try:

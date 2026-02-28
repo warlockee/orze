@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -31,7 +32,10 @@ from orze.engine.launcher import (
 from orze.engine.evaluator import (
     launch_eval, check_active_evals, run_eval, run_post_scripts,
 )
-from orze.engine.health import check_disk_space
+from orze.engine.health import (
+    check_disk_space, fs_startup_check, fs_check_writable,
+    cleanup_stale_locks, HealthMonitor,
+)
 from orze.engine.roles import check_active_roles
 from orze.engine.failure import (
     _record_failure, get_skipped_ideas, _try_executor_fix, _reset_idea_for_retry,
@@ -41,7 +45,7 @@ from orze.core.ideas import parse_ideas, expand_sweeps
 from orze.core.config import _validate_config
 from orze.reporting.state import (
     load_state, save_state, write_host_heartbeat, _read_all_heartbeats,
-    write_status_json,
+    write_status_json, check_heartbeat_versions,
 )
 from orze.reporting.leaderboard import (
     update_report, _resolve_primary_metric, write_admin_cache,
@@ -63,13 +67,18 @@ class Orze:
         self.active_roles: Dict[str, RoleProcess] = {}
         self.pending_evals: list = []
         self.running = True
+        self._hostname = socket.gethostname()
+        self._instance_uuid = uuid.uuid4().hex[:12]
+        self._incompatible_hosts: set = set()
 
         # Validate config on startup
-        config_errors = _validate_config(cfg)
+        config_errors, config_warnings = _validate_config(cfg)
         for err in config_errors:
             logger.error("Config error: %s", err)
         if config_errors:
             raise SystemExit(f"Invalid config: {len(config_errors)} error(s) — see log above")
+        for warn in config_warnings:
+            logger.warning("Config: %s", warn)
 
         state = load_state(self.results_dir)
         self.iteration = state.get("iteration", 0)
@@ -92,12 +101,22 @@ class Orze:
             from orze.idea_lake import IdeaLake
             lake_path = Path(cfg.get("ideas_file", "ideas.md")).parent / "idea_lake.db"
 
-            # MOUNT INTEGRITY CHECK: Prevents split-brain leaderboard corruption
+            # MOUNT INTEGRITY CHECK: Prevents split-brain leaderboard corruption.
+            # Only warn about unmounted drive if results dir already has experiments
+            # (indicating this is NOT a first run). On first run, lake doesn't exist yet.
             if not lake_path.exists():
-                logger.error("CRITICAL: idea_lake.db not found! Shared drive might not be mounted.")
-                if (cfg.get("notifications") or {}).get("enabled"):
-                    logger.error("DISABLING NOTIFICATIONS: Local view is inconsistent with cluster.")
-                    cfg["notifications"]["enabled"] = False
+                res_dir = Path(cfg.get("results_dir", "results"))
+                has_prior_results = (res_dir.exists() and
+                    any(d.is_dir() and d.name.startswith("idea-") for d in res_dir.iterdir())
+                    if res_dir.exists() else False)
+                if has_prior_results:
+                    logger.error("idea_lake.db not found but results exist! "
+                                 "Shared drive might not be mounted.")
+                    if (cfg.get("notifications") or {}).get("enabled"):
+                        logger.error("DISABLING NOTIFICATIONS: Local view may be inconsistent.")
+                        cfg["notifications"]["enabled"] = False
+                else:
+                    logger.info("Creating idea_lake.db (first run)")
 
             self.lake = IdeaLake(str(lake_path))
             logger.info("Idea Lake initialized: %d archived ideas", self.lake.count())
@@ -144,6 +163,94 @@ class Orze:
             _kill_pg(rp.process, signal.SIGKILL)
             rp.close_log()
 
+    def _startup_checks(self):
+        """Run pre-flight checks before entering main loop."""
+        logger.info("=== Startup self-checks ===")
+        logger.info("orze v%s | host=%s | instance=%s | pid=%d",
+                     __version__, self._hostname, self._instance_uuid,
+                     os.getpid())
+
+        # 1. Verify shared filesystem is mounted and writable
+        if not fs_startup_check(self.results_dir):
+            raise SystemExit(
+                f"FATAL: Shared filesystem at {self.results_dir} is not "
+                f"writable. Check mount status.")
+        logger.info("Filesystem check OK: %s", self.results_dir)
+
+        # 2. Clean up stale locks from our own hostname
+        cleanup_stale_locks(self.results_dir, self._hostname)
+
+        # 3. Initialize per-iteration health monitor
+        self._health_monitor = HealthMonitor(self.results_dir)
+
+        logger.info("=== Startup checks passed ===")
+
+        self._print_startup_summary()
+
+    def _print_startup_summary(self):
+        """Print a human-readable table of what's configured."""
+        cfg = self.cfg
+        W = 60
+        line = "=" * W
+
+        # Detect .env
+        from pathlib import Path as _P
+        env_path = None
+        config_path = cfg.get("_config_path")
+        if config_path:
+            candidate = _P(config_path).resolve().parent / ".env"
+            if candidate.is_file():
+                env_path = str(candidate)
+        if not env_path and (_P.cwd() / ".env").is_file():
+            env_path = str(_P.cwd() / ".env")
+
+        # Evaluation
+        eval_script = cfg.get("eval_script")
+        eval_on = bool(eval_script and _P(eval_script).exists())
+
+        # Research roles
+        roles = cfg.get("roles") or {}
+        research_names = [
+            rname for rname, rcfg in roles.items()
+            if isinstance(rcfg, dict) and rcfg.get("mode") in ("research", "claude")
+        ]
+
+        # Notifications
+        ncfg = cfg.get("notifications", {})
+        notif_on = ncfg.get("enabled", False)
+        notif_channels = [
+            ch.get("type", "?") for ch in ncfg.get("channels", [])
+            if isinstance(ch, dict)
+        ] if notif_on else []
+
+        # Cleanup
+        cleanup_cfg = cfg.get("cleanup", {})
+        cleanup_on = bool(cleanup_cfg.get("script"))
+        cleanup_interval = cleanup_cfg.get("interval", 100)
+
+        lines = [
+            "",
+            line,
+            f"  orze v{__version__} — Startup Summary",
+            line,
+            f"  REQUIRED:",
+            f"    train_script : {cfg.get('train_script', '?')}",
+            f"    ideas_file   : {cfg.get('ideas_file', '?')}",
+            f"    results_dir  : {cfg.get('results_dir', '?')}",
+            "",
+            f"  OPTIONAL FEATURES:",
+            f"    evaluation   : {'ON  (' + str(eval_script) + ')' if eval_on else 'OFF'}",
+            f"    research     : {'ON  (' + ', '.join(research_names) + ')' if research_names else 'OFF'}",
+            f"    notifications: {'ON  (' + ', '.join(notif_channels) + ')' if notif_on and notif_channels else 'OFF'}",
+            f"    auto-cleanup : {'ON  (every ' + str(cleanup_interval) + ' ideas)' if cleanup_on else 'OFF'}",
+            f"    .env file    : {'loaded (' + env_path + ')' if env_path else 'not found'}",
+            line,
+            "",
+        ]
+
+        for l in lines:
+            print(l)
+
     def _shutdown(self, signum, frame):
         """Signal handler — sets flag and wakes poll sleep immediately."""
         if not self.running:
@@ -155,18 +262,26 @@ class Orze:
         self._stop_event.set()  # wake from poll sleep instantly
 
     def _graceful_shutdown(self):
-        """Terminate all child processes, save state, and clean up.
+        """Terminate roles, detach training/eval, save state, and clean up.
 
         Called from the main loop after self.running becomes False,
         NOT from the signal handler (avoids re-entrancy issues).
         """
         logger.info("Shutting down gracefully...")
 
-        # 1. Send SIGTERM to all child process groups
+        # 0. Write "shutting_down" heartbeat so other nodes know our state
+        try:
+            self._write_shutdown_heartbeat()
+        except Exception:
+            pass
+
+        # 1. Detach training processes — let them finish in background.
+        #    They are self-contained and will write metrics.json on exit.
         for gpu, tp in self.active.items():
-            logger.info("Terminating training %s on GPU %d (PID %d)...",
+            logger.info("Detaching training %s on GPU %d (PID %d) "
+                        "— will finish in background",
                         tp.idea_id, gpu, tp.process.pid)
-            _kill_pg(tp.process, signal.SIGTERM)
+            tp.close_log()
         # Let eval processes continue running (they'll write reports
         # and exit on their own).  The backlog scanner checks for
         # already-running evals before launching duplicates.
@@ -174,29 +289,15 @@ class Orze:
             logger.info("Detaching eval %s on GPU %d (PID %d) "
                         "— will finish in background",
                         ep.idea_id, gpu, ep.process.pid)
+            ep.close_log()
+        # Roles get terminated (they're orchestrator-coupled)
         for role_name, rp in self.active_roles.items():
             logger.info("Terminating role '%s' (PID %d)...",
                         role_name, rp.process.pid)
             _kill_pg(rp.process, signal.SIGTERM)
 
-        # 2. Wait for graceful exit (up to 10s), then SIGKILL stragglers
+        # 2. Wait for roles to exit (up to 10s), then SIGKILL stragglers
         deadline = time.time() + 10
-        for gpu, tp in self.active.items():
-            remaining = max(1, deadline - time.time())
-            try:
-                tp.process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                logger.warning("Force killing training %s (PID %d)",
-                               tp.idea_id, tp.process.pid)
-                _kill_pg(tp.process, signal.SIGKILL)
-                try:
-                    tp.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.error("Failed to reap training %s", tp.idea_id)
-            tp.close_log()
-        # Eval processes were detached above — just close our log handles.
-        for gpu, ep in self.active_evals.items():
-            ep.close_log()
         for role_name, rp in self.active_roles.items():
             remaining = max(1, deadline - time.time())
             try:
@@ -235,7 +336,7 @@ class Orze:
         # 5. Notify (best effort)
         try:
             notify("shutdown", {
-                "host": socket.gethostname(),
+                "host": self._hostname,
                 "message": (f"Graceful shutdown after iteration "
                             f"{self.iteration}"),
             }, self.cfg)
@@ -252,12 +353,47 @@ class Orze:
         # 7. Clean up PID file
         self._remove_pid_file()
 
-        logger.info("Shutdown complete. State saved at iteration %d.",
-                     self.iteration)
+        logger.info("Shutdown complete. State saved at iteration %d. "
+                     "%d training and %d eval process(es) detached.",
+                     self.iteration, len(self.active), len(self.active_evals))
+
+    def _write_shutdown_heartbeat(self):
+        """Write a final heartbeat marking this node as shutting_down."""
+        import json as _json
+        pid = os.getpid()
+        heartbeat = {
+            "host": self._hostname,
+            "pid": pid,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "epoch": time.time(),
+            "status": "shutting_down",
+            "active": [
+                {
+                    "idea_id": tp.idea_id,
+                    "gpu": tp.gpu,
+                    "elapsed_min": round((time.time() - tp.start_time) / 60, 1),
+                    "detached": True,
+                }
+                for tp in self.active.values()
+            ],
+            "free_gpus": [],
+            "orze_version": __version__,
+            "instance_uuid": self._instance_uuid,
+        }
+        atomic_write(self.results_dir / f"_host_{self._hostname}_{pid}.json",
+                     _json.dumps(heartbeat, indent=2))
+
+    def _check_cluster_versions(self):
+        """Check version compatibility with other nodes. Updates _incompatible_hosts."""
+        heartbeats = _read_all_heartbeats(self.results_dir)
+        self._incompatible_hosts = set(check_heartbeat_versions(heartbeats))
+        return heartbeats
 
     def _build_machine_status(self) -> list:
         """Build machine status from heartbeats for report notifications."""
         heartbeats = _read_all_heartbeats(self.results_dir)
+        # Check versions on every heartbeat read
+        self._incompatible_hosts = set(check_heartbeat_versions(heartbeats))
         machines = []
         for hb in heartbeats:
             host = hb.get("host", "unknown")
@@ -1112,6 +1248,7 @@ class Orze:
     def run(self):
         cfg = self.cfg
         self._write_pid_file()
+        self._startup_checks()
         self._kill_orphans()
         # Check persistent disable flag (never auto-deleted)
         if self._check_disabled():
@@ -1196,6 +1333,17 @@ class Orze:
             self._check_auto_upgrade()
             self._check_upgrade_sentinel()
 
+            # 0c. Version compatibility check (updates _incompatible_hosts)
+            try:
+                self._check_cluster_versions()
+            except Exception:
+                pass
+
+            # 0d. Filesystem health check — pause if FS is not writable
+            if not self._health_monitor.check_before_write():
+                self._stop_event.wait(self._health_monitor.retry_delay)
+                continue
+
             # 0. Check for filesystem stop/disable signals (multi-machine)
             if self._check_stop_all() or self._check_disabled():
                 break
@@ -1261,6 +1409,16 @@ class Orze:
 
             if not self.running:
                 break
+
+            # 4b. Mid-iteration heartbeat — keeps nodes alive during long iterations
+            try:
+                busy = set(self.active.keys()) | set(self.active_evals.keys())
+                free_mid = [g for g in self.gpu_ids if g not in busy]
+                write_host_heartbeat(self.results_dir,
+                                     socket.gethostname(),
+                                     self.active, free_mid)
+            except Exception:
+                pass
 
             # 5. Sync ideas from ideas.md to idea_lake.db (ingestion)
             raw_ideas = parse_ideas(cfg["ideas_file"])

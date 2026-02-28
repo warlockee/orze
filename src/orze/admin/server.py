@@ -488,10 +488,6 @@ async def action_kill(request: Request):
 
 _ui_dist = Path(__file__).parent / "ui" / "dist"
 
-# Mount SPA at module level — this is the ONLY reliable place because
-# uvicorn re-imports the module in its worker process and run_admin()
-# is NOT called in the worker.  Must be after all API routes so "/"
-# doesn't shadow them.
 if _ui_dist.is_dir() and (_ui_dist / "index.html").exists():
     app.mount("/", StaticFiles(directory=str(_ui_dist), html=True), name="spa")
     logger.info("UI mounted from %s", _ui_dist)
