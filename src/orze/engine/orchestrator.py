@@ -990,6 +990,35 @@ class Orze:
         else:
             self._pending_upgrade = None
 
+    def _check_upgrade_sentinel(self):
+        """Check if another node wrote .orze_upgrade sentinel.
+        If the target version is newer, restart via os.execv (pip already done)."""
+        sentinel = self.results_dir / ".orze_upgrade"
+        if not sentinel.exists():
+            return
+        try:
+            target = sentinel.read_text(encoding="utf-8").strip()
+        except Exception:
+            return
+
+        def _ver(s):
+            try:
+                return tuple(int(x) for x in s.split(".")[:3])
+            except (ValueError, AttributeError):
+                return (0,)
+
+        if _ver(target) <= _ver(__version__):
+            # Already at or past this version, clean up sentinel
+            try:
+                sentinel.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+
+        logger.info("Auto-upgrade: sentinel found — another node upgraded to v%s, restarting...", target)
+        self._pending_upgrade = target
+        self._do_auto_upgrade()
+
     def _do_auto_upgrade(self):
         """Install pending upgrade, kill everything, and restart via os.execv."""
         target = self._pending_upgrade
@@ -1016,6 +1045,13 @@ class Orze:
                          result.returncode, result.stderr[:500])
             self._pending_upgrade = None
             return
+
+        # Signal other nodes sharing this results_dir to restart
+        try:
+            (self.results_dir / ".orze_upgrade").write_text(
+                target, encoding="utf-8")
+        except Exception:
+            pass
 
         logger.info("Auto-upgrade: killing active processes and restarting...")
 
@@ -1086,6 +1122,20 @@ class Orze:
             sentinel = self.results_dir / sentinel_name
             if sentinel.exists():
                 sentinel.unlink(missing_ok=True)
+        # Clear upgrade sentinel if we're already at the target version
+        upgrade_sentinel = self.results_dir / ".orze_upgrade"
+        if upgrade_sentinel.exists():
+            try:
+                target = upgrade_sentinel.read_text(encoding="utf-8").strip()
+                def _ver(s):
+                    try:
+                        return tuple(int(x) for x in s.split(".")[:3])
+                    except (ValueError, AttributeError):
+                        return (0,)
+                if _ver(__version__) >= _ver(target):
+                    upgrade_sentinel.unlink(missing_ok=True)
+            except Exception:
+                pass
         logger.info("Starting orze v%s on GPUs %s (PID %d)",
                      __version__, self.gpu_ids, os.getpid())
         logger.info("Ideas: %s | Results: %s | Timeout: %ds | Poll: %ds",
@@ -1142,8 +1192,9 @@ class Orze:
             except Exception:
                 pass
 
-            # 0b. Auto-upgrade check (rate-limited)
+            # 0b. Auto-upgrade check (rate-limited PyPI + sentinel from other nodes)
             self._check_auto_upgrade()
+            self._check_upgrade_sentinel()
 
             # 0. Check for filesystem stop/disable signals (multi-machine)
             if self._check_stop_all() or self._check_disabled():
