@@ -1005,6 +1005,17 @@ class Orze:
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             logger.info("--- Iteration %d [%s] ---", self.iteration, ts)
 
+            # 0a. Early heartbeat — keeps fleet UI alive even when
+            #     iterations are slow (large results_dir scans).
+            try:
+                busy = set(self.active.keys()) | set(self.active_evals.keys())
+                free_early = [g for g in self.gpu_ids if g not in busy]
+                write_host_heartbeat(self.results_dir,
+                                     socket.gethostname(),
+                                     self.active, free_early)
+            except Exception:
+                pass
+
             # 0. Check for filesystem stop/disable signals (multi-machine)
             if self._check_stop_all() or self._check_disabled():
                 break

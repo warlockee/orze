@@ -203,7 +203,7 @@ async def get_nodes():
     def _get():
         from orze.reporting.state import _read_all_heartbeats
         now = time.time()
-        raw_hb = _read_all_heartbeats(_results_dir(), stale_seconds=600)
+        raw_hb = _read_all_heartbeats(_results_dir(), stale_seconds=3600)
         heartbeats = []
         for hb in raw_hb:
             age = now - hb.get("epoch", 0)
