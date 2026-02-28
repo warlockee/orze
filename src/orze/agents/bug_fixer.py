@@ -168,15 +168,21 @@ def check_stuck_processes(cfg):
 
         # Check training
         if train_script in cmd and elapsed_min > cfg["stale_training_min"]:
-            rc2, cpu_out, _ = run_cmd(["ps", "-p", str(pid), "-o", "%cpu", "--no-headers"])
-            cpu_pct = float(cpu_out.strip()) if cpu_out.strip() else 0
-            if cpu_pct < 5.0:
-                idea_match = re.search(r"idea-\S+", cmd)
-                idea_id = idea_match.group() if idea_match else "unknown"
+            idea_match = re.search(r"idea-\S+", cmd)
+            idea_id = idea_match.group() if idea_match else "unknown"
+            # CPU is near-zero for GPU-bound training — use log staleness instead.
+            results_dir = Path(orze_cfg.get("results_dir", "results"))
+            log_path = results_dir / idea_id / "train_output.log"
+            stall_minutes = orze_cfg.get("stall_minutes", 30)
+            log_stale = True
+            if log_path.exists():
+                log_age_min = (time.time() - log_path.stat().st_mtime) / 60
+                log_stale = log_age_min > stall_minutes
+            if log_stale:
                 issues.append({
                     "type": "stuck_training",
                     "severity": "high",
-                    "message": f"Training {idea_id} stuck {elapsed_min:.0f}min (CPU={cpu_pct:.1f}%)",
+                    "message": f"Training {idea_id} stuck {elapsed_min:.0f}min (no log output for {stall_minutes}m)",
                     "pid": str(pid),
                 })
 
