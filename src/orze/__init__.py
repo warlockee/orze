@@ -1,2 +1,2 @@
-"""orze — GPU experiment orchestrator using filesystem coordination."""
+"""orze — orze.ai."""
 __version__ = "2.6.3"

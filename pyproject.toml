@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "orze"
 version = "2.6.3"
-description = "GPU experiment orchestrator using filesystem coordination"
+description = "orze.ai"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
