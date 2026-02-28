@@ -991,8 +991,7 @@ class Orze:
             self._pending_upgrade = None
 
     def _do_auto_upgrade(self):
-        """Install pending upgrade and restart via os.execv.
-        Only call when fully idle (no active training/evals/roles)."""
+        """Install pending upgrade, kill everything, and restart via os.execv."""
         target = self._pending_upgrade
         logger.info("Auto-upgrade: installing orze==%s (current v%s)...",
                      target, __version__)
@@ -1018,7 +1017,31 @@ class Orze:
             self._pending_upgrade = None
             return
 
-        logger.info("Auto-upgrade: pip install succeeded, saving state...")
+        logger.info("Auto-upgrade: killing active processes and restarting...")
+
+        # Kill all children (training will restart on new version)
+        for gpu, tp in self.active.items():
+            _kill_pg(tp.process, signal.SIGTERM)
+        for role_name, rp in self.active_roles.items():
+            _kill_pg(rp.process, signal.SIGTERM)
+        deadline = time.time() + 10
+        for gpu, tp in list(self.active.items()):
+            remaining = max(1, deadline - time.time())
+            try:
+                tp.process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                _kill_pg(tp.process, signal.SIGKILL)
+            tp.close_log()
+        for gpu, ep in list(self.active_evals.items()):
+            ep.close_log()
+        for role_name, rp in list(self.active_roles.items()):
+            remaining = max(1, deadline - time.time())
+            try:
+                rp.process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                _kill_pg(rp.process, signal.SIGKILL)
+            rp.close_log()
+            _fs_unlock(rp.lock_dir)
 
         try:
             save_state(self.results_dir, {
@@ -1174,11 +1197,8 @@ class Orze:
             if not self.running:
                 break
 
-            # 3c. Auto-upgrade: trigger if pending and fully idle
-            if (self._pending_upgrade
-                    and not self.active
-                    and not self.active_evals
-                    and not self.active_roles):
+            # 3c. Auto-upgrade: trigger immediately if pending
+            if self._pending_upgrade:
                 self._do_auto_upgrade()
                 self._pending_upgrade = None
 
