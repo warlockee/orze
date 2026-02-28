@@ -487,19 +487,32 @@ async def action_kill(request: Request):
 # ---------------------------------------------------------------------------
 
 _ui_dist = Path(__file__).parent / "ui" / "dist"
-if _ui_dist.is_dir():
-    app.mount("/", StaticFiles(directory=str(_ui_dist), html=True), name="spa")
 
 
 # ---------------------------------------------------------------------------
 #  Entrypoint
 # ---------------------------------------------------------------------------
 
+def _mount_spa():
+    """Mount the SPA frontend, verifying dist files exist."""
+    if not _ui_dist.is_dir():
+        logger.warning("UI dist directory not found: %s", _ui_dist)
+        return False
+    index = _ui_dist / "index.html"
+    if not index.exists():
+        logger.warning("UI index.html missing in %s", _ui_dist)
+        return False
+    app.mount("/", StaticFiles(directory=str(_ui_dist), html=True), name="spa")
+    logger.info("UI mounted from %s", _ui_dist)
+    return True
+
+
 def run_admin(cfg: dict, host: str = "0.0.0.0", port: int = 8787):
     """Start the admin panel server."""
     global _cfg
     _cfg = cfg
     _load_backbone_registry()
+    _mount_spa()
 
     import uvicorn
 
