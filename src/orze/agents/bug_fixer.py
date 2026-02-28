@@ -68,8 +68,15 @@ def run_cmd(cmd_args, timeout=30):
 
 
 def _pgrep_orze(config_file: str):
-    """Find orze processes by config file. Returns (returncode, stdout, stderr)."""
-    return run_cmd(["pgrep", "-f", f"orze.cli.*{config_file}"])
+    """Find orze processes by config file. Returns (returncode, stdout, stderr).
+
+    Checks both 'orze.cli' (python -m) and the installed 'orze' binary.
+    """
+    rc, out, err = run_cmd(["pgrep", "-f", f"orze.cli.*{config_file}"])
+    if rc == 0 and out.strip():
+        return rc, out, err
+    # Also check for the installed binary: /path/to/bin/orze -c orze.yaml
+    return run_cmd(["pgrep", "-f", f"bin/orze.*{config_file}"])
 
 
 # ─── Detectors (all generic — no project-specific logic) ─────────────────────
@@ -503,6 +510,11 @@ def main():
     logger.info("Project: %s", project_dir)
     logger.info("Check interval: %ds", interval)
     logger.info("=" * 60)
+
+    # Grace period: skip the first check cycle to let orze finish starting up
+    startup_grace = cfg.get("startup_grace_sec", 90)
+    logger.info("Waiting %ds startup grace period...", startup_grace)
+    time.sleep(startup_grace)
 
     cycle = 0
     while True:
