@@ -1096,6 +1096,12 @@ class Orze:
                                                                encoding="utf-8")
                             logger.info("Consumed %d ideas from %s (wiped file)",
                                         len(ingested_ids), cfg["ideas_file"])
+                            # Update pre-snapshots on active roles so the corruption
+                            # guard doesn't false-positive on the legitimate wipe.
+                            new_size = Path(cfg["ideas_file"]).stat().st_size
+                            for rp in self.active_roles.values():
+                                rp.ideas_pre_size = new_size
+                                rp.ideas_pre_count = 0
                         except Exception as e:
                             logger.warning("Failed to consume ideas.md: %s", e)
                         finally:
