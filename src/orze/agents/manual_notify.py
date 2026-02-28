@@ -55,7 +55,7 @@ def main():
     try:
         with open(results_dir / "_admin_cache.json", encoding="utf-8") as f:
             admin_data = json.load(f)
-            for hb in admin_data.get("fleet", {}).get("heartbeats", []):
+            for hb in admin_data.get("nodes", {}).get("heartbeats", []):
                 if hb.get("status") == "online":
                     active_count += len(hb.get("active", []))
     except (json.JSONDecodeError, OSError):
@@ -63,7 +63,7 @@ def main():
 
     machines = []
     try:
-        for hb in admin_data.get("fleet", {}).get("heartbeats", []):
+        for hb in admin_data.get("nodes", {}).get("heartbeats", []):
             machines.append({
                 "host": hb.get("host", "?"),
                 "gpus_busy": len(hb.get("active", [])),
@@ -72,7 +72,7 @@ def main():
             })
     except Exception:
         if active_count:
-            machines = [{"host": "fleet", "gpus_busy": active_count,
+            machines = [{"host": "unknown", "gpus_busy": active_count,
                          "gpus_total": active_count, "utilization": "?"}]
 
     # Build leaderboard
@@ -95,7 +95,7 @@ def main():
     total = len(lake.get_all_ids()) if lake else len(completed_rows)
     print(f"Sending report (total={total}, active={active_count})...")
     notify("report", {
-        "title": "Fleet Status Update",
+        "title": "Status Update",
         "completed": counts.get("COMPLETED", 0),
         "failed": counts.get("FAILED", 0),
         "active_count": active_count,

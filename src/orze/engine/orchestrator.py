@@ -94,7 +94,7 @@ class Orze:
             if not lake_path.exists():
                 logger.error("CRITICAL: idea_lake.db not found! Shared drive might not be mounted.")
                 if (cfg.get("notifications") or {}).get("enabled"):
-                    logger.error("DISABLING NOTIFICATIONS: Local view is inconsistent with fleet.")
+                    logger.error("DISABLING NOTIFICATIONS: Local view is inconsistent with cluster.")
                     cfg["notifications"]["enabled"] = False
 
             self.lake = IdeaLake(str(lake_path))
@@ -1005,7 +1005,7 @@ class Orze:
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             logger.info("--- Iteration %d [%s] ---", self.iteration, ts)
 
-            # 0a. Early heartbeat — keeps fleet UI alive even when
+            # 0a. Early heartbeat — keeps nodes UI alive even when
             #     iterations are slow (large results_dir scans).
             try:
                 busy = set(self.active.keys()) | set(self.active_evals.keys())
@@ -1504,7 +1504,7 @@ class Orze:
                 role_states=self.role_states,
             )
 
-            # 9b. Admin cache (pre-aggregated fleet/queue/alerts)
+            # 9b. Admin cache (pre-aggregated nodes/queue/alerts)
             try:
                 write_admin_cache(self.results_dir, ideas, cfg)
             except Exception as e:

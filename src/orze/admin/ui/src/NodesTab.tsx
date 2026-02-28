@@ -2,7 +2,7 @@ import { Monitor } from 'lucide-react';
 import { useNodes } from './hooks';
 import { Badge, Card, Pill, Reveal, GpuCard, LoadingState, statusColor, fmtRunName, fmtTime } from './components';
 
-export default function FleetTab() {
+export default function NodesTab() {
   const nodes = useNodes();
   if (nodes._loading) return <LoadingState label="Loading nodes…" />;
   const hosts = nodes.heartbeats;

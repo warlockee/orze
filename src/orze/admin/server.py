@@ -197,7 +197,6 @@ def _read_admin_cache() -> Optional[dict]:
 
 
 @app.get("/api/nodes")
-@app.get("/api/fleet")
 async def get_nodes():
     """Host heartbeats + GPU details — reads raw heartbeat files for freshness."""
     def _get():
@@ -513,7 +512,7 @@ def run_admin(cfg: dict, host: str = "0.0.0.0", port: int = 8787):
         ac = _read_admin_cache()
         if ac:
             _cache["admin_cache"] = (ac, time.monotonic())
-            _cache["fleet"] = (ac.get("fleet", {"heartbeats": [], "local_gpus": []}), time.monotonic())
+            _cache["nodes"] = (ac.get("nodes", {"heartbeats": [], "local_gpus": []}), time.monotonic())
             _cache["alerts"] = (ac.get("alerts", {"alerts": [], "count": 0}), time.monotonic())
         lb = _read_json(_results_dir() / "_leaderboard.json")
         if lb:

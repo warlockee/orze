@@ -364,12 +364,12 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
 def write_admin_cache(results_dir: Path, ideas: dict, cfg: dict):
     """Write pre-aggregated _admin_cache.json for instant admin panel access.
 
-    Aggregates fleet (heartbeats + GPU info), queue (with status),
+    Aggregates nodes (heartbeats + GPU info), queue (with status),
     and alerts — so the admin server never needs to scan the filesystem.
     """
     now = time.time()
 
-    # --- Fleet: enrich heartbeats ---
+    # --- Nodes: enrich heartbeats ---
     raw_hb = _read_all_heartbeats(results_dir, stale_seconds=600)
     heartbeats = []
     for hb in raw_hb:
@@ -462,7 +462,7 @@ def write_admin_cache(results_dir: Path, ideas: dict, cfg: dict):
         pass
 
     cache = {
-        "fleet": {"heartbeats": heartbeats, "local_gpus": []},
+        "nodes": {"heartbeats": heartbeats, "local_gpus": []},
         "queue": {"items": queue_items, "counts": all_statuses,
                   "total_all": sum(all_statuses.values())},
         "alerts": {"alerts": alerts, "count": len(alerts)},

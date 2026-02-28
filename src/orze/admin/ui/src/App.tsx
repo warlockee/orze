@@ -18,7 +18,7 @@ import { Segmented, GlowBlob, FloatingGrid } from './components';
 import type { Tab } from './types';
 
 const OverviewTab = lazy(() => import('./OverviewTab'));
-const FleetTab = lazy(() => import('./FleetTab'));
+const NodesTab = lazy(() => import('./NodesTab'));
 const RunsTab = lazy(() => import('./RunsTab'));
 const QueueTabView = lazy(() => import('./QueueTabView'));
 const LeaderboardTab = lazy(() => import('./LeaderboardTab'));
@@ -142,7 +142,7 @@ export default function OrzeAdminPanel() {
       <main className="mx-auto max-w-7xl px-6 py-6">
         <Suspense fallback={<TabFallback />}>
           {tab === 'overview' && <OverviewTab />}
-          {tab === 'nodes' && <FleetTab />}
+          {tab === 'nodes' && <NodesTab />}
           {tab === 'runs' && <RunsTab />}
           {tab === 'queue' && <QueueTabView />}
           {tab === 'leaderboard' && <LeaderboardTab />}
