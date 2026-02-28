@@ -973,7 +973,7 @@ class Orze:
                 data = json.loads(resp.read().decode("utf-8"))
             latest = data["info"]["version"]
         except Exception as exc:
-            logger.debug("PyPI version check failed: %s", exc)
+            logger.warning("Auto-upgrade: PyPI check failed: %s", exc)
             return
 
         def _ver(s):
