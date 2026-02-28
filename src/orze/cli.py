@@ -346,19 +346,6 @@ def _find_shared_mounts() -> list:
     return results
 
 
-def _get_mount_root(path: str) -> str:
-    """Find which shared mount a path resides on. Returns mount path or None."""
-    shared = _find_shared_mounts()
-    try:
-        dev = os.stat(path).st_dev
-        for mount_point, _ in shared:
-            if os.stat(mount_point).st_dev == dev:
-                return mount_point
-    except OSError:
-        pass
-    return None
-
-
 def _resolve_init_path(explicit_path: str) -> str:
     """Resolve the project directory for --init.
 
@@ -479,16 +466,8 @@ Examples:
         project_dir.mkdir(parents=True, exist_ok=True)
         os.chdir(project_dir)
 
-        # Find shared storage root for project-orthogonal files
-        mount_root = _get_mount_root(str(project_dir))
-        shared_dir = Path(mount_root) / ".orze" if mount_root else None
-
         print(f"\n\033[1mOrze — Initialization\033[0m")
         print(f"  Project : {project_dir}")
-        if shared_dir:
-            print(f"  Shared  : {shared_dir}")
-        else:
-            print(f"  Shared  : \033[33m(no shared mount detected, using project dir)\033[0m")
         print("---------------------")
 
         created = []
@@ -504,18 +483,9 @@ Examples:
             print(f"  \033[32mcreated\033[0m  {p}")
             return True
 
-        # =================================================================
-        # SHARED FILES — {mount}/.orze/ (or project dir if no shared mount)
-        # These are project-orthogonal: .env, ORZE-AGENT.md, ORZE-RULES.md
-        # =================================================================
-        env_dir = shared_dir or project_dir
         print()
-        if shared_dir:
-            print(f"  \033[1mShared files ({shared_dir}):\033[0m")
-        else:
-            print(f"  \033[1mShared files (project dir):\033[0m")
 
-        # .env template
+        # .env template (project-local — each project has its own API keys)
         env_content = """\
 # Orze auto-loads this file on startup. No need to export.
 # Uncomment and fill in the key for your preferred LLM backend:
@@ -528,21 +498,14 @@ Examples:
 # TELEGRAM_BOT_TOKEN=123456:ABC...
 # TELEGRAM_CHAT_ID=-100...
 """
-        _create(env_dir / ".env", env_content)
+        _create(".env", env_content)
 
-        # ORZE-AGENT.md and ORZE-RULES.md
+        # ORZE-AGENT.md and ORZE-RULES.md (project-local copies)
         pkg_dir = Path(__file__).resolve().parent
         for src_name, dst_name in {"AGENT.md": "ORZE-AGENT.md", "RULES.md": "ORZE-RULES.md"}.items():
             src = pkg_dir / src_name
             if src.exists():
-                _create(env_dir / dst_name, src.read_text(encoding="utf-8"))
-
-        # =================================================================
-        # PROJECT FILES — project_dir/
-        # These are project-specific: orze.yaml, train.py, ideas.md, etc.
-        # =================================================================
-        print()
-        print(f"  \033[1mProject files ({project_dir}):\033[0m")
+                _create(dst_name, src.read_text(encoding="utf-8"))
 
         # 1. Train script stub
         train_script = "train.py"
@@ -651,21 +614,15 @@ epochs: 10
         if _detected:
             print(f"  API keys: \033[32m{', '.join(_detected)}\033[0m (auto-discovered)")
         else:
-            env_loc = env_dir / ".env"
-            print(f"  API keys: \033[33mnone found\033[0m — add to {env_loc}")
+            print(f"  API keys: \033[33mnone found\033[0m — add to {project_dir}/.env")
 
         cfg_path = project_dir / "orze.yaml"
-        env_path = env_dir / ".env"
         print()
         print("\033[1mNext steps:\033[0m")
         print(f"  1. Edit \033[36m{project_dir}/train.py\033[0m with your training logic")
-        print(f"  2. Add API key to \033[36m{env_path}\033[0m (optional, for auto-research)")
+        print(f"  2. Add API key to \033[36m{project_dir}/.env\033[0m (optional, for auto-research)")
         print(f"  3. Run: \033[36morze --check -c {cfg_path}\033[0m to validate")
         print(f"  4. Run: \033[36morze -c {cfg_path}\033[0m to start")
-        if shared_dir:
-            print()
-            print(f"  \033[2mLayout: shared files in {shared_dir}/")
-            print(f"         project files in {project_dir}/\033[0m")
         return
 
     # --check: validate config and environment, then exit

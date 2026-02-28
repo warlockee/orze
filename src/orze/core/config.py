@@ -10,22 +10,11 @@ logger = logging.getLogger("orze")
 import sys
 
 def find_dotenv(config_path: Optional[str] = None) -> Optional[Path]:
-    """Find .env file: next to config, CWD, or {mount}/.orze/.env. Returns path or None."""
+    """Find .env file: next to config or CWD. Returns path or None."""
     candidates = []
     if config_path:
         candidates.append(Path(config_path).resolve().parent / ".env")
     candidates.append(Path.cwd() / ".env")
-    # Walk up looking for .orze/.env (shared storage root)
-    p = Path(config_path).resolve().parent if config_path else Path.cwd()
-    for _ in range(10):
-        orze_env = p / ".orze" / ".env"
-        if orze_env.is_file():
-            candidates.append(orze_env)
-            break
-        parent = p.parent
-        if parent == p:
-            break
-        p = parent
     for c in candidates:
         if c.is_file():
             return c
