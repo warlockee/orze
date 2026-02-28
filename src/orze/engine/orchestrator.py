@@ -1572,8 +1572,21 @@ class Orze:
                 logger.info("Done.")
                 break
 
-            # Interruptible sleep — wakes instantly on shutdown signal
-            self._stop_event.wait(cfg["poll"])
+            # Interruptible sleep — write heartbeat every 60s while waiting
+            poll_remaining = cfg["poll"]
+            while poll_remaining > 0 and not self._stop_event.is_set():
+                tick = min(poll_remaining, 60)
+                self._stop_event.wait(tick)
+                poll_remaining -= tick
+                if not self._stop_event.is_set():
+                    try:
+                        busy = set(self.active.keys()) | set(self.active_evals.keys())
+                        free = [g for g in self.gpu_ids if g not in busy]
+                        write_host_heartbeat(self.results_dir,
+                                             socket.gethostname(),
+                                             self.active, free)
+                    except Exception:
+                        pass
             if self._stop_event.is_set():
                 break
 

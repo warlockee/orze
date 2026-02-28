@@ -44,31 +44,42 @@ def write_host_heartbeat(results_dir: Path, hostname: str,
 
 def _read_all_heartbeats(results_dir: Path,
                          stale_seconds: float = 300) -> list:
-    """Read all host heartbeat files, filtering out stale ones (>5min).
-    Removes stale heartbeat files to prevent clutter."""
+    """Read heartbeat files, keeping only the freshest per host.
+    Removes stale and superseded heartbeat files."""
     now = time.time()
-    heartbeats = []
+    # Collect all valid heartbeats, keyed by host
+    by_host: dict = {}  # host -> (epoch, hb_dict, hb_path)
+    stale_paths = []
     for hb_path in results_dir.glob("_host_*.json"):
         try:
             hb = json.loads(hb_path.read_text(encoding="utf-8"))
             age = now - hb.get("epoch", 0)
-            if age <= stale_seconds:
-                heartbeats.append(hb)
+            if age > stale_seconds:
+                stale_paths.append(hb_path)
+                continue
+            host = hb.get("host", "unknown")
+            epoch = hb.get("epoch", 0)
+            prev = by_host.get(host)
+            if prev is None or epoch > prev[0]:
+                if prev:
+                    stale_paths.append(prev[2])
+                by_host[host] = (epoch, hb, hb_path)
             else:
-                # Clean up stale heartbeat file
-                try:
-                    hb_path.unlink()
-                except OSError:
-                    pass
+                stale_paths.append(hb_path)
         except Exception:
-            # Purge unparseable/corrupt heartbeat files if stale
             try:
                 if now - hb_path.stat().st_mtime > stale_seconds:
-                    hb_path.unlink()
+                    stale_paths.append(hb_path)
             except OSError:
                 pass
             continue
-    return heartbeats
+    # Clean up stale/superseded files
+    for p in stale_paths:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    return [v[1] for v in by_host.values()]
 
 
 def write_status_json(results_dir: Path, iteration: int,
