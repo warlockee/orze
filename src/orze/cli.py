@@ -851,7 +851,7 @@ epochs: 10
             admin_port = int(os.environ.get("ORZE_ADMIN_PORT", "8787"))
 
             def _kill_port_holder(port):
-                """Kill any process holding the port so we can bind."""
+                """Kill a previous orze process holding the port."""
                 import subprocess
                 try:
                     out = subprocess.check_output(
@@ -859,9 +859,20 @@ epochs: 10
                     ).decode().strip()
                     for pid_str in out.split():
                         pid = int(pid_str)
-                        if pid != os.getpid():
-                            logger.info("Killing stale process %d on port %d", pid, port)
-                            os.kill(pid, 15)
+                        if pid == os.getpid():
+                            continue
+                        # Only kill if it's an orze process
+                        try:
+                            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode(
+                                "utf-8", errors="replace")
+                            if "orze" not in cmdline:
+                                logger.warning(
+                                    "Port %d held by non-orze process %d, skipping", port, pid)
+                                continue
+                        except OSError:
+                            continue
+                        logger.info("Killing stale orze process %d on port %d", pid, port)
+                        os.kill(pid, 15)
                 except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
                     pass
 
