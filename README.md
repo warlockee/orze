@@ -1,6 +1,6 @@
 # orze
 
-Agentic Auto-research on autopilot. One package, one config, all GPUs.
+A decentralized, agentic experiment orchestrator for ML training. 
 
 Orze runs the full research loop: **generate ideas → train → evaluate → learn → repeat**. It coordinates GPUs via filesystem locks (`mkdir`), works across machines, and supports any LLM as the research agent — Claude, GPT, Gemini, local models, or your own script.
 
