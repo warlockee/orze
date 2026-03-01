@@ -22,14 +22,17 @@ do @ORZE-AGENT.md
 orze
 ```
 
-That's it. Orze will auto-detect your GPUs and start running experiments from `ideas.md`.
+That's it. Orze will auto-detect your GPUs and start running experiments from `ideas.md`. 
+
+## Multi-node
+As long as you start the orze in the same shared folder (e.g. /nfs/project-52h/) on any machine, the node will automatically join the research pool.
 
 ## Key Features
 
 - **Scales to 1M+ Experiments** — SQLite-backed job queue and indexed reporting with O(log N) scheduling.
 - **Multi-LLM Research Army** — Run Claude, Gemini, GPT, and local models as parallel research agents. Auto-discovers API keys from your environment.
 - **Config Inheritance** — Child ideas inherit parent configs; research agents specify only what changes.
-- **Circuit Breaker** — Stops the fleet if failure rates spike. Schema validation catches hallucinations before they hit GPUs.
+- **Circuit Breaker** — Stops the node if failure rates spike. Schema validation catches hallucinations before they hit GPUs.
 - **Self-Healing Watchdog** — Companion `bug_fixer` agent auto-restarts crashed processes, kills stuck jobs, and diagnoses errors using an LLM.
 - **Multi-Machine** — Orchestrate thousands of GPUs across nodes via shared filesystems (NFS/EFS/FSx).
 - **HP Sweep** — List-valued hyperparameters (e.g. `lr: [1e-4, 3e-4]`) auto-expand into Cartesian product sub-runs.
