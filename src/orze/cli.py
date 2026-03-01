@@ -850,11 +850,38 @@ epochs: 10
             from orze.admin.server import run_admin as _run_admin_server
             admin_port = int(os.environ.get("ORZE_ADMIN_PORT", "8787"))
 
-            def _admin_thread():
+            def _kill_port_holder(port):
+                """Kill any process holding the port so we can bind."""
+                import subprocess
                 try:
-                    _run_admin_server(cfg, port=admin_port)
-                except Exception as e:
-                    logger.warning("Admin panel failed to start: %s", e)
+                    out = subprocess.check_output(
+                        ["fuser", f"{port}/tcp"], stderr=subprocess.DEVNULL,
+                    ).decode().strip()
+                    for pid_str in out.split():
+                        pid = int(pid_str)
+                        if pid != os.getpid():
+                            logger.info("Killing stale process %d on port %d", pid, port)
+                            os.kill(pid, 15)
+                except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+                    pass
+
+            def _admin_thread():
+                import time as _time
+                for attempt in range(3):
+                    try:
+                        _run_admin_server(cfg, port=admin_port)
+                        return
+                    except OSError as e:
+                        if "address already in use" in str(e).lower() and attempt < 2:
+                            logger.warning("Admin port %d in use, killing holder and retrying...", admin_port)
+                            _kill_port_holder(admin_port)
+                            _time.sleep(2)
+                        else:
+                            logger.warning("Admin panel failed to start: %s", e)
+                            return
+                    except Exception as e:
+                        logger.warning("Admin panel failed to start: %s", e)
+                        return
 
             t = threading.Thread(target=_admin_thread, daemon=True)
             t.start()
