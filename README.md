@@ -28,7 +28,7 @@ That's it. Orze will auto-detect your GPUs and start running experiments from `i
 
 - **Scales to 1M+ Experiments** — SQLite-backed job queue and indexed reporting with O(log N) scheduling.
 - **Multi-LLM Research Army** — Run Claude, Gemini, GPT, and local models as parallel research agents. Auto-discovers API keys from your environment.
-- **Delta Protocol** — Research agents only communicate configuration *changes*, reducing token costs by 60%.
+- **Config Inheritance** — Child ideas inherit parent configs; research agents specify only what changes.
 - **Circuit Breaker** — Stops the fleet if failure rates spike. Schema validation catches hallucinations before they hit GPUs.
 - **Self-Healing Watchdog** — Companion `bug_fixer` agent auto-restarts crashed processes, kills stuck jobs, and diagnoses errors using an LLM.
 - **Multi-Machine** — Orchestrate thousands of GPUs across nodes via shared filesystems (NFS/EFS/FSx).
