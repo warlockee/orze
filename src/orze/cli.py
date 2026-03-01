@@ -459,10 +459,7 @@ Examples:
     if args.init is not None:
         init_path = _resolve_init_path(args.init)
 
-        import hashlib, time
-        base_dir = Path(init_path).resolve()
-        slug = hashlib.sha256(f"{os.getpid()}{time.time()}".encode()).hexdigest()[:6]
-        project_dir = base_dir.parent / f"{base_dir.name}-{slug}"
+        project_dir = Path(init_path).resolve()
         project_dir.mkdir(parents=True, exist_ok=True)
         os.chdir(project_dir)
 
@@ -639,16 +636,22 @@ epochs: 10
         # --- Files ---
         print("  \033[1mFiles:\033[0m")
         cp = Path(cfg.get("_config_path", "orze.yaml"))
-        print(f"    {ok if cp.exists() else no} orze.yaml: {cp}")
+        cp_ok = cp.exists()
+        print(f"    {ok if cp_ok else no} orze.yaml: {cp}")
+        if not cp_ok:
+            print(f"      hint: run \033[36morze --init\033[0m to create a project")
 
-        env_path = find_dotenv(str(cp) if cp.exists() else None)
+        env_path = find_dotenv(str(cp) if cp_ok else None)
         if env_path:
             print(f"    {ok} .env: {env_path}")
         else:
-            print(f"    {warn_mark} .env: not found")
+            print(f"    {warn_mark} .env: not found (optional — needed for API keys)")
 
         ts = cfg.get("train_script", "train.py")
-        print(f"    {ok if Path(ts).exists() else no} train_script: {ts}")
+        ts_ok = Path(ts).exists()
+        print(f"    {ok if ts_ok else no} train_script: {ts}")
+        if not ts_ok and not cp_ok:
+            print(f"      hint: run \033[36morze --init\033[0m to scaffold a project")
 
         ideas_path = cfg.get("ideas_file", "ideas.md")
         ideas_exists = Path(ideas_path).exists()
@@ -757,6 +760,8 @@ epochs: 10
         print()
         if errors:
             print(f"\033[31m✗ {len(errors)} error(s) — fix before running.\033[0m")
+            if not cp_ok:
+                print(f"  hint: run \033[36morze --init\033[0m to create a new project")
             sys.exit(1)
         else:
             print(f"\033[32m✔ Ready to run.\033[0m")

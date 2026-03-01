@@ -40,7 +40,7 @@ def _load_dotenv(config_path: Optional[str] = None) -> int:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip("'\"")
-        if key and key not in os.environ:
+        if key and not os.environ.get(key):
             os.environ[key] = value
             loaded += 1
 
