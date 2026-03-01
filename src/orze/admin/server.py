@@ -314,16 +314,34 @@ async def get_run_log(idea_id: str):
     return {"idea_id": idea_id, "log": text}
 
 
+@app.get("/api/leaderboard/views")
+async def get_leaderboard_views():
+    """List available filtered leaderboard views."""
+    def _read_views():
+        data = _read_json(_results_dir() / "_leaderboard_views.json")
+        return data if data else {"views": []}
+    return _cached("leaderboard_views", 10, _read_views)
+
+
 @app.get("/api/leaderboard")
-async def get_leaderboard():
-    """Top models — reads _leaderboard.json written by the orchestrator update_report()."""
+async def get_leaderboard(view: str = ""):
+    """Top models — reads _leaderboard.json written by the orchestrator update_report().
+    Pass ?view=<name> to get a filtered view (e.g. ?view=edge)."""
+    cache_key = f"leaderboard:{view}" if view else "leaderboard"
+
     def _read_lb():
-        lb = _read_json(_results_dir() / "_leaderboard.json")
-        if lb and lb.get("top"):
+        if view:
+            if not re.match(r"^[a-z0-9_-]+$", view):
+                return {"top": [], "metric": "unknown", "error": "invalid view name"}
+            lb = _read_json(_results_dir() / f"_leaderboard_{view}.json")
+        else:
+            lb = _read_json(_results_dir() / "_leaderboard.json")
+        if lb is not None:
             return lb
         metric = (_cfg.get("report") or {}).get("primary_metric", "test_accuracy")
         return {"top": [], "metric": metric}
-    return _cached("leaderboard", 10, _read_lb)
+
+    return _cached(cache_key, 10, _read_lb)
 
 
 @app.get("/api/ideas")

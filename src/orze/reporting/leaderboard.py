@@ -21,6 +21,57 @@ except ImportError:
 logger = logging.getLogger("orze")
 
 
+_CMP_OPS = {
+    "$lt": lambda a, b: a < b,
+    "$lte": lambda a, b: a <= b,
+    "$gt": lambda a, b: a > b,
+    "$gte": lambda a, b: a >= b,
+}
+
+
+def _matches_view_filter(results_dir: Path, idea_id: str, view_filter: dict) -> bool:
+    """Check if an idea's resolved_config matches all view filter conditions.
+
+    Filter keys are dotpaths into resolved_config.yaml.
+    Values can be:
+      - a single value: exact match
+      - a list: any-of match
+      - a dict with comparison operators: {"$lte": 100}
+    """
+    config_path = results_dir / idea_id / "resolved_config.yaml"
+    if not config_path.exists():
+        return False
+    try:
+        import yaml
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(config, dict):
+        return False
+
+    for dotpath, expected in view_filter.items():
+        actual = deep_get(config, dotpath)
+        if isinstance(expected, dict):
+            for op, threshold in expected.items():
+                cmp_fn = _CMP_OPS.get(op)
+                if cmp_fn is None:
+                    return False
+                if actual is None:
+                    return False
+                try:
+                    if not cmp_fn(float(actual), float(threshold)):
+                        return False
+                except (ValueError, TypeError):
+                    return False
+        elif isinstance(expected, list):
+            if actual not in expected:
+                return False
+        else:
+            if actual != expected:
+                return False
+    return True
+
+
 def _resolve_primary_metric(cfg: dict, eval_file: str, eval_data: dict):
     """Resolve the primary metric value from eval data using report config."""
     primary = cfg.get("report", {}).get("primary_metric", "test_accuracy")
@@ -353,6 +404,84 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     lb_path = results_dir / "_leaderboard.json"
     atomic_write(lb_path, json.dumps({"top": lb_entries, "metric": primary_metric},
                                      default=str))
+
+    # --- Filtered view leaderboards ---
+    views = report_cfg.get("views") or []
+    view_names = []
+    for view in views:
+        vname = view.get("name")
+        vtitle = view.get("title", vname)
+        vfilter = view.get("filter", {})
+        if not vname or not vfilter:
+            continue
+        view_names.append(vname)
+
+        filtered_rows = [
+            r for r in main_rows
+            if _matches_view_filter(results_dir, r["id"], vfilter)
+        ]
+
+        # Write filtered leaderboard JSON
+        view_entries = []
+        for r in filtered_rows[:20]:
+            view_entries.append({
+                "idea_id": r["id"],
+                "title": r["title"],
+                "metric_value": r.get("primary_val"),
+                "training_time": r["values"].get("training_time"),
+                "status": "COMPLETED",
+                "eval_metrics": r["values"],
+            })
+        view_lb_path = results_dir / f"_leaderboard_{vname}.json"
+        atomic_write(view_lb_path, json.dumps(
+            {"top": view_entries, "metric": primary_metric, "view": vname,
+             "title": vtitle},
+            default=str))
+
+        # Append view section to report.md
+        lines.append(f"## {vtitle}")
+        lines.append("")
+        if filtered_rows:
+            header = "| Rank | Idea | Title"
+            sep = "|------|------|------"
+            for col in columns:
+                label = col.get("label", col.get("key", "?"))
+                header += f" | {label}"
+                sep += " |" + "-" * max(6, len(str(label)))
+            header += " |"
+            sep += " |"
+            lines.append(header)
+            lines.append(sep)
+            for rank, r in enumerate(filtered_rows, 1):
+                row = f"| {rank} | {r['id']} | {r['title'][:50]}"
+                for col in columns:
+                    key = col.get("key")
+                    if not key:
+                        row += " | —"
+                        continue
+                    val = r["values"].get(key)
+                    if val is not None:
+                        fmt = col.get("fmt", "")
+                        try:
+                            row += f" | {val:{fmt}}"
+                        except (ValueError, TypeError):
+                            row += f" | {val}"
+                    else:
+                        row += " | —"
+                row += " |"
+                lines.append(row)
+        else:
+            lines.append("*No matching models.*")
+        lines.append("")
+
+    # Re-write report.md with view sections appended
+    if views:
+        atomic_write(report_path, "\n".join(lines))
+
+    # Write views index for admin API
+    if view_names:
+        atomic_write(results_dir / "_leaderboard_views.json",
+                     json.dumps({"views": view_names}))
 
     logger.info("Report updated: %d completed, %d queued, %d failed",
                 counts.get("COMPLETED", 0), counts.get("QUEUED", 0),
