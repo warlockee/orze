@@ -25,7 +25,7 @@ orze
 That's it. Orze will auto-detect your GPUs and start running experiments from `ideas.md`. 
 
 ## Multi-node
-As long as you start the orze in the same shared folder (e.g. /nfs/project-52h/) on any machine, the node will automatically join the research pool.
+As long as you start the orze in the same shared folder (e.g. /nfs/project-52h/) on any machine, the node will automatically join the research pool. **Orze can auto-update. If one machine is updated, everyone else will auto update in 15mins**
 
 ## Key Features
 
