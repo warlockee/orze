@@ -1428,11 +1428,16 @@ class Orze:
                 ingested_ids = []
                 for idea_id, idea in raw_ideas.items():
                     if idea_id not in db_ids:
+                        # Clamp priority: "critical" is reserved for
+                        # human/API-submitted ideas, not auto-ingested ones.
+                        raw_pri = idea.get("priority", "medium")
+                        if raw_pri == "critical":
+                            raw_pri = "high"
                         self.lake.insert(
                             idea_id, idea["title"], yaml.dump(idea["config"]),
                             idea.get("raw", ""),
                             status="queued",
-                            priority=idea.get("priority", "medium")
+                            priority=raw_pri,
                         )
                         ingested_ids.append(idea_id)
 
