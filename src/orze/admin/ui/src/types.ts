@@ -102,6 +102,12 @@ export interface LeaderboardEntry {
 export interface LeaderboardResponse {
   top: LeaderboardEntry[];
   metric: string;
+  view?: string;
+  title?: string;
+}
+
+export interface LeaderboardViewsResponse {
+  views: string[];
 }
 
 export interface Alert {

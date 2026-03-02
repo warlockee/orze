@@ -1,16 +1,48 @@
-import { useLeaderboard } from './hooks';
+import { useState } from 'react';
+import { useLeaderboard, useLeaderboardViews } from './hooks';
 import { Badge, Card, Table, LoadingState, fmtTime } from './components';
 
 export default function LeaderboardTab() {
-  const leaderboard = useLeaderboard();
+  const [activeView, setActiveView] = useState('');
+  const views = useLeaderboardViews();
+  const leaderboard = useLeaderboard(activeView || undefined);
   if (leaderboard._loading) return <LoadingState label="Loading leaderboard…" />;
   const lbEntries = leaderboard.top;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold">Leaderboard</h2>
-        <Badge color="purple">{lbEntries.length} entries</Badge>
+        <h2 className="text-lg font-bold">{leaderboard.title || 'Leaderboard'}</h2>
+        <div className="flex items-center gap-3">
+          {views.views.length > 0 && (
+            <div className="flex gap-1">
+              <button
+                onClick={() => setActiveView('')}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  !activeView
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+              >
+                All
+              </button>
+              {views.views.map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setActiveView(v)}
+                  className={`px-3 py-1 rounded text-xs font-medium capitalize transition-colors ${
+                    activeView === v
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          )}
+          <Badge color="purple">{lbEntries.length} entries</Badge>
+        </div>
       </div>
       <Card>
         <Table

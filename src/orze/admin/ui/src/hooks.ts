@@ -4,6 +4,7 @@ import type {
   NodesResponse,
   RunsResponse,
   LeaderboardResponse,
+  LeaderboardViewsResponse,
   AlertsResponse,
   QueueResponse,
 } from './types';
@@ -71,8 +72,15 @@ export function useRuns() {
   return usePolling<RunsResponse>('/api/runs', 5000, EMPTY_RUNS);
 }
 
-export function useLeaderboard() {
-  return usePolling<LeaderboardResponse>('/api/leaderboard', 15000, EMPTY_LB);
+const EMPTY_VIEWS: LeaderboardViewsResponse = { views: [] };
+
+export function useLeaderboardViews() {
+  return usePolling<LeaderboardViewsResponse>('/api/leaderboard/views', 30000, EMPTY_VIEWS);
+}
+
+export function useLeaderboard(view?: string) {
+  const url = view ? `/api/leaderboard?view=${encodeURIComponent(view)}` : '/api/leaderboard';
+  return usePolling<LeaderboardResponse>(url, 15000, EMPTY_LB);
 }
 
 export function useAlerts() {
