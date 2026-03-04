@@ -48,6 +48,24 @@ def _format_leaderboard(data: dict, bold_fn=str, escape_fn=str) -> str:
         if i == 1:
             line = bold_fn(line)
         lines.append(line)
+
+    # Append view leaderboards (e.g. edge)
+    for vname, vdata in (data.get("view_leaderboards") or {}).items():
+        vtitle = escape_fn(str(vdata.get("title", vname)))
+        entries = vdata.get("entries") or []
+        if not entries:
+            continue
+        lines.append(f"\n{bold_fn(vtitle)} (top {len(entries)}):")
+        for i, entry in enumerate(entries, 1):
+            val = entry.get("value")
+            val_str = escape_fn(f"{val:.4f}" if isinstance(val, float) else str(val))
+            marker = escape_fn(" <-" if entry["id"] == data.get("idea_id") else "")
+            title = escape_fn(str(entry.get("title", ""))[:30])
+            line = f"#{i} {escape_fn(str(entry['id']))}: {val_str} {title}{marker}"
+            if i == 1:
+                line = bold_fn(line)
+            lines.append(line)
+
     return "\n".join(lines)
 
 
@@ -77,8 +95,9 @@ def _format_slack(event: str, data: dict) -> dict:
         return {"text": f":rotating_light: *{data.get('reason', 'Stalled')}*: "
                         f"`{data.get('idea_id', '?')}` on GPU {data.get('gpu', '?')}"}
     if event == "role_summary":
+        bd = data.get("breakdown") or str(data.get("new_ideas", 0))
         return {"text": f":test_tube: *{data.get('role', '?')}* finished | "
-                        f"{data.get('new_ideas', 0)} new ideas | {data.get('queued', '?')} queued"}
+                        f"{bd} new ideas | {data.get('queued', '?')} queued"}
     if event == "upgrading":
         host = data.get("host", socket.gethostname())
         return {"text": f":arrows_counterclockwise: *Orze upgrading* on `{host}`: "
@@ -134,8 +153,9 @@ def _format_discord(event: str, data: dict) -> dict:
         return {"content": f"\U0001f6a8 **{data.get('reason', 'Stalled')}**: "
                            f"`{data.get('idea_id', '?')}` on GPU {data.get('gpu', '?')}"}
     if event == "role_summary":
+        bd = data.get("breakdown") or str(data.get("new_ideas", 0))
         return {"content": f"\U0001f9ea **{data.get('role', '?')}** finished | "
-                           f"{data.get('new_ideas', 0)} new ideas | {data.get('queued', '?')} queued"}
+                           f"{bd} new ideas | {data.get('queued', '?')} queued"}
     if event == "upgrading":
         host = data.get("host", socket.gethostname())
         return {"content": f"\U0001f504 **Orze upgrading** on `{host}`: "
@@ -222,8 +242,9 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
 
     if event == "role_summary":
         role = esc(str(data.get("role", "?")))
+        bd = esc(str(data.get("breakdown") or data.get("new_ideas", 0)))
         text = (f"\U0001f9ea <b>{role}</b> finished | "
-                f"{data.get('new_ideas', 0)} new ideas | "
+                f"{bd} new ideas | "
                 f"{data.get('queued', '?')} queued")
         return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 

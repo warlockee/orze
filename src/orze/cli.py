@@ -786,8 +786,13 @@ epochs: 10
         import datetime
         from orze.core.fs import atomic_write
         stop_path = Path(cfg["results_dir"]) / ".orze_stop_all"
-        atomic_write(stop_path, datetime.datetime.now().isoformat())
-        print(f"Stop sentinel written to {stop_path}")
+        atomic_write(stop_path,
+                     f"kill {datetime.datetime.now().isoformat()}")
+        print(f"Stop signal written to {stop_path}. "
+              f"All nodes sharing this results directory will stop within "
+              f"~30 seconds. Training, evaluation, and research processes "
+              f"will be terminated (SIGTERM, then SIGKILL after 10s). "
+              f"The sentinel is cleared automatically on next startup.")
         return
 
     # --restart: stop running instance, then continue to start a new one

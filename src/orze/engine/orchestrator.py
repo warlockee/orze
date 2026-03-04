@@ -261,13 +261,14 @@ class Orze:
         self.running = False
         self._stop_event.set()  # wake from poll sleep instantly
 
-    def _graceful_shutdown(self):
-        """Terminate roles, detach training/eval, save state, and clean up.
+    def _graceful_shutdown(self, kill_all: bool = False):
+        """Terminate roles, detach or kill training/eval, save state, clean up.
 
-        Called from the main loop after self.running becomes False,
-        NOT from the signal handler (avoids re-entrancy issues).
+        Args:
+            kill_all: If True, kill training and eval processes too (not just
+                      detach them). Used by `orze --stop` to fully stop everything.
         """
-        logger.info("Shutting down gracefully...")
+        logger.info("Shutting down gracefully (kill_all=%s)...", kill_all)
 
         # 0. Write "shutting_down" heartbeat so other nodes know our state
         try:
@@ -275,43 +276,75 @@ class Orze:
         except Exception:
             pass
 
-        # 1. Detach training processes — let them finish in background.
-        #    They are self-contained and will write metrics.json on exit.
-        for gpu, tp in self.active.items():
-            logger.info("Detaching training %s on GPU %d (PID %d) "
-                        "— will finish in background",
-                        tp.idea_id, gpu, tp.process.pid)
-            tp.close_log()
-        # Let eval processes continue running (they'll write reports
-        # and exit on their own).  The backlog scanner checks for
-        # already-running evals before launching duplicates.
-        for gpu, ep in self.active_evals.items():
-            logger.info("Detaching eval %s on GPU %d (PID %d) "
-                        "— will finish in background",
-                        ep.idea_id, gpu, ep.process.pid)
-            ep.close_log()
-        # Roles get terminated (they're orchestrator-coupled)
-        for role_name, rp in self.active_roles.items():
-            logger.info("Terminating role '%s' (PID %d)...",
-                        role_name, rp.process.pid)
-            _kill_pg(rp.process, signal.SIGTERM)
+        if kill_all:
+            # Kill ALL child processes: training, eval, and roles
+            all_procs = []
+            for gpu, tp in self.active.items():
+                logger.info("Killing training %s on GPU %d (PID %d)",
+                            tp.idea_id, gpu, tp.process.pid)
+                _kill_pg(tp.process, signal.SIGTERM)
+                all_procs.append(("training", tp))
+            for gpu, ep in self.active_evals.items():
+                logger.info("Killing eval %s on GPU %d (PID %d)",
+                            ep.idea_id, gpu, ep.process.pid)
+                _kill_pg(ep.process, signal.SIGTERM)
+                all_procs.append(("eval", ep))
+            for role_name, rp in self.active_roles.items():
+                logger.info("Killing role '%s' (PID %d)",
+                            role_name, rp.process.pid)
+                _kill_pg(rp.process, signal.SIGTERM)
+                all_procs.append(("role", rp))
 
-        # 2. Wait for roles to exit (up to 10s), then SIGKILL stragglers
-        deadline = time.time() + 10
-        for role_name, rp in self.active_roles.items():
-            remaining = max(1, deadline - time.time())
-            try:
-                rp.process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                logger.warning("Force killing role '%s' (PID %d)",
-                               role_name, rp.process.pid)
-                _kill_pg(rp.process, signal.SIGKILL)
+            # Wait up to 10s then SIGKILL
+            deadline = time.time() + 10
+            for label, proc in all_procs:
+                remaining = max(1, deadline - time.time())
                 try:
-                    rp.process.wait(timeout=5)
+                    proc.process.wait(timeout=remaining)
                 except subprocess.TimeoutExpired:
-                    logger.error("Failed to reap role '%s'", role_name)
-            rp.close_log()
-            _fs_unlock(rp.lock_dir)
+                    logger.warning("Force killing %s (PID %d)",
+                                   label, proc.process.pid)
+                    _kill_pg(proc.process, signal.SIGKILL)
+                    try:
+                        proc.process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                proc.close_log()
+                if hasattr(proc, 'lock_dir') and proc.lock_dir:
+                    _fs_unlock(proc.lock_dir)
+        else:
+            # Default: detach training/eval, kill only roles
+            for gpu, tp in self.active.items():
+                logger.info("Detaching training %s on GPU %d (PID %d) "
+                            "— will finish in background",
+                            tp.idea_id, gpu, tp.process.pid)
+                tp.close_log()
+            for gpu, ep in self.active_evals.items():
+                logger.info("Detaching eval %s on GPU %d (PID %d) "
+                            "— will finish in background",
+                            ep.idea_id, gpu, ep.process.pid)
+                ep.close_log()
+            for role_name, rp in self.active_roles.items():
+                logger.info("Terminating role '%s' (PID %d)...",
+                            role_name, rp.process.pid)
+                _kill_pg(rp.process, signal.SIGTERM)
+
+            # Wait for roles to exit (up to 10s), then SIGKILL stragglers
+            deadline = time.time() + 10
+            for role_name, rp in self.active_roles.items():
+                remaining = max(1, deadline - time.time())
+                try:
+                    rp.process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    logger.warning("Force killing role '%s' (PID %d)",
+                                   role_name, rp.process.pid)
+                    _kill_pg(rp.process, signal.SIGKILL)
+                    try:
+                        rp.process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        logger.error("Failed to reap role '%s'", role_name)
+                rp.close_log()
+                _fs_unlock(rp.lock_dir)
 
         # 3. Write shutdown sentinel (tells bug_fixer not to restart us)
         sentinel = self.results_dir / ".orze_shutdown"
@@ -441,6 +474,32 @@ class Orze:
                         "value": r.get("primary_val"),
                     })
 
+            # Build view leaderboards from cached JSON files
+            view_leaderboards = {}
+            views = cfg.get("report", {}).get("views") or []
+            for view in views:
+                vname = view.get("name")
+                if not vname:
+                    continue
+                vpath = self.results_dir / f"_leaderboard_{vname}.json"
+                if vpath.exists():
+                    try:
+                        vdata = json.loads(vpath.read_text(encoding="utf-8"))
+                        vtop = []
+                        for entry in (vdata.get("top") or [])[:10]:
+                            vtop.append({
+                                "id": entry.get("idea_id", "?"),
+                                "title": entry.get("title", ""),
+                                "value": entry.get("metric_value"),
+                            })
+                        if vtop:
+                            view_leaderboards[vname] = {
+                                "title": vdata.get("title", vname),
+                                "entries": vtop,
+                            }
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
             # Build a lookup from completed_rows for metric values
             row_lookup = {r["id"]: r for r in completed_rows}
 
@@ -502,12 +561,14 @@ class Orze:
                         "training_time": t_time,
                         "rank": rank_lookup.get(idea_id, "?"),
                         "leaderboard": leaderboard,
+                        "view_leaderboards": view_leaderboards,
                     }, cfg)
                 elif status == "FAILED":
                     notify("failed", {
                         "idea_id": idea_id, "title": title,
                         "error": m.get("error", "unknown"),
                         "leaderboard": leaderboard,
+                        "view_leaderboards": view_leaderboards,
                     }, cfg)
 
                 # Auto-archive to Idea Lake
@@ -570,6 +631,7 @@ class Orze:
                         "metric_value": fmt_best,
                         "prev_best_id": self._best_idea_id,
                         "leaderboard": leaderboard,
+                        "view_leaderboards": view_leaderboards,
                     }, cfg)
                 self._best_idea_id = current_best
 
@@ -586,6 +648,7 @@ class Orze:
                         "queued": counts.get("QUEUED", 0),
                         "metric_name": primary,
                         "leaderboard": leaderboard,
+                        "view_leaderboards": view_leaderboards,
                         "machines": self._build_machine_status(),
                     }, cfg)
                     self._last_report_notify = time.time()
@@ -864,6 +927,11 @@ class Orze:
         finished = check_active_roles(
             self.active_roles,
             ideas_file=self.cfg.get("ideas_file", "ideas.md"))
+
+        # Collect per-role results for consolidated notification
+        role_contributions = {}  # role_name -> new_ideas count
+        any_ideas_modified = False
+
         for role_name, success in finished:
             role_state = self.role_states.setdefault(
                 role_name, {"cycles": 0, "last_run_time": 0.0})
@@ -884,24 +952,47 @@ class Orze:
                         logger.warning("%s completed successfully but ideas file "
                                        "was not modified (last change %.0fs ago)",
                                        role_name, ideas_age)
-                # Role summary notification
                 if ideas_modified:
                     ideas_now = parse_ideas(self.cfg["ideas_file"])
-                    n_queued = len(get_unclaimed(ideas_now, self.results_dir, set()))
                     prev_count = role_state.get("_prev_idea_count", 0)
                     new_ideas = max(0, len(ideas_now) - prev_count)
                     role_state["_prev_idea_count"] = len(ideas_now)
-                    notify("role_summary", {
-                        "role": role_name,
-                        "new_ideas": new_ideas,
-                        "queued": n_queued,
-                    }, self.cfg)
+                    any_ideas_modified = True
+                    # Derive a short label from the role's model config
+                    role_cfg = (self.cfg.get("roles") or {}).get(role_name, {})
+                    model = role_cfg.get("model", role_name)
+                    # Shorten model name: "claude-opus-4-6" -> "opus", "gemini-2.5-pro" -> "gemini"
+                    label = model
+                    for prefix in ("claude-", "gemini-"):
+                        if label.startswith(prefix):
+                            label = label[len(prefix):]
+                            break
+                    label = label.split("-")[0]  # "opus", "2.5" -> first part
+                    role_contributions[label] = (
+                        role_contributions.get(label, 0) + new_ideas)
+                else:
+                    role_contributions.setdefault(role_name, 0)
             else:
                 consec = role_state.get("consecutive_failures", 0) + 1
                 role_state["consecutive_failures"] = consec
                 if consec >= 3:
                     logger.error("%s has failed %d consecutive times — "
                                  "check config or script", role_name, consec)
+
+        # Send one consolidated role_summary notification
+        if finished and any_ideas_modified:
+            ideas_now = parse_ideas(self.cfg["ideas_file"])
+            n_queued = len(get_unclaimed(ideas_now, self.results_dir, set()))
+            total_new = sum(role_contributions.values())
+            # Build breakdown string: "5 <opus> + 10 <gemini>"
+            parts = [f"{n} <{lbl}>" for lbl, n in role_contributions.items() if n > 0]
+            breakdown = " + ".join(parts) if parts else f"{total_new}"
+            notify("role_summary", {
+                "role": "researcher",
+                "new_ideas": total_new,
+                "breakdown": breakdown,
+                "queued": n_queued,
+            }, self.cfg)
 
         # Launch new roles if not running
         for role_name, role_cfg in (self.cfg.get("roles") or {}).items():
@@ -1062,10 +1153,17 @@ class Orze:
 
         This allows stopping all orze instances across machines
         that share the same results directory (e.g. on NFS/FSx).
+        If the sentinel contains "kill", training/eval are killed too.
         """
         stop_file = self.results_dir / ".orze_stop_all"
         if stop_file.exists():
-            logger.info("Found .orze_stop_all — shutting down")
+            try:
+                content = stop_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                content = ""
+            self._stop_kill_all = "kill" in content.lower()
+            logger.info("Found .orze_stop_all — shutting down (kill_all=%s)",
+                        self._stop_kill_all)
             self.running = False
             return True
         return False
@@ -1940,7 +2038,8 @@ class Orze:
 
         # Main loop exited (signal received or --once finished)
         if self.active or self.active_evals or self.active_roles:
-            self._graceful_shutdown()
+            self._graceful_shutdown(
+                kill_all=getattr(self, '_stop_kill_all', False))
         else:
             # Nothing running, just save state and clean up
             save_state(self.results_dir, {
