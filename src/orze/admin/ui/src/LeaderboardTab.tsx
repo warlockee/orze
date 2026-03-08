@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useLeaderboard, useLeaderboardViews } from './hooks';
-import { Badge, Card, Table, LoadingState, fmtTime } from './components';
+import { Badge, Card, Table, LoadingState, fmtTime, IdeaLink } from './components';
 
 export default function LeaderboardTab() {
   const [activeView, setActiveView] = useState('');
@@ -55,7 +55,7 @@ export default function LeaderboardTab() {
           ]}
           rows={lbEntries.map((e: any, i: number) => ({
             rank: <span className={i < 3 ? 'text-amber-400 font-bold' : ''}>{i + 1}</span>,
-            idea_id: <span className="font-mono text-xs">{e.idea_id}</span>,
+            idea_id: <IdeaLink ideaId={e.idea_id} />,
             title: <span className="text-xs text-gray-400 truncate block max-w-[300px]">{e.title || '-'}</span>,
             metric: (
               <span className="font-mono text-emerald-400">

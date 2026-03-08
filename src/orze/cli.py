@@ -13,6 +13,8 @@ Usage:
 import argparse
 import logging
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +23,49 @@ from orze.core.config import load_project_config
 from orze.hardware.gpu import detect_all_gpus
 
 logger = logging.getLogger("orze")
+
+_STAR_REPO = "erikhenriksson/orze"
+_STAR_MARKER = Path.home() / ".orze_starred"
+
+
+def _maybe_star():
+    """Prompt user to star the repo on first run (once only)."""
+    if _STAR_MARKER.exists():
+        return
+    if not shutil.which("gh"):
+        _STAR_MARKER.touch()
+        return
+    # Check if gh is authenticated
+    try:
+        subprocess.run(
+            ["gh", "auth", "status"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        _STAR_MARKER.touch()
+        return
+    try:
+        answer = input(
+            f"\n\033[1mEnjoy Orze?\033[0m Press Enter to \u2b50 us on GitHub, "
+            f"or type N to skip: "
+        ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        _STAR_MARKER.touch()
+        return
+    if answer in ("", "y", "yes"):
+        try:
+            subprocess.run(
+                ["gh", "api", "-X", "PUT", f"/user/starred/{_STAR_REPO}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            print("\033[32mThanks for starring!\033[0m\n")
+        except Exception:
+            pass
+    _STAR_MARKER.touch()
 
 # ---------------------------------------------------------------------------
 # Template for --init scaffolding
@@ -373,6 +418,8 @@ def _resolve_init_path(explicit_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main():
+    _maybe_star()
+
     parser = argparse.ArgumentParser(
         description="orze: GPU experiment orchestrator",
         formatter_class=argparse.RawDescriptionHelpFormatter,

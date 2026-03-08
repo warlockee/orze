@@ -17,6 +17,8 @@ import { stopAll } from './api';
 import { Segmented, GlowBlob, FloatingGrid } from './components';
 import type { Tab } from './types';
 import QueueTabView from './QueueTabView';
+import { IdeaDetailProvider } from './IdeaDetailContext';
+import IdeaDetailModal from './IdeaDetailModal';
 
 const OverviewTab = lazy(() => import('./OverviewTab'));
 const NodesTab = lazy(() => import('./NodesTab'));
@@ -56,6 +58,7 @@ export default function OrzeAdminPanel() {
   ];
 
   return (
+    <IdeaDetailProvider>
     <div className="relative min-h-screen bg-gray-950 text-gray-100">
       <GlowBlob />
       <FloatingGrid />
@@ -150,6 +153,8 @@ export default function OrzeAdminPanel() {
           {tab === 'settings' && <SettingsTab />}
         </Suspense>
       </main>
+      <IdeaDetailModal />
     </div>
+    </IdeaDetailProvider>
   );
 }

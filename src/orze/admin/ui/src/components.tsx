@@ -8,6 +8,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { GpuInfo, Alert } from './types';
+import { useIdeaDetail } from './IdeaDetailContext';
 
 /* ─── tiny primitives ─── */
 
@@ -344,7 +345,7 @@ export function AlertCard({ alert }: { alert: Alert }) {
           <div className="mt-1 text-xs text-gray-400">
             {alert.type === 'failure' && (
               <>
-                <span className="font-medium text-gray-300">{alert.idea_id}</span>
+                {alert.idea_id ? <IdeaLink ideaId={alert.idea_id} /> : null}
                 {alert.error && <span className="ml-2">{alert.error}</span>}
               </>
             )}
@@ -411,4 +412,18 @@ export function queueStatusColor(s: string): string {
   if (s === 'completed') return 'green';
   if (s === 'failed' || s === 'error') return 'red';
   return 'gray';
+}
+
+export function IdeaLink({ ideaId, title }: { ideaId: string; title?: string }) {
+  const { openIdea } = useIdeaDetail();
+  const base = ideaId.split('~')[0];
+  const label = title ? `${base} · ${title}` : base;
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); openIdea(ideaId); }}
+      className="font-mono text-xs text-purple-400 hover:text-purple-300 hover:underline underline-offset-2 cursor-pointer transition-colors text-left"
+    >
+      {label}
+    </button>
+  );
 }

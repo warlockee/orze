@@ -605,11 +605,17 @@ class Orze:
                             except (json.JSONDecodeError, OSError):
                                 pass
                         # Ensure status is updated in DB if archived
+                        def _raw_field(field):
+                            m = re.search(rf"\*\*{re.escape(field)}\*\*:\s*(.+)", raw_md)
+                            return m.group(1).strip() if m else None
                         self.lake.insert(
                             idea_id, title, config_yaml, raw_md,
                             eval_metrics=eval_metrics or None,
                             status=status.lower(),
                             priority=idea_data.get("priority", "medium"),
+                            category=_raw_field("Category"),
+                            parent=_raw_field("Parent"),
+                            hypothesis=_raw_field("Hypothesis"),
                         )
                     except Exception as exc:
                         logger.warning("Failed to archive %s to lake: %s",
@@ -1531,11 +1537,18 @@ class Orze:
                         raw_pri = idea.get("priority", "medium")
                         if raw_pri == "critical":
                             raw_pri = "high"
+                        raw_text = idea.get("raw", "")
+                        def _raw_f(field):
+                            m = re.search(rf"\*\*{re.escape(field)}\*\*:\s*(.+)", raw_text)
+                            return m.group(1).strip() if m else None
                         self.lake.insert(
                             idea_id, idea["title"], yaml.dump(idea["config"]),
-                            idea.get("raw", ""),
+                            raw_text,
                             status="queued",
                             priority=raw_pri,
+                            category=_raw_f("Category"),
+                            parent=_raw_f("Parent"),
+                            hypothesis=_raw_f("Hypothesis"),
                         )
                         ingested_ids.append(idea_id)
 

@@ -1,7 +1,7 @@
 import { useRef, useEffect } from 'react';
 import { Cpu, HardDrive, Thermometer, Layers, TrendingUp, AlertTriangle, Play } from 'lucide-react';
 import { useStatus, useNodes, useRuns } from './hooks';
-import { Badge, Card, IconKpi, LoadingState, statusColor, fmtRunName, fmtTime } from './components';
+import { Badge, Card, IconKpi, LoadingState, statusColor, fmtRunName, fmtTime, IdeaLink } from './components';
 
 export default function OverviewTab() {
   const status = useStatus();
@@ -84,7 +84,7 @@ export default function OverviewTab() {
               <div key={`${r.idea_id}-${r.gpu}`} className="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2">
                 <div className="flex items-center gap-2">
                   <Play size={12} className="text-blue-400" />
-                  <span className="text-xs font-medium">{fmtRunName(r.idea_id, r.title)}</span>
+                  <IdeaLink ideaId={r.idea_id} title={r.title} />
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-[10px] text-gray-500">GPU {r.gpu}</span>
@@ -105,7 +105,7 @@ export default function OverviewTab() {
               <div key={r.idea_id} className="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2">
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-gray-500">#{i + 1}</span>
-                  <span className="text-xs font-medium">{r.idea_id}</span>
+                  <IdeaLink ideaId={r.idea_id} />
                   {r.title && <span className="text-[10px] text-gray-500 truncate max-w-[200px]">{r.title}</span>}
                 </div>
                 <span className="text-xs font-mono text-emerald-400">

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Search, Filter } from 'lucide-react';
 import { useQueue } from './hooks';
-import { Badge, Card, Pagination, LoadingState, fmtRunName, priorityColor, queueStatusColor } from './components';
+import { Badge, Card, Pagination, LoadingState, fmtRunName, priorityColor, queueStatusColor, IdeaLink } from './components';
 import type { QueueItem } from './types';
 
 export default function QueueTabView() {
@@ -104,7 +104,7 @@ function QueueCard({ item, children, expanded, onToggle }: { item: QueueItem; ch
           <div className="flex items-center gap-2 flex-wrap">
             <Badge color={priorityColor(item.priority)}>{item.priority}</Badge>
             <Badge color={queueStatusColor(item.status)}>{item.status}</Badge>
-            <span className="text-sm font-medium">{fmtRunName(item.idea_id, item.title)}</span>
+            <IdeaLink ideaId={item.idea_id} title={item.title} />
             {hasSweep && <span className="text-[10px] text-gray-500">+{children.length} sweep variants</span>}
           </div>
           <div className="flex items-center gap-2">

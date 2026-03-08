@@ -37,3 +37,42 @@ export async function fetchRunDetail(ideaId: string): Promise<any> {
 export async function fetchRunLog(ideaId: string): Promise<any> {
   return request(`/api/run/log?idea_id=${encodeURIComponent(ideaId)}`);
 }
+
+export async function fetchIdeaDetail(ideaId: string): Promise<any> {
+  // Try the dedicated endpoint first, fall back to composing from existing endpoints
+  try {
+    const res = await fetch(`/api/idea/detail?idea_id=${encodeURIComponent(ideaId)}`);
+    if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) return res.json();
+    }
+  } catch { /* endpoint may not exist yet */ }
+
+  // Fallback: compose from /api/queue + /api/run/detail
+  const result: any = { idea_id: ideaId, found: false };
+
+  // Try queue data (has hypothesis, category, parent, config)
+  try {
+    const q = await request(`/api/queue?search=${encodeURIComponent(ideaId.split('~')[0])}&per_page=100`);
+    const match = (q.queue || []).find((item: any) => item.idea_id === ideaId || item.idea_id === ideaId.split('~')[0]);
+    if (match) {
+      result.found = true;
+      result.title = match.title;
+      result.priority = match.priority;
+      result.category = match.category;
+      result.parent = match.parent;
+      result.hypothesis = match.hypothesis;
+      result.config = match.config;
+      result.origin = 'ideas.md';
+    }
+  } catch { /* ignore */ }
+
+  // Try run detail (has metrics, claim)
+  try {
+    const rd = await request(`/api/run/detail?idea_id=${encodeURIComponent(ideaId)}`);
+    if (rd.metrics) { result.found = true; result.metrics = rd.metrics; }
+    if (rd.claim) result.claim = rd.claim;
+  } catch { /* ignore */ }
+
+  return result;
+}

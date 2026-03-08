@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Play, XCircle, FileText } from 'lucide-react';
 import { useRuns } from './hooks';
 import { fetchRunDetail, fetchRunLog, killRun } from './api';
-import { Badge, Card, Pill, Reveal, LoadingState, statusColor, fmtRunName, fmtTime, fmtMetric } from './components';
+import { Badge, Card, Pill, Reveal, LoadingState, statusColor, fmtRunName, fmtTime, fmtMetric, IdeaLink } from './components';
 import type { Run, ActiveRun, RunDetail } from './types';
 
 export default function RunsTab() {
@@ -51,7 +51,7 @@ export default function RunsTab() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Badge color={statusColor(r.status)}>{r.status}</Badge>
-                  <span className="text-sm font-medium">{fmtRunName(r.idea_id, r.title)}</span>
+                  <IdeaLink ideaId={r.idea_id} title={r.title} />
                 </div>
                 <div className="flex items-center gap-3">
                   {r.host && <span className="text-[10px] text-gray-500">{r.host}</span>}

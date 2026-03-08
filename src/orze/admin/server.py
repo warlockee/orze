@@ -160,6 +160,12 @@ def _strip_sensitive(obj: Any) -> Any:
 
 
 
+def _extract_field(raw: str, field_name: str) -> Optional[str]:
+    """Extract a **FieldName**: value from idea raw markdown."""
+    m = re.search(rf"\*\*{re.escape(field_name)}\*\*:\s*(.+)", raw)
+    return m.group(1).strip() if m else None
+
+
 def _tail_lines(path: Path, n: int = 200) -> str:
     """Read last n lines of a text file."""
     try:
@@ -312,6 +318,69 @@ async def get_run_log(idea_id: str):
 
     text = _tail_lines(log_path, n=200)
     return {"idea_id": idea_id, "log": text}
+
+
+@app.get("/api/idea/detail")
+async def get_idea_detail(idea_id: str):
+    """Aggregate idea metadata from ideas.md, idea_lake, and results."""
+    base_id = idea_id.split("~")[0]
+    if not re.match(r"^idea-[a-z0-9]+(-ht-\d+)?$", base_id):
+        raise HTTPException(400, "Invalid idea_id format")
+
+    def _get():
+        result: Dict[str, Any] = {"idea_id": idea_id, "found": False}
+
+        # 1. Try ideas.md (hot ideas)
+        ideas = _cached("parsed_ideas", 10.0, lambda: parse_ideas(_ideas_file()))
+        lookup_id = base_id.split("-ht-")[0] if "-ht-" in base_id else base_id
+        md_idea = ideas.get(lookup_id)
+        if md_idea:
+            result["found"] = True
+            result["title"] = md_idea.get("title", "")
+            result["priority"] = md_idea.get("priority", "medium")
+            result["config"] = md_idea.get("config", {})
+            raw = md_idea.get("raw", "")
+            result["hypothesis"] = _extract_field(raw, "Hypothesis")
+            result["category"] = _extract_field(raw, "Category") or "architecture"
+            result["parent"] = _extract_field(raw, "Parent") or "none"
+            result["research_cycle"] = _extract_field(raw, "Research Cycle")
+            result["origin"] = "ideas.md"
+
+        # 2. Try idea_lake.db (archived ideas)
+        lake_path = Path(_ideas_file()).parent / "idea_lake.db"
+        if lake_path.exists() and not result["found"]:
+            try:
+                from orze.idea_lake import IdeaLake
+                lake = IdeaLake(str(lake_path))
+                lake_idea = lake.get(lookup_id)
+                lake.close()
+                if lake_idea:
+                    result["found"] = True
+                    result.setdefault("title", lake_idea.get("title", ""))
+                    result.setdefault("hypothesis", lake_idea.get("hypothesis"))
+                    result.setdefault("category", lake_idea.get("category"))
+                    result.setdefault("parent", lake_idea.get("parent"))
+                    result.setdefault("priority", lake_idea.get("priority"))
+                    if lake_idea.get("eval_metrics"):
+                        result["lake_metrics"] = lake_idea["eval_metrics"]
+                    result.setdefault("origin", "idea_lake")
+            except Exception:
+                pass
+
+        # 3. Try results dir for metrics
+        idea_dir = _results_dir() / idea_id
+        if idea_dir.is_dir():
+            metrics = _read_json(idea_dir / "metrics.json")
+            if metrics:
+                result["found"] = True
+                result["metrics"] = metrics
+            claim = _read_json(idea_dir / "claim.json")
+            if claim:
+                result["claim"] = claim
+
+        return result
+
+    return _cached(f"idea_detail:{idea_id}", 15.0, _get)
 
 
 @app.get("/api/leaderboard/views")

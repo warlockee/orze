@@ -478,10 +478,9 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
     if views:
         atomic_write(report_path, "\n".join(lines))
 
-    # Write views index for admin API
-    if view_names:
-        atomic_write(results_dir / "_leaderboard_views.json",
-                     json.dumps({"views": view_names}))
+    # Write views index for admin API (always write, even if empty, to clear stale views)
+    atomic_write(results_dir / "_leaderboard_views.json",
+                 json.dumps({"views": view_names}))
 
     logger.info("Report updated: %d completed, %d queued, %d failed",
                 counts.get("COMPLETED", 0), counts.get("QUEUED", 0),
@@ -533,6 +532,10 @@ def write_admin_cache(results_dir: Path, ideas: dict, cfg: dict):
             else:
                 idea_status = "running"
         all_statuses[idea_status] = all_statuses.get(idea_status, 0) + 1
+        raw = idea.get("raw", "")
+        _cat_m = re.search(r"\*\*Category\*\*:\s*(.+)", raw)
+        _par_m = re.search(r"\*\*Parent\*\*:\s*(.+)", raw)
+        _hyp_m = re.search(r"\*\*Hypothesis\*\*:\s*(.+)", raw)
         queue_items.append({
             "idea_id": idea_id,
             "title": idea.get("title", ""),
@@ -540,6 +543,9 @@ def write_admin_cache(results_dir: Path, ideas: dict, cfg: dict):
             "status": idea_status,
             "config": idea.get("config", {}),
             "sweep_parent": idea.get("_sweep_parent"),
+            "category": _cat_m.group(1).strip() if _cat_m else "architecture",
+            "parent": _par_m.group(1).strip() if _par_m else "none",
+            "hypothesis": _hyp_m.group(1).strip() if _hyp_m else "",
         })
 
     # --- Alerts ---

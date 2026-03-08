@@ -166,4 +166,20 @@ export interface QueueResponse {
   counts: Record<string, number>;
 }
 
+export interface IdeaDetail {
+  idea_id: string;
+  found: boolean;
+  title?: string;
+  hypothesis?: string;
+  category?: string;
+  parent?: string;
+  research_cycle?: string;
+  priority?: string;
+  config?: Record<string, any>;
+  origin?: string;
+  metrics?: Record<string, any>;
+  lake_metrics?: Record<string, any>;
+  claim?: { claimed_by: string; claimed_at: string; gpu: number };
+}
+
 export type Tab = 'overview' | 'nodes' | 'runs' | 'queue' | 'leaderboard' | 'alerts' | 'settings';
