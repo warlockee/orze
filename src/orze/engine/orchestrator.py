@@ -1284,6 +1284,20 @@ class Orze:
         logger.info("Auto-upgrade: installing orze==%s (current v%s)...",
                      target, __version__)
 
+        # Acquire upgrade lock to prevent concurrent upgrades across processes
+        upgrade_lock = self.results_dir / f"_upgrade_lock"
+        if not _fs_lock(upgrade_lock, stale_seconds=300):
+            logger.info("Auto-upgrade: another process is already upgrading, skipping")
+            self._pending_upgrade = None
+            return
+
+        # Write shutdown sentinel so watchdog won't respawn during restart
+        try:
+            (self.results_dir / ".orze_shutdown").write_text(
+                f"auto-upgrade to v{target}", encoding="utf-8")
+        except OSError:
+            pass
+
         try:
             notify("upgrading", {
                 "host": socket.gethostname(),
@@ -1303,6 +1317,12 @@ class Orze:
             logger.error("Auto-upgrade pip install failed (rc=%d): %s",
                          result.returncode, result.stderr[:500])
             self._pending_upgrade = None
+            _fs_unlock(upgrade_lock)
+            # Remove shutdown sentinel on failure so watchdog can restart
+            try:
+                (self.results_dir / ".orze_shutdown").unlink(missing_ok=True)
+            except OSError:
+                pass
             return
 
         # Signal other nodes sharing this results_dir to restart
@@ -1311,6 +1331,8 @@ class Orze:
                 target, encoding="utf-8")
         except Exception:
             pass
+
+        _fs_unlock(upgrade_lock)
 
         logger.info("Auto-upgrade: killing active processes and restarting...")
 
