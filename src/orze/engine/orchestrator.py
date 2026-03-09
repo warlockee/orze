@@ -183,6 +183,25 @@ class Orze:
         # 3. Initialize per-iteration health monitor
         self._health_monitor = HealthMonitor(self.results_dir)
 
+        # 4. Detect watchdog restart marker and notify
+        marker = self.results_dir / f".orze_watchdog_restart_{self._hostname}.json"
+        if marker.exists():
+            try:
+                import json as _json_marker
+                mdata = _json_marker.loads(marker.read_text(encoding="utf-8"))
+                reason = mdata.get("reason", "unknown")
+                prev_pid = mdata.get("prev_pid")
+                logger.info("Watchdog restart detected: %s (prev PID %s)", reason, prev_pid)
+                notify("watchdog_restart", {
+                    "host": self._hostname,
+                    "reason": reason,
+                    "prev_pid": prev_pid,
+                    "timestamp": mdata.get("iso", ""),
+                }, self.cfg)
+                marker.unlink()
+            except Exception as e:
+                logger.warning("Failed to process watchdog restart marker: %s", e)
+
         logger.info("=== Startup checks passed ===")
 
         self._print_startup_summary()

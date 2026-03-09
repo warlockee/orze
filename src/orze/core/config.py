@@ -92,7 +92,7 @@ DEFAULT_CONFIG = {
     "auto_upgrade": False,
     "notifications": {
         "enabled": False,
-        "on": ["completed", "failed", "new_best"],
+        "on": ["completed", "failed", "new_best", "watchdog_restart"],
         "channels": [],
     },
 }

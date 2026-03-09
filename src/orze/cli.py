@@ -478,9 +478,50 @@ Examples:
                              "pip uninstall — keeps only research results")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
+
+    # --- service subcommand ---
+    subparsers = parser.add_subparsers(dest="command")
+    svc_parser = subparsers.add_parser("service", help="Manage orze watchdog service")
+    svc_sub = svc_parser.add_subparsers(dest="service_action")
+
+    svc_install = svc_sub.add_parser("install", help="Install watchdog service")
+    svc_install.add_argument("-c", "--config-file", type=str, default="orze.yaml",
+                             help="Path to orze.yaml")
+    svc_install.add_argument("--method", choices=["auto", "crontab", "systemd"],
+                             default="auto", help="Service method (default: auto)")
+    svc_install.add_argument("--stall-threshold", type=int, default=1800,
+                             help="Seconds before heartbeat considered stale (default: 1800)")
+
+    svc_sub.add_parser("uninstall", help="Uninstall watchdog service")
+    svc_sub.add_parser("status", help="Show watchdog service status")
+
+    svc_logs = svc_sub.add_parser("logs", help="Show watchdog logs")
+    svc_logs.add_argument("-n", type=int, default=50,
+                          help="Number of log lines (default: 50)")
+
     args = parser.parse_args()
 
     setup_logging(args.verbose)
+
+    # --- service subcommand dispatch ---
+    if getattr(args, "command", None) == "service":
+        action = getattr(args, "service_action", None)
+        if action == "install":
+            from orze.service.install import install
+            install(args.config_file, method=args.method,
+                    stall_threshold=args.stall_threshold)
+        elif action == "uninstall":
+            from orze.service.install import uninstall
+            uninstall()
+        elif action == "status":
+            from orze.service.status import show_status
+            show_status()
+        elif action == "logs":
+            from orze.service.status import show_logs
+            show_logs(n=args.n)
+        else:
+            parser.parse_args(["service", "--help"])
+        return
 
     # Load project config, then apply CLI overrides
     cfg = load_project_config(args.config_file)
