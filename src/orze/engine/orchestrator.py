@@ -1285,10 +1285,38 @@ class Orze:
                      target, __version__)
 
         # Acquire upgrade lock to prevent concurrent upgrades across processes
-        upgrade_lock = self.results_dir / f"_upgrade_lock"
+        upgrade_lock = self.results_dir / "_upgrade_lock"
         if not _fs_lock(upgrade_lock, stale_seconds=300):
             logger.info("Auto-upgrade: another process is already upgrading, skipping")
             self._pending_upgrade = None
+            return
+
+        # After acquiring lock, check if another process already completed
+        # this upgrade (our in-memory __version__ is stale but pip is current)
+        try:
+            from importlib.metadata import version as _pkg_version
+            installed = _pkg_version("orze")
+        except Exception:
+            installed = __version__
+
+        def _ver(s):
+            try:
+                return tuple(int(x) for x in s.split(".")[:3])
+            except (ValueError, AttributeError):
+                return (0,)
+
+        if _ver(installed) >= _ver(target):
+            # Already upgraded by another process — just restart silently
+            logger.info("Auto-upgrade: v%s already installed, restarting without notification", installed)
+            _fs_unlock(upgrade_lock)
+            self._pending_upgrade = None
+            # Write shutdown sentinel briefly so watchdog doesn't race
+            try:
+                (self.results_dir / ".orze_shutdown").write_text(
+                    f"auto-upgrade restart to v{installed}", encoding="utf-8")
+            except OSError:
+                pass
+            self._restart_in_place()
             return
 
         # Write shutdown sentinel so watchdog won't respawn during restart
@@ -1334,6 +1362,10 @@ class Orze:
 
         _fs_unlock(upgrade_lock)
 
+        self._restart_in_place()
+
+    def _restart_in_place(self):
+        """Kill children, save state, and replace this process via os.execv."""
         logger.info("Auto-upgrade: killing active processes and restarting...")
 
         # Kill all children (training will restart on new version)
@@ -1380,8 +1412,7 @@ class Orze:
         self._remove_pid_file()
 
         config_path = str(self.cfg.get("_config_path", "orze.yaml"))
-        logger.info("Auto-upgrade: restarting with v%s (config: %s)",
-                     target, config_path)
+        logger.info("Auto-upgrade: restarting (config: %s)", config_path)
         try:
             os.execv(sys.executable,
                      [sys.executable, "-m", "orze.cli", "-c", config_path])
