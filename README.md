@@ -107,6 +107,43 @@ Notification events:
 - `failed` — an experiment errored out
 - `new_best` — a new top score on your primary metric
 
+## Service Management (Watchdog)
+
+Built-in process supervision that auto-restarts orze if it crashes or stalls. Works across multi-node clusters — each node manages itself independently.
+
+```bash
+orze service install -c orze.yaml    # Install watchdog (crontab or systemd)
+orze service status                  # Check watchdog & process health
+orze service logs                    # View watchdog log
+orze service uninstall               # Remove watchdog
+```
+
+**How it works:**
+- Checks every minute (crontab) or uses systemd `Restart=on-failure`
+- Detects stale processes via heartbeat age (default: 30min threshold)
+- Respects `--stop` and `--disable` flags — won't restart if you intentionally stopped orze
+- Sends notifications on restart (Telegram/Slack/Discord) if configured
+- Per-node config stored in `~/.orze_service.json` — safe for shared filesystems
+
+**Install methods** (auto-detected):
+- `systemd` — preferred; uses `systemctl --user` (no root needed)
+- `crontab` — fallback; adds a 1-minute check
+
+```bash
+# Force a specific method
+orze service install -c orze.yaml --method crontab
+
+# Custom stall threshold (seconds)
+orze service install -c orze.yaml --stall-threshold 3600
+```
+
+Add `watchdog_restart` to your notification events to get alerts:
+```yaml
+notifications:
+  enabled: true
+  on: [completed, failed, new_best, watchdog_restart]
+```
+
 ## The Contract
 
 Your training script receives these standard arguments:
