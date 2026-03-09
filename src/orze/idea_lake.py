@@ -256,6 +256,16 @@ class IdeaLake:
                     pass
         return d
 
+    def set_status(self, idea_id: str, status: str):
+        """Update just the status of an idea. No-op if idea doesn't exist."""
+        def _do():
+            self.conn.execute(
+                "UPDATE ideas SET status = ? WHERE idea_id = ?",
+                (status, idea_id),
+            )
+            self.conn.commit()
+        _retry_on_busy(_do)
+
     def has(self, idea_id: str) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM ideas WHERE idea_id = ?", (idea_id,)
@@ -295,6 +305,63 @@ class IdeaLake:
             (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def reconcile_statuses(self, results_dir: str, limit: int = 0) -> int:
+        """Reconcile DB queue with filesystem: mark queued ideas that already
+        have results dirs as completed/failed. Returns count of updates.
+
+        This prevents stale 'queued' rows from blocking the queue after a
+        restart when a previous Orze instance already ran those ideas.
+
+        Args:
+            results_dir: path to the results directory
+            limit: max rows to scan (0 = all queued ideas)
+        """
+        import glob
+        import shutil
+        from pathlib import Path
+        rd = Path(results_dir)
+        query = """SELECT idea_id FROM ideas
+                   WHERE status = 'queued' OR status = 'pending'
+                   ORDER BY id_num ASC"""
+        if limit > 0:
+            query += f" LIMIT {limit}"
+        rows = self.conn.execute(query).fetchall()
+        updated = 0
+        for (idea_id,) in rows:
+            idea_dir = rd / idea_id
+            has_dir = idea_dir.exists()
+            has_subs = bool(glob.glob(str(rd / f"{idea_id}-ht-*")))
+            if not has_dir and not has_subs:
+                continue
+            # Determine final status from filesystem
+            metrics_path = idea_dir / "metrics.json" if has_dir else None
+            if metrics_path and metrics_path.exists():
+                try:
+                    m = json.loads(metrics_path.read_text(encoding="utf-8"))
+                    new_status = "completed" if m.get("status") == "COMPLETED" else "failed"
+                except (json.JSONDecodeError, OSError):
+                    new_status = "failed"
+            elif has_subs:
+                new_status = "completed"  # sweep parent, sub-runs are the real experiments
+            elif has_dir:
+                # Orphan dir (no metrics, no sweep subs) — remove so idea retries
+                try:
+                    shutil.rmtree(idea_dir)
+                except OSError:
+                    pass
+                continue  # leave as queued for retry
+            else:
+                continue
+            self.conn.execute(
+                "UPDATE ideas SET status = ? WHERE idea_id = ?",
+                (new_status, idea_id),
+            )
+            updated += 1
+        if updated:
+            self.conn.commit()
+            logger.info("Reconciled %d stale queued ideas with filesystem", updated)
+        return updated
 
     def get_max_id_num(self) -> int:
         """Return the highest numeric idea ID in the lake."""

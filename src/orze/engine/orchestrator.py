@@ -992,7 +992,7 @@ class Orze:
                         if label.startswith(prefix):
                             label = label[len(prefix):]
                             break
-                    label = label.split("-")[0]  # "opus", "2.5" -> first part
+                    label = label.split("-")[0].split(".")[0]  # "opus", "2.5" -> first part
                     role_contributions[label] = (
                         role_contributions.get(label, 0) + new_ideas)
                 else:
@@ -1489,6 +1489,15 @@ class Orze:
         except Exception:
             pass
 
+        # Full reconcile at startup: clear ALL stale queued ideas at once
+        if self.lake:
+            try:
+                n = self.lake.reconcile_statuses(str(self.results_dir))
+                if n:
+                    logger.info("Startup reconcile: updated %d stale ideas", n)
+            except Exception as e:
+                logger.warning("Startup reconcile failed: %s", e)
+
         while self.running:
             self.iteration += 1
             ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -1542,7 +1551,8 @@ class Orze:
                         orphan_hours = cfg.get("orphan_timeout_hours", 0)
                         if orphan_hours > 0:
                             cleaned = cleanup_orphans(
-                                self.results_dir, orphan_hours)
+                                self.results_dir, orphan_hours,
+                                lake=self.lake)
                             if cleaned:
                                 logger.info("Cleaned %d orphaned claims",
                                             cleaned)
@@ -1655,10 +1665,9 @@ class Orze:
             # For sweeps, we still expand in memory for now to keep it simple,
             # but we query the base queue from SQLite.
             sweep_max = cfg.get("sweep", {}).get("max_combos", 20)
+            queue_ideas = {}
 
             if self.lake:
-                # Get the base queue from SQLite
-                queue_ideas = {}
                 for r in self.lake.get_queue(limit=100):
                     try:
                         cfg_parsed = yaml.safe_load(r["config"]) or {}
@@ -1680,6 +1689,28 @@ class Orze:
                 self.failure_counts,
                 cfg.get("max_idea_failures", 0))
             unclaimed = get_unclaimed(ideas, self.results_dir, skipped)
+
+            # On-demand reconcile: if queue returned ideas but none are
+            # unclaimed, stale DB rows are blocking — reconcile and retry.
+            if not unclaimed and queue_ideas and self.lake:
+                n = self.lake.reconcile_statuses(str(self.results_dir))
+                if n:
+                    logger.info("On-demand reconcile: cleared %d stale ideas", n)
+                    queue_ideas = {}
+                    for r in self.lake.get_queue(limit=100):
+                        try:
+                            cfg_parsed = yaml.safe_load(r["config"]) or {}
+                        except yaml.YAMLError:
+                            cfg_parsed = {}
+                        queue_ideas[r["idea_id"]] = {
+                            "title": r["title"],
+                            "priority": r["priority"],
+                            "config": cfg_parsed,
+                            "raw": "",
+                        }
+                    ideas = expand_sweeps(queue_ideas, max_combos=sweep_max)
+                    unclaimed = get_unclaimed(ideas, self.results_dir, skipped)
+
             if unclaimed:
                 logger.info("Unclaimed queue (top 5): %s", unclaimed[:5])
 
@@ -1852,7 +1883,8 @@ class Orze:
                         if base_id != idea_id:
                             if sweep_counts.get(base_id, 0) >= max_sweep_concurrent:
                                 continue
-                        if not claim(idea_id, self.results_dir, gpu):
+                        if not claim(idea_id, self.results_dir, gpu,
+                                     lake=self.lake):
                             continue
                         # Write sweep config for sub-runs
                         if ideas.get(idea_id, {}).get("_sweep_parent"):
