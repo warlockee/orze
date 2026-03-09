@@ -39,8 +39,10 @@ def get_unclaimed(ideas: Dict[str, dict], results_dir: Path,
 # Claiming (atomic mkdir)
 # ---------------------------------------------------------------------------
 
-def claim(idea_id: str, results_dir: Path, gpu: int) -> bool:
-    """Atomically claim an idea via mkdir. Returns True if we got it."""
+def claim(idea_id: str, results_dir: Path, gpu: int,
+          lake=None) -> bool:
+    """Atomically claim an idea via mkdir. Returns True if we got it.
+    If lake is provided, also updates the DB status to 'running'."""
     idea_dir = results_dir / idea_id
     try:
         idea_dir.mkdir(parents=True, exist_ok=False)
@@ -54,6 +56,13 @@ def claim(idea_id: str, results_dir: Path, gpu: int) -> bool:
         "gpu": gpu,
     }
     atomic_write(idea_dir / "claim.json", json.dumps(claim_info, indent=2))
+
+    if lake:
+        try:
+            lake.set_status(idea_id, "running")
+        except Exception:
+            pass  # filesystem is the primary lock, DB is best-effort
+
     return True
 
 
@@ -61,8 +70,10 @@ def claim(idea_id: str, results_dir: Path, gpu: int) -> bool:
 # GPU management
 # ---------------------------------------------------------------------------
 
-def cleanup_orphans(results_dir: Path, hours: float) -> int:
+def cleanup_orphans(results_dir: Path, hours: float,
+                    lake=None) -> int:
     """Remove result dirs with claim.json but no metrics.json older than hours.
+    If lake is provided, resets their DB status to 'queued' so they retry.
     Returns count of cleaned dirs."""
     if hours <= 0:
         return 0
@@ -84,9 +95,15 @@ def cleanup_orphans(results_dir: Path, hours: float) -> int:
                     last_activity = max(last_activity,
                                         log_path.stat().st_mtime)
                 if last_activity < cutoff:
+                    idea_id = d.name
                     shutil.rmtree(d)
                     logger.info("Cleaned orphan: %s (last activity %.1fh ago)",
-                                d.name, (time.time() - last_activity) / 3600)
+                                idea_id, (time.time() - last_activity) / 3600)
+                    if lake:
+                        try:
+                            lake.set_status(idea_id, "queued")
+                        except Exception:
+                            pass
                     cleaned += 1
             except Exception as e:
                 logger.warning("Failed to clean orphan %s: %s", d.name, e)
