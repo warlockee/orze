@@ -479,8 +479,40 @@ Examples:
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
 
-    # --- service subcommand ---
+    # --- subcommands ---
     subparsers = parser.add_subparsers(dest="command")
+
+    # stop
+    stop_parser = subparsers.add_parser(
+        "stop", help="Stop orze: kill orchestrator + children, "
+                     "disable watchdog, clean up GPUs")
+    stop_parser.add_argument("-c", "--config-file", type=str, default=None,
+                             help="Path to orze.yaml")
+    stop_parser.add_argument("--timeout", type=int, default=60,
+                             help="Timeout for child processes (default: 60)")
+    stop_parser.add_argument("-v", "--verbose", action="store_true")
+
+    # start
+    start_parser = subparsers.add_parser(
+        "start", help="Start orze as a background daemon")
+    start_parser.add_argument("-c", "--config-file", type=str, default=None,
+                              help="Path to orze.yaml")
+    start_parser.add_argument("--foreground", action="store_true",
+                              help="Run in foreground instead of daemonizing")
+    start_parser.add_argument("-v", "--verbose", action="store_true")
+
+    # restart
+    restart_parser = subparsers.add_parser(
+        "restart", help="Stop then start orze")
+    restart_parser.add_argument("-c", "--config-file", type=str, default=None,
+                                help="Path to orze.yaml")
+    restart_parser.add_argument("--timeout", type=int, default=60,
+                                help="Timeout for child processes (default: 60)")
+    restart_parser.add_argument("--foreground", action="store_true",
+                                help="Run in foreground after restart")
+    restart_parser.add_argument("-v", "--verbose", action="store_true")
+
+    # service
     svc_parser = subparsers.add_parser("service", help="Manage orze watchdog service")
     svc_sub = svc_parser.add_subparsers(dest="service_action")
 
@@ -503,8 +535,32 @@ Examples:
 
     setup_logging(args.verbose)
 
-    # --- service subcommand dispatch ---
-    if getattr(args, "command", None) == "service":
+    # --- subcommand dispatch ---
+    command = getattr(args, "command", None)
+
+    if command == "stop":
+        from orze.lifecycle import do_stop
+        cfg = load_project_config(args.config_file)
+        do_stop(cfg, timeout=args.timeout)
+        return
+
+    if command == "start":
+        from orze.lifecycle import do_start
+        cfg = load_project_config(args.config_file)
+        config_path = args.config_file or cfg.get("_config_path", "orze.yaml")
+        # do_start with foreground=True replaces the process via os.execv
+        do_start(cfg, foreground=args.foreground, config_path=config_path)
+        return
+
+    if command == "restart":
+        from orze.lifecycle import do_restart
+        cfg = load_project_config(args.config_file)
+        config_path = args.config_file or cfg.get("_config_path", "orze.yaml")
+        do_restart(cfg, timeout=args.timeout, foreground=args.foreground,
+                   config_path=config_path)
+        return
+
+    if command == "service":
         action = getattr(args, "service_action", None)
         if action == "install":
             from orze.service.install import install
