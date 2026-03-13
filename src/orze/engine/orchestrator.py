@@ -202,9 +202,38 @@ class Orze:
             except Exception as e:
                 logger.warning("Failed to process watchdog restart marker: %s", e)
 
+        # 5. Reconcile stale "running" ideas from prior unclean shutdown
+        self._reconcile_stale_running()
+
         logger.info("=== Startup checks passed ===")
 
         self._print_startup_summary()
+
+    def _reconcile_stale_running(self):
+        """Reset ideas stuck in 'running' from a prior unclean shutdown.
+
+        On startup, no ideas should be running yet. Any 'running' entries
+        in idea_lake.db are leftovers from a crash — reset them to 'queued'.
+        """
+        ideas_path = Path(self.cfg.get("ideas_file", "ideas.md"))
+        lake_path = ideas_path.parent / "idea_lake.db"
+        if not lake_path.exists():
+            return
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(lake_path), timeout=5)
+            cur = conn.execute(
+                "SELECT idea_id FROM ideas WHERE status = 'running'")
+            stale = [row[0] for row in cur.fetchall()]
+            if stale:
+                conn.execute(
+                    "UPDATE ideas SET status = 'queued' WHERE status = 'running'")
+                conn.commit()
+                logger.info("Reconciled %d stale 'running' ideas → queued: %s",
+                            len(stale), ", ".join(stale[:10]))
+            conn.close()
+        except Exception as e:
+            logger.warning("Failed to reconcile stale ideas: %s", e)
 
     def _print_startup_summary(self):
         """Print a human-readable table of what's configured."""
