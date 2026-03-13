@@ -229,6 +229,11 @@ def _validate_config(cfg: dict) -> tuple:
         if not has_key:
             warnings.append("Research role configured but no API keys found in environment")
 
+    gc_cfg = cfg.get("gc") or {}
+    if not gc_cfg.get("enabled"):
+        warnings.append("GC disabled — checkpoint dirs will accumulate indefinitely. "
+                        "Add gc: {enabled: true, checkpoints_dir: ...} to enable.")
+
     ncfg = cfg.get("notifications", {})
     if not ncfg.get("enabled"):
         warnings.append("Notifications disabled")
