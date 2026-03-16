@@ -82,18 +82,28 @@ DEFAULT_CONFIG = {
             {"key": "test_loss", "label": "Loss", "fmt": ".4f"},
             {"key": "training_time", "label": "Time(s)", "fmt": ".0f"},
         ],
+        "ceiling_k": 20,
+        "ceiling_std_threshold": 0.015,
+        "ceiling_min_ideas": 30,
     },
     "stall_minutes": 0,         # 0 = disabled
     "max_idea_failures": 0,     # 0 = disabled (never skip)
     "max_fix_attempts": 0,      # 0 = disabled; executor LLM fix attempts per idea
     "min_disk_gb": 0,           # 0 = disabled
     "orphan_timeout_hours": 0,  # 0 = disabled
+    "plateau_threshold": 50,    # fire plateau notification after N completions w/o improvement
     "roles": {},
     "auto_upgrade": False,
     "notifications": {
         "enabled": False,
-        "on": ["completed", "failed", "new_best", "watchdog_restart"],
+        "on": ["completed", "failed", "new_best", "watchdog_restart", "plateau"],
         "channels": [],
+    },
+    "retrospection": {
+        "enabled": False,
+        "script": "",
+        "interval": 50,
+        "timeout": 120,
     },
 }
 def load_project_config(path: Optional[str] = None) -> dict:

@@ -106,6 +106,8 @@ def _format_slack(event: str, data: dict) -> dict:
         host = data.get("host", socket.gethostname())
         reason = data.get("reason", "unknown")
         return {"text": f":dog: *Watchdog restarted orze* on `{host}` (reason: {reason})"}
+    if event == "plateau":
+        return {"text": f":warning: *Plateau detected*: {data.get('message', 'No improvement')}"}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         text = (f":trophy: *NEW BEST* `{data['idea_id']}`: {data['title']}\n"
@@ -168,6 +170,8 @@ def _format_discord(event: str, data: dict) -> dict:
         host = data.get("host", socket.gethostname())
         reason = data.get("reason", "unknown")
         return {"content": f"\U0001f415 **Watchdog restarted orze** on `{host}` (reason: {reason})"}
+    if event == "plateau":
+        return {"content": f"\u26a0\ufe0f **Plateau detected**: {data.get('message', 'No improvement')}"}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         content = (f"**NEW BEST** `{data['idea_id']}`: {data['title']}\n"
@@ -269,6 +273,11 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
         reason = esc(str(data.get("reason", "unknown")))
         text = (f"\U0001f415 <b>Watchdog restarted orze</b> on "
                 f"<code>{host}</code> (reason: {reason})")
+        return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+
+    if event == "plateau":
+        msg = esc(str(data.get("message", "No improvement")))
+        text = f"\u26a0\ufe0f <b>Plateau detected</b>: {msg}"
         return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 
     idea_id = esc(str(data.get("idea_id", "")))

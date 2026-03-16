@@ -115,6 +115,94 @@ def _read_metric_value(results_dir: Path, idea_id: str, col: dict):
     return None
 
 
+def _analyze_config_diversity(results_dir: Path, completed_ids: list, max_dims: int = 15) -> str:
+    """Analyze resolved config diversity. Returns markdown table string."""
+    try:
+        import yaml as _yaml
+    except ImportError:
+        return ""
+
+    # Collect values for each key path across all completed ideas
+    key_values = {}  # dotpath -> list of values
+
+    def _walk(d, prefix="", depth=0):
+        if depth > 3 or not isinstance(d, dict):
+            return
+        for k, v in d.items():
+            if k.startswith("_") or "/" in k:
+                continue
+            dotpath = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+            if isinstance(v, dict):
+                _walk(v, dotpath, depth + 1)
+            elif isinstance(v, (str, int, float, bool, type(None))):
+                key_values.setdefault(dotpath, []).append(v)
+            # skip lists and other non-scalar types
+
+    for idea_id in completed_ids:
+        cfg_path = results_dir / idea_id / "resolved_config.yaml"
+        if not cfg_path.exists():
+            continue
+        try:
+            config = _yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(config, dict):
+                _walk(config)
+        except Exception:
+            continue
+
+    if not key_values:
+        return ""
+
+    # Analyze each dimension
+    dim_stats = []
+    for dotpath, vals in key_values.items():
+        n_unique = len(set(str(v) for v in vals))
+        # Find most common value
+        counts = {}
+        for v in vals:
+            sv = str(v)
+            counts[sv] = counts.get(sv, 0) + 1
+        dominant_val = max(counts, key=counts.get)
+        dominant_pct = counts[dominant_val] / len(vals) * 100
+
+        # Collect all unique values for display
+        all_unique = sorted(set(str(v) for v in vals))
+
+        # Filter: one value dominates >70% OR n_unique < 5
+        if dominant_pct > 70 or n_unique < 5:
+            dim_stats.append({
+                "dim": dotpath,
+                "n_unique": n_unique,
+                "dominant": dominant_val,
+                "dominant_pct": dominant_pct,
+                "all_values": all_unique,
+            })
+
+    if not dim_stats:
+        return ""
+
+    # Sort by n_unique ascending (least diverse first)
+    dim_stats.sort(key=lambda x: x["n_unique"])
+    dim_stats = dim_stats[:max_dims]
+
+    lines = [
+        "## Config Diversity",
+        "",
+        "| Dimension | Unique | Dominant (%) | All Values |",
+        "|-----------|--------|--------------|------------|",
+    ]
+    for s in dim_stats:
+        all_vals_str = ", ".join(s["all_values"][:10])
+        if len(s["all_values"]) > 10:
+            all_vals_str += f", ... (+{len(s['all_values']) - 10})"
+        lines.append(
+            f"| {s['dim']} | {s['n_unique']} "
+            f"| {s['dominant']} ({s['dominant_pct']:.0f}%) "
+            f"| {all_vals_str} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def update_report(results_dir: Path, ideas: Dict[str, dict],
                   cfg: dict, lake: Optional[IdeaLake] = None) -> list:
     """Generate a configurable leaderboard report.md from all results.
@@ -386,6 +474,41 @@ def update_report(results_dir: Path, ideas: Dict[str, dict],
         if len(queued) > 20:
             lines.append(f"- ... and {len(queued) - 20} more")
         lines.append("")
+
+    # --- Score Ceiling Detection ---
+    ceiling_k = report_cfg.get("ceiling_k", 20)
+    ceiling_threshold = report_cfg.get("ceiling_std_threshold", 0.015)
+    ceiling_min = report_cfg.get("ceiling_min_ideas", 30)
+    if len(completed) >= ceiling_min:
+        primary_vals = []
+        for r in completed:
+            try:
+                primary_vals.append(float(r.get("primary_val")))
+            except (ValueError, TypeError):
+                pass
+        if len(primary_vals) >= ceiling_k:
+            top_k = primary_vals[:ceiling_k]  # already sorted
+            top_std = (sum((v - sum(top_k) / len(top_k)) ** 2 for v in top_k)
+                       / len(top_k)) ** 0.5
+            top_min = min(top_k)
+            top_max = max(top_k)
+            if top_std < ceiling_threshold:
+                lines.append("## Score Ceiling Warning")
+                lines.append(
+                    f"Top {ceiling_k} scores cluster tightly "
+                    f"(std={top_std:.4f}, range={top_min:.4f}-{top_max:.4f}).")
+                lines.append(
+                    "Current approach may have reached a fundamental ceiling.")
+                lines.append(
+                    "Consider a fundamentally different architecture or data strategy.")
+                lines.append("")
+
+    # --- Config Diversity ---
+    if len(completed) >= 10:
+        completed_ids = [r["id"] for r in completed]
+        diversity_md = _analyze_config_diversity(results_dir, completed_ids)
+        if diversity_md:
+            lines.append(diversity_md)
 
     report_path = results_dir / "report.md"
     atomic_write(report_path, "\n".join(lines))

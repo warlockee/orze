@@ -96,6 +96,13 @@ class Orze:
         self._last_upgrade_check: float = 0.0
         self._pending_upgrade: Optional[str] = None
 
+        # Plateau detection state
+        self._completions_since_best = state.get("completions_since_best", 0)
+        self._plateau_notified = state.get("plateau_notified", False)
+
+        # Retrospection state
+        self._retro_last_count = state.get("retro_last_count", 0)
+
         # Initialize Idea Lake for archival
         try:
             from orze.idea_lake import IdeaLake
@@ -162,6 +169,62 @@ class Orze:
         for role_name, rp in list(self.active_roles.items()):
             _kill_pg(rp.process, signal.SIGKILL)
             rp.close_log()
+
+    # -- Config deduplication helpers --
+
+    def _config_override_hash(self, config: dict) -> str:
+        """Hash an idea's config overrides for dedup detection."""
+        import hashlib
+        clean = {k: v for k, v in config.items()
+                 if not k.startswith('_') and k not in (
+                     'parent', 'Parent', 'category', 'hypothesis',
+                     'priority', 'title')}
+        return hashlib.md5(
+            json.dumps(clean, sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+
+    def _load_config_hashes(self) -> dict:
+        """Load the config hash -> idea_id mapping."""
+        cache_file = self.results_dir / "_config_hashes.json"
+        if cache_file.exists():
+            try:
+                return json.loads(cache_file.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    def _save_config_hash(self, idea_id: str, config: dict):
+        """Store a completed idea's config hash."""
+        cache_file = self.results_dir / "_config_hashes.json"
+        hashes = self._load_config_hashes()
+        h = self._config_override_hash(config)
+        hashes[h] = idea_id
+        cache_file.write_text(json.dumps(hashes, indent=2), encoding="utf-8")
+
+    def _rebuild_config_hashes(self):
+        """Rebuild config hash cache from existing completed ideas' resolved configs."""
+        hashes = {}
+        if not self.results_dir.exists():
+            return
+        for idea_dir in self.results_dir.iterdir():
+            if not idea_dir.is_dir() or not idea_dir.name.startswith("idea-"):
+                continue
+            metrics_path = idea_dir / "metrics.json"
+            resolved_path = idea_dir / "resolved_config.yaml"
+            if not metrics_path.exists() or not resolved_path.exists():
+                continue
+            try:
+                m = json.loads(metrics_path.read_text(encoding="utf-8"))
+                if m.get("status") != "COMPLETED":
+                    continue
+                cfg = yaml.safe_load(resolved_path.read_text(encoding="utf-8")) or {}
+                h = self._config_override_hash(cfg)
+                hashes[h] = idea_dir.name
+            except Exception:
+                continue
+        cache_file = self.results_dir / "_config_hashes.json"
+        cache_file.write_text(json.dumps(hashes, indent=2), encoding="utf-8")
+        logger.info("Rebuilt config hash cache: %d completed ideas", len(hashes))
 
     def _startup_checks(self):
         """Run pre-flight checks before entering main loop."""
@@ -412,6 +475,9 @@ class Orze:
             "fix_counts": self.fix_counts,
             "roles": self.role_states,
             "best_idea_id": self._best_idea_id,
+            "completions_since_best": self._completions_since_best,
+            "plateau_notified": self._plateau_notified,
+            "retro_last_count": self._retro_last_count,
         })
 
         # 5. Notify (best effort)
@@ -669,7 +735,20 @@ class Orze:
                         logger.warning("Failed to archive %s to lake: %s",
                                        idea_id, exc)
 
-            # New best detection
+                # Save config hash for dedup (completed ideas only)
+                if status == "COMPLETED":
+                    try:
+                        resolved_path = self.results_dir / idea_id / "resolved_config.yaml"
+                        if resolved_path.exists():
+                            rcfg = yaml.safe_load(
+                                resolved_path.read_text(encoding="utf-8")) or {}
+                            self._save_config_hash(idea_id, rcfg)
+                    except Exception as exc:
+                        logger.debug("Config hash save failed for %s: %s",
+                                     idea_id, exc)
+
+            # New best detection + plateau tracking
+            new_best_fired = False
             if completed_rows:
                 current_best = completed_rows[0]["id"]
                 if (self._best_idea_id is not None
@@ -687,7 +766,38 @@ class Orze:
                         "leaderboard": leaderboard,
                         "view_leaderboards": view_leaderboards,
                     }, cfg)
+                    new_best_fired = True
                 self._best_idea_id = current_best
+
+            # Count completed ideas in this batch for plateau tracking
+            n_completed = sum(
+                1 for idea_id, _ in finished
+                if (self.results_dir / idea_id / "metrics.json").exists()
+                and json.loads((self.results_dir / idea_id / "metrics.json")
+                               .read_text(encoding="utf-8")).get("status") == "COMPLETED"
+            )
+            if new_best_fired:
+                self._completions_since_best = 0
+                self._plateau_notified = False
+            else:
+                self._completions_since_best += n_completed
+
+            # Plateau notification
+            plateau_threshold = cfg.get("plateau_threshold", 50)
+            if (plateau_threshold > 0
+                    and self._completions_since_best >= plateau_threshold
+                    and not self._plateau_notified):
+                best_score = None
+                if completed_rows:
+                    best_score = completed_rows[0].get("primary_val")
+                notify("plateau", {
+                    "message": (f"No improvement in {self._completions_since_best} "
+                                f"ideas. Best: {best_score} ({self._best_idea_id})"),
+                    "best_id": self._best_idea_id,
+                    "since_best": self._completions_since_best,
+                    "threshold": plateau_threshold,
+                }, cfg)
+                self._plateau_notified = True
 
             # Periodic report summary
             report_interval = ncfg.get("report_interval", 0)
@@ -1130,7 +1240,46 @@ class Orze:
         if lake_path.exists():
             cmd.extend(["--lake-db", str(lake_path)])
 
+        # Pass retrospection file if it exists
+        retro_file = self.results_dir / "_retrospection.txt"
+        if retro_file.exists():
+            cmd.extend(["--retrospection-file", str(retro_file)])
+
         return cmd
+
+    def _run_retrospection(self, completed_count):
+        """Run user-provided retrospection script periodically."""
+        retro_cfg = self.cfg.get("retrospection", {})
+        if not retro_cfg.get("enabled") or not retro_cfg.get("script"):
+            return
+        interval = retro_cfg.get("interval", 50)
+        if completed_count < self._retro_last_count + interval:
+            return
+
+        script = retro_cfg["script"]
+        timeout = retro_cfg.get("timeout", 120)
+        output_file = self.results_dir / "_retrospection.txt"
+
+        try:
+            env = os.environ.copy()
+            env["ORZE_RESULTS_DIR"] = str(self.results_dir)
+            env["ORZE_COMPLETED_COUNT"] = str(completed_count)
+            result = subprocess.run(
+                [self.cfg.get("python", sys.executable), script],
+                capture_output=True, text=True, timeout=timeout, env=env,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                output_file.write_text(result.stdout, encoding="utf-8")
+                logger.info("Retrospection completed (%d chars)", len(result.stdout))
+            elif result.returncode != 0:
+                logger.warning("Retrospection failed (exit %d): %s",
+                               result.returncode, result.stderr[:200])
+        except subprocess.TimeoutExpired:
+            logger.warning("Retrospection timed out after %ds", timeout)
+        except Exception as e:
+            logger.warning("Retrospection error: %s", e)
+
+        self._retro_last_count = completed_count
 
     def _kill_orphans(self):
         """Kill orphaned train/eval processes from a previous Orze instance.
@@ -1428,6 +1577,9 @@ class Orze:
                 "fix_counts": self.fix_counts,
                 "roles": self.role_states,
                 "best_idea_id": self._best_idea_id,
+                "completions_since_best": self._completions_since_best,
+                "plateau_notified": self._plateau_notified,
+                "retro_last_count": self._retro_last_count,
             })
         except Exception as e:
             logger.warning("Auto-upgrade: state save failed: %s", e)
@@ -1526,6 +1678,12 @@ class Orze:
                     logger.info("Startup reconcile: updated %d stale ideas", n)
             except Exception as e:
                 logger.warning("Startup reconcile failed: %s", e)
+
+        # Rebuild config dedup hash cache from completed ideas
+        try:
+            self._rebuild_config_hashes()
+        except Exception as e:
+            logger.warning("Config hash cache rebuild failed: %s", e)
 
         while self.running:
             self.iteration += 1
@@ -1641,8 +1799,18 @@ class Orze:
                 # Sync new ideas to DB queue
                 db_ids = self.lake.get_all_ids()
                 ingested_ids = []
+                config_hashes = self._load_config_hashes()
                 for idea_id, idea in raw_ideas.items():
                     if idea_id not in db_ids:
+                        # Config dedup: skip if overrides match a completed idea
+                        override_hash = self._config_override_hash(
+                            idea.get("config", {}))
+                        existing_id = config_hashes.get(override_hash)
+                        if existing_id:
+                            logger.info(
+                                "Skipping %s: config duplicate of %s",
+                                idea_id, existing_id)
+                            continue
                         # Clamp priority: "critical" is reserved for
                         # human/API-submitted ideas, not auto-ingested ones.
                         raw_pri = idea.get("priority", "medium")
@@ -2022,7 +2190,13 @@ class Orze:
             write_host_heartbeat(self.results_dir, socket.gethostname(), self.active, free)
             counts = _count_statuses(ideas, self.results_dir)
 
-            # 8a. Notifications (fires for eval-finished ideas, metrics available)
+            # 9a. Retrospection hook
+            try:
+                self._run_retrospection(counts.get("COMPLETED", 0))
+            except Exception as e:
+                logger.warning("Retrospection hook error: %s", e)
+
+            # 9b. Notifications (fires for eval-finished ideas, metrics available)
             self._process_notifications(
                 eval_finished, completed_rows or [], ideas, counts)
 
@@ -2109,6 +2283,9 @@ class Orze:
                 "fix_counts": self.fix_counts,
                 "roles": self.role_states,
                 "best_idea_id": self._best_idea_id,
+                "completions_since_best": self._completions_since_best,
+                "plateau_notified": self._plateau_notified,
+                "retro_last_count": self._retro_last_count,
             })
 
             if self.once:
@@ -2160,6 +2337,9 @@ class Orze:
                         "fix_counts": self.fix_counts,
                         "roles": self.role_states,
                         "best_idea_id": self._best_idea_id,
+                        "completions_since_best": self._completions_since_best,
+                        "plateau_notified": self._plateau_notified,
+                        "retro_last_count": self._retro_last_count,
                     })
                 logger.info("Done.")
                 break
@@ -2194,6 +2374,9 @@ class Orze:
                 "fix_counts": self.fix_counts,
                 "roles": self.role_states,
                 "best_idea_id": self._best_idea_id,
+                "completions_since_best": self._completions_since_best,
+                "plateau_notified": self._plateau_notified,
+                "retro_last_count": self._retro_last_count,
             })
             if self.lake:
                 try:
