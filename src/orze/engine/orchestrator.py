@@ -1255,6 +1255,8 @@ class Orze:
         interval = retro_cfg.get("interval", 50)
         if completed_count < self._retro_last_count + interval:
             return
+        logger.info("Retrospection triggered: %d completed (last run at %d, interval %d)",
+                     completed_count, self._retro_last_count, interval)
 
         script = retro_cfg["script"]
         timeout = retro_cfg.get("timeout", 120)
@@ -2190,9 +2192,9 @@ class Orze:
             write_host_heartbeat(self.results_dir, socket.gethostname(), self.active, free)
             counts = _count_statuses(ideas, self.results_dir)
 
-            # 9a. Retrospection hook
+            # 9a. Retrospection hook (use completed_rows from report, not counts)
             try:
-                self._run_retrospection(counts.get("COMPLETED", 0))
+                self._run_retrospection(len(completed_rows) if completed_rows else 0)
             except Exception as e:
                 logger.warning("Retrospection hook error: %s", e)
 

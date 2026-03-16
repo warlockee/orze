@@ -41,7 +41,14 @@ def _format_leaderboard(data: dict, bold_fn=str, escape_fn=str) -> str:
     lines = [f"\nTop {len(board)} ({metric}):"]
     for i, entry in enumerate(board, 1):
         val = entry.get("value")
-        val_str = escape_fn(f"{val:.4f}" if isinstance(val, float) else str(val))
+        if isinstance(val, float):
+            val_str = escape_fn(f"{val:.4f}")
+        elif isinstance(val, (int,)):
+            val_str = escape_fn(str(val))
+        elif val is not None:
+            val_str = escape_fn(str(val))
+        else:
+            val_str = "—"
         marker = escape_fn(" <-" if entry["id"] == data.get("idea_id") else "")
         title = escape_fn(str(entry.get("title", ""))[:30])
         line = f"#{i} {escape_fn(str(entry['id']))}: {val_str} {title}{marker}"
