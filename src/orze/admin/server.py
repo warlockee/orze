@@ -151,7 +151,7 @@ def _strip_sensitive(obj: Any) -> Any:
     """Recursively strip sensitive keys from dicts."""
     if isinstance(obj, dict):
         return {
-            k: ("***" if k.lower() in {s.lower() for s in _SENSITIVE_KEYS} else _strip_sensitive(v))
+            k: ("***" if isinstance(k, str) and k.lower() in {s.lower() for s in _SENSITIVE_KEYS} else _strip_sensitive(v))
             for k, v in obj.items()
         }
     if isinstance(obj, list):
