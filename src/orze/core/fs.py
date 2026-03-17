@@ -113,6 +113,7 @@ def _fs_lock(lock_dir: Path, stale_seconds: float = 600) -> bool:
 
 def atomic_write(path: Path, content: str):
     """Write content atomically via tmp+rename with fsync for Lustre safety."""
+    import errno
     path.parent.mkdir(parents=True, exist_ok=True)
     safe_host = "".join(c if c.isalnum() else "_" for c in socket.gethostname())
     tmp = path.with_name(f"{path.name}.{safe_host}.{os.getpid()}.tmp")
@@ -121,8 +122,22 @@ def atomic_write(path: Path, content: str):
     try:
         os.write(fd, content.encode("utf-8"))
         os.fsync(fd)
-    finally:
+    except OSError as e:
         os.close(fd)
+        # Clean up the partial tmp file
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if e.errno == errno.ENOSPC:
+            logger.warning("atomic_write skipped (ENOSPC): %s", path)
+            return
+        raise
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass  # already closed in the except branch
     tmp.replace(path)
     # fsync parent directory so the rename is durable and visible on other nodes
     dir_fd = os.open(str(path.parent), os.O_RDONLY)

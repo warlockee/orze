@@ -325,6 +325,28 @@ class OrzePhaseMixin:
                 base = base.split("~", 1)[0]
             sweep_counts[base] = sweep_counts.get(base, 0) + 1
 
+        # Emergency GC: if disk is low and GC is configured, try to free space now
+        if not disk_ok:
+            gc_cfg = cfg.get("gc", {})
+            if gc_cfg.get("enabled"):
+                try:
+                    from orze.agents.orze_gc import run_gc
+                    report_cfg = cfg.get("report") or {}
+                    ideas_path = Path(cfg.get("ideas_file", "ideas.md"))
+                    lake_path = ideas_path.parent / "idea_lake.db"
+                    logger.warning("Emergency GC: disk low, running checkpoint cleanup")
+                    run_gc(
+                        results_dir=self.results_dir,
+                        checkpoints_dir=Path(gc_cfg["checkpoints_dir"]) if gc_cfg.get("checkpoints_dir") else None,
+                        primary_metric=report_cfg.get("primary_metric", ""),
+                        lake_db_path=lake_path if lake_path.exists() else None,
+                        keep_top=gc_cfg.get("keep_top", 50),
+                        keep_recent=gc_cfg.get("keep_recent", 20),
+                        min_free_gb=0,  # force run, disk is already low
+                    )
+                except Exception as e:
+                    logger.warning("Emergency GC failed: %s", e)
+
         if unclaimed and free and disk_ok:
             for gpu in free:
                 launched = False

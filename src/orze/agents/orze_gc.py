@@ -183,6 +183,17 @@ def gc_checkpoints(checkpoints_dir: Path, keep_ids: Set[str],
 
         if full_name in expanded_keep or base_id in expanded_keep:
             stats["kept"] += 1
+            # Write a protection marker so humans know this checkpoint is important
+            if not dry_run:
+                try:
+                    marker = idea_dir / ".orze_protected"
+                    marker.write_text(
+                        f"idea_id: {full_name}\nprotected: true\n"
+                        f"DO NOT DELETE — this checkpoint is in the top-{len(keep_ids)} keep set.\n",
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
             continue
 
         if dry_run:
