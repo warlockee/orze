@@ -632,6 +632,13 @@ def run_admin(cfg: dict, host: str = "0.0.0.0", port: int = 8787):
     _cfg = cfg
     _load_backbone_registry()
 
+    # Mount MCP endpoint for Claude Code integration
+    try:
+        from orze.admin.mcp import mount_mcp
+        mount_mcp(app, lambda: _cfg)
+    except Exception as e:
+        logger.warning("MCP endpoint not mounted: %s", e)
+
     import uvicorn
 
     logger.info("Starting Orze Admin Panel on %s:%d", host, port)
