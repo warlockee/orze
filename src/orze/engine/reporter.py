@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Notification and reporting logic for finished experiments.
 
 Calling spec
@@ -44,7 +42,7 @@ class NotificationProcessor:
         self.results_dir = results_dir
         self.cfg = cfg
         self.lake = lake
-        self._best_idea_id: str | None = None
+        self._best_idea_id = None  # Optional[str]
         self._completions_since_best: int = 0
         self._plateau_notified: bool = False
         self._last_report_notify: float = 0.0

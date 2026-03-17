@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Auto-upgrade logic for Orze.
 
 Calling spec
@@ -8,7 +6,7 @@ Calling spec
 
     mgr = UpgradeManager(results_dir, cfg)
 
-    mgr.pending                                     # -> str | None
+    mgr.pending                                     # -> Optional[str]
     mgr.check_pypi()                                # rate-limited PyPI poll
     mgr.check_sentinel()                            # react to .orze_upgrade file
     mgr.do_upgrade(kill_and_save_fn, remove_pid_fn) # pip install + restart
@@ -32,6 +30,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from orze import __version__
 from orze.core.fs import _fs_lock, _fs_unlock
@@ -54,15 +53,15 @@ class UpgradeManager:
     def __init__(self, results_dir: Path, cfg: dict):
         self._results_dir = results_dir
         self._cfg = cfg
-        self._pending_upgrade: str | None = None
+        self._pending_upgrade: Optional[str] = None
         self._last_upgrade_check: float = 0.0
 
     @property
-    def pending(self) -> str | None:
+    def pending(self) -> Optional[str]:
         return self._pending_upgrade
 
     @pending.setter
-    def pending(self, value: str | None):
+    def pending(self, value: Optional[str]):
         self._pending_upgrade = value
 
     def check_pypi(self):
