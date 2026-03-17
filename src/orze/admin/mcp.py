@@ -266,19 +266,20 @@ def _tool_add_idea(args: dict, cfg: dict) -> str:
 def _tool_nodes(args: dict, cfg: dict) -> str:
     results_dir = Path(cfg.get("results_dir", "results"))
     nodes = []
-    for p in results_dir.glob("_host_*.json"):
+    for p in sorted(results_dir.glob("_host_*.json")):
         data = _read_json(p)
-        if data:
-            active = data.get("active", [])
-            free = data.get("free_gpus", [])
-            nodes.append({
-                "host": data.get("host", "?"),
-                "status": data.get("status", "running"),
-                "gpus_busy": len(active),
-                "gpus_total": len(active) + len(free),
-                "active_runs": [a.get("idea_id") for a in active],
-                "version": data.get("orze_version", "?"),
-            })
+        if not data or not isinstance(data, dict):
+            continue
+        active = data.get("active", [])
+        free = data.get("free_gpus", [])
+        nodes.append({
+            "host": data.get("host", "?"),
+            "status": data.get("status", "running"),
+            "gpus_busy": len(active),
+            "gpus_total": len(active) + len(free),
+            "active_runs": [a.get("idea_id") for a in active],
+            "version": data.get("orze_version", "?"),
+        })
     return json.dumps(nodes, indent=2) if nodes else "No node heartbeats found."
 
 
