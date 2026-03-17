@@ -26,7 +26,7 @@ import yaml
 from orze.core.fs import _fs_lock, _fs_unlock, atomic_write
 from orze.core.ideas import parse_ideas, expand_sweeps
 from orze.engine.config_dedup import hash_config, load_hashes, save_hash
-from orze.engine.evaluator import launch_eval
+from orze.engine.evaluator import launch_eval, check_active_evals, run_eval, run_post_scripts
 from orze.engine.failure import (
     _record_failure, get_skipped_ideas, _try_executor_fix, _reset_idea_for_retry,
 )
@@ -34,7 +34,7 @@ from orze.engine.launcher import (
     launch, _get_checkpoint_dir, _write_failure,
 )
 from orze.engine.process import run_pre_script
-from orze.engine.scheduler import get_unclaimed, _count_statuses
+from orze.engine.scheduler import claim, get_unclaimed, _count_statuses
 from orze.hardware.gpu import get_gpu_memory_used, _eval_already_running
 from orze.reporting.leaderboard import update_report, write_admin_cache
 from orze.reporting.notifications import notify
