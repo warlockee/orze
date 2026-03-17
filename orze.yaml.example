@@ -96,7 +96,12 @@ orphan_timeout_hours: 0              # reclaim orphaned claims after N hours
 #
 #   research:                            # Claude — web search + code generation
 #     mode: claude
-#     rules_file: RESEARCH_RULES.md
+#     rules_file: RESEARCH_RULES.md       # single file (legacy)
+#     # --- OR use composable skills ---
+#     # skills:                            # list of prompt fragments
+#     #   - @core                          # built-in: idea format, contracts
+#     #   - @research                      # built-in: best practices
+#     #   - ./RESEARCH_RULES.md            # project-specific rules
 #     model: sonnet                      # sonnet, opus, haiku
 #     cooldown: 300
 #     timeout: 600

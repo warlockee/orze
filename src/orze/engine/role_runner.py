@@ -61,18 +61,26 @@ def build_claude_cmd(
     template_vars: dict,
 ) -> Optional[List[str]]:
     """Build a Claude CLI command for mode: claude."""
-    rules_file = role_cfg["rules_file"]
-    rules_path = Path(rules_file)
-    if not rules_path.exists():
-        logger.warning("Research rules file not found: %s", rules_file)
-        return None
-
-    rules_content = rules_path.read_text(encoding="utf-8")
-
-    # Substitute template vars using explicit replace (safe with literal {})
-    prompt = rules_content
-    for k, v in template_vars.items():
-        prompt = prompt.replace(f"{{{k}}}", str(v))
+    # Skills path (composable) or legacy rules_file path
+    if "skills" in role_cfg:
+        from orze.skills.loader import compose_skills
+        project_root = Path(template_vars.get("results_dir", ".")).parent
+        prompt = compose_skills(role_cfg, project_root, template_vars=template_vars)
+        if not prompt:
+            logger.warning("No skills produced any content")
+            return None
+    else:
+        rules_file = role_cfg.get("rules_file")
+        if not rules_file:
+            return None
+        rules_path = Path(rules_file)
+        if not rules_path.exists():
+            logger.warning("Research rules file not found: %s", rules_file)
+            return None
+        rules_content = rules_path.read_text(encoding="utf-8")
+        prompt = rules_content
+        for k, v in template_vars.items():
+            prompt = prompt.replace(f"{{{k}}}", str(v))
 
     claude_bin = role_cfg.get("claude_bin") or "claude"
     cmd = [claude_bin, "-p", prompt]
@@ -130,7 +138,16 @@ def build_research_cmd(
         cmd.extend(["--endpoint", str(role_cfg["endpoint"])])
     if role_cfg.get("num_ideas"):
         cmd.extend(["--num-ideas", str(role_cfg["num_ideas"])])
-    if role_cfg.get("rules_file"):
+    if "skills" in role_cfg:
+        from orze.skills.loader import compose_skills
+        project_root = Path(template_vars.get("results_dir", ".")).parent
+        composed = compose_skills(role_cfg, project_root, template_vars=None)
+        if composed:
+            results_dir = Path(template_vars["results_dir"])
+            tmp = results_dir / f"_skill_composed_{template_vars.get('role_name', 'research')}.md"
+            tmp.write_text(composed, encoding="utf-8")
+            cmd.extend(["--rules-file", str(tmp)])
+    elif role_cfg.get("rules_file"):
         cmd.extend(["--rules-file", str(role_cfg["rules_file"])])
 
     # Pass lake DB path so research agent can query historical patterns
@@ -165,7 +182,7 @@ def run_role_step(role_name: str, role_cfg: dict, ctx: RoleContext) -> None:
     mode = role_cfg.get("mode", "script")
     if mode == "script" and not role_cfg.get("script"):
         return
-    if mode == "claude" and not role_cfg.get("rules_file"):
+    if mode == "claude" and not role_cfg.get("rules_file") and not role_cfg.get("skills"):
         return
     if mode == "research" and not role_cfg.get("backend"):
         return

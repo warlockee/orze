@@ -39,7 +39,7 @@ Homepage = "https://orze.ai"
 Repository = "https://github.com/warlockee/orze"
 
 [tool.setuptools.package-data]
-orze = ["AGENT.md", "RULES.md", "admin/ui/dist/**/*", "admin/ui/dist/*"]
+orze = ["AGENT.md", "RULES.md", "skills/*.skill.md", "admin/ui/dist/**/*", "admin/ui/dist/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
