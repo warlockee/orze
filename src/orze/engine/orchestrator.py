@@ -315,6 +315,7 @@ class Orze(OrzePhaseMixin):
     def _check_auto_upgrade(self):
         """Check PyPI for a newer orze version. Rate-limited. Never raises."""
         self._upgrade_mgr.check_pypi()
+        self._pending_upgrade = self._upgrade_mgr.pending
 
     def _check_upgrade_sentinel(self):
         """Check if another node wrote .orze_upgrade sentinel.
