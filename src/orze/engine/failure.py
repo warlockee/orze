@@ -1,3 +1,24 @@
+"""Failure tracking, skip-listing, and LLM-based auto-fix for failed ideas.
+
+CALLING SPEC:
+    _record_failure(failure_counts: dict, idea_id: str)
+        Increment failure_counts[idea_id] by 1.
+
+    get_skipped_ideas(failure_counts: dict, max_failures: int) -> set[str]
+        Return idea IDs that have failed >= max_failures times.
+        Returns empty set if max_failures <= 0 (skip-listing disabled).
+
+    _reset_idea_for_retry(idea_dir: Path)
+        Delete metrics.json and rotate the log file so the idea can be
+        re-launched. Preserves claim.json.
+
+    _try_executor_fix(idea_id: str, error_text: str, results_dir: Path,
+                      cfg: dict, fix_counts: dict) -> bool
+        Spawn a Claude CLI process to diagnose and patch the failing idea's
+        scripts/configs. Returns True if a fix was applied (idea should be
+        retried). cfg keys used: max_fix_attempts, ideas_file, train_script,
+        executor_fix.{claude_bin, model, timeout}.
+"""
 import logging
 import os
 import subprocess

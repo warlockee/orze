@@ -1,3 +1,40 @@
+"""Training subprocess launcher and lifecycle monitor.
+
+CALLING SPEC:
+    launch(idea_id, gpu, results_dir, cfg) -> TrainingProcess
+        idea_id: str — experiment identifier (e.g. "idea-abc123")
+        gpu: int — CUDA device index (set as CUDA_VISIBLE_DEVICES)
+        results_dir: Path — parent dir; logs written to results_dir/idea_id/train_output.log
+        cfg: dict — orze config; requires keys 'train_script', 'ideas_file', 'base_config';
+                     optional 'python', 'train_extra_args', 'train_extra_env', 'timeout'
+        returns: TrainingProcess with a running Popen in its own process group
+        side effects: creates results_dir/idea_id/train_output.log, spawns subprocess
+
+    check_active(active, results_dir, cfg, failure_counts, fix_counts=None) -> list[(idea_id, gpu)]
+        active: Dict[int, TrainingProcess] — gpu -> running process; MUTATED in-place (finished entries removed)
+        results_dir: Path
+        cfg: dict — uses 'stall_minutes', 'max_fix_attempts', executor config
+        failure_counts: dict — idea_id -> int; MUTATED to track consecutive failures
+        fix_counts: dict | None — idea_id -> int; MUTATED to track fix attempts
+        returns: list of (idea_id, gpu) tuples for processes that finished this cycle
+        side effects: kills timed-out/stalled/hung processes, writes metrics.json for failures,
+                      may invoke executor LLM to auto-fix and relaunch failed ideas,
+                      sends notifications on stall/timeout
+
+    _format_args(args, template_vars) -> list[str]
+        args: list | str | None — raw arguments (coerced to list)
+        template_vars: dict — e.g. {"idea_id": "idea-abc", "gpu": 0}; replaces {key} in each arg
+        returns: list of formatted string arguments
+
+    _write_failure(idea_dir, reason) -> None
+        idea_dir: Path — e.g. results_dir / idea_id
+        reason: str — error description
+        side effects: atomically writes {"status": "FAILED", "error": reason} to idea_dir/metrics.json
+
+    _get_checkpoint_dir(cfg) -> Path | None
+        cfg: dict — orze config
+        returns: value of --checkpoint-dir from train_extra_args, or None
+"""
 import datetime
 import json
 import logging

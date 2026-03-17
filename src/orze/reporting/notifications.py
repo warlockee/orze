@@ -1,3 +1,16 @@
+"""Notification delivery to Slack, Discord, Telegram, and generic webhooks.
+
+CALLING SPEC:
+    notify(event: str, data: dict, cfg: dict) -> None
+        Send notifications for an event to all configured channels. Never
+        raises. event is one of: completed, failed, new_best, report,
+        started, shutdown, heartbeat, milestone, disk_warning, stall,
+        role_summary, upgrading, watchdog_restart, plateau.
+        data is event-specific (e.g. idea_id, title, metric_value, rank,
+        leaderboard). cfg must contain 'notifications' key with 'enabled',
+        'on' (event filter list), and 'channels' (list of channel configs
+        with type: slack|discord|telegram|webhook).
+"""
 import datetime
 import html as html_mod
 import json

@@ -1,3 +1,19 @@
+"""GPU management utilities via nvidia-smi.
+
+CALLING SPEC:
+    get_gpu_memory_used(gpu_id: int) -> Optional[int]
+        Query memory used in MiB for a single GPU. Returns None on failure.
+
+    _eval_already_running(idea_id: str, cfg: dict = None) -> bool
+        Check via pgrep whether an eval process is already running for the
+        given idea_id. Uses cfg['eval_script'] to determine the process
+        name pattern.
+
+    _query_gpu_details() -> List[dict]
+        Query nvidia-smi for all GPUs. Returns list of dicts with keys:
+        index, name, memory_used_mib, memory_total_mib, utilization_pct,
+        temperature_c. Returns [] on failure.
+"""
 import subprocess
 import logging
 from typing import List, Optional

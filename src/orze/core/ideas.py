@@ -1,3 +1,15 @@
+"""Parsing and sweep expansion of ideas.md files.
+
+CALLING SPEC:
+    parse_ideas(path: str) -> Dict[str, dict]
+        Parse an ideas.md file into {idea_id: {title, priority, config, raw}}.
+        Cached by file mtime — safe to call repeatedly. Returns {} on error.
+
+    expand_sweeps(ideas: Dict[str, dict], max_combos: int = 20) -> Dict[str, dict]
+        Expand ideas with list-valued hyperparams into Cartesian-product
+        sub-runs. Sub-run IDs use format idea-XXX-ht-N. Ideas already
+        containing '~' or exceeding max_combos pass through unchanged.
+"""
 import re
 import yaml
 import logging

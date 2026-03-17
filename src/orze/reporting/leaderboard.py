@@ -1,3 +1,28 @@
+"""Leaderboard report generation from experiment results.
+
+CALLING SPEC:
+    update_report(results_dir: Path, ideas: Dict[str, dict], cfg: dict,
+                  lake: Optional[IdeaLake] = None) -> list
+        Generate report.md leaderboard and JSON caches from all results.
+        Returns sorted list of completed row dicts. Reads metrics.json per
+        idea, caches results, handles sweep grouping and filtered views.
+        cfg must contain 'report' key with primary_metric, columns, etc.
+
+    write_admin_cache(results_dir: Path, ideas: dict, cfg: dict) -> None
+        Write _admin_cache.json with pre-aggregated nodes, queue, and alerts
+        for the admin panel. Reads heartbeats, expands sweeps, scans for
+        recent failures.
+
+    _resolve_primary_metric(cfg: dict, eval_file: str, eval_data: dict) -> Any
+        Extract the primary metric value from eval_data using report column
+        source mappings. Falls back to metrics.<primary_metric> dotpath.
+
+    _format_report_text(data: dict) -> str
+        Format a periodic report summary as plain text. data keys: title,
+        completed, failed, active_count, queued, leaderboard (list of
+        {id, title, value}), metric_name, machines (list of {host,
+        gpus_busy, gpus_total, utilization}).
+"""
 import os
 import json
 import logging

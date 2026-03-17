@@ -1,3 +1,46 @@
+"""Process dataclasses and low-level process management utilities.
+
+CALLING SPEC:
+    TrainingProcess (dataclass)
+        Fields: idea_id (str), gpu (int), process (Popen), start_time (float),
+                log_path (Path), timeout (float)
+        Private: _log_fh, _last_log_size, _last_log_check, _stall_since
+        Methods: close_log() — closes the log file handle if open
+
+    EvalProcess (dataclass)
+        Fields: idea_id (str), gpu (int), process (Popen), start_time (float),
+                log_path (Path), timeout (float)
+        Private: _log_fh
+        Methods: close_log() — closes the log file handle if open
+
+    RoleProcess (dataclass)
+        Fields: role_name (str), process (Popen), start_time (float),
+                log_path (Path), timeout (float), lock_dir (Path), cycle_num (int),
+                ideas_pre_size (int), ideas_pre_count (int)
+        Private: _log_fh
+        Methods: close_log() — closes the log file handle if open
+
+    _kill_pg(proc, sig=SIGTERM) -> None
+        proc: subprocess.Popen
+        sig: signal number (default SIGTERM)
+        side effects: sends signal to the entire process group; falls back to proc.send_signal
+
+    _terminate_and_reap(proc, label="", timeout=10) -> None
+        proc: subprocess.Popen
+        label: str — for log messages
+        timeout: float — seconds to wait after SIGTERM before SIGKILL
+        side effects: SIGTERM -> wait -> SIGKILL if needed; logs warnings on force kill
+
+    _new_process_group() -> None
+        preexec_fn for subprocess.Popen; calls os.setpgrp() to create a new process group
+
+    run_pre_script(idea_id, gpu, cfg) -> bool
+        idea_id: str
+        gpu: int — set as CUDA_VISIBLE_DEVICES
+        cfg: dict — uses 'pre_script', 'pre_args', 'pre_timeout', 'python', 'train_extra_env'
+        returns: True if no pre_script configured or script exited 0, False on failure/timeout
+        side effects: runs blocking subprocess
+"""
 import os
 import signal
 import subprocess

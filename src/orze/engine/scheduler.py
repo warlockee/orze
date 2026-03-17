@@ -1,3 +1,41 @@
+"""Idea scheduling, claiming, orphan cleanup, and status counting.
+
+CALLING SPEC:
+    get_unclaimed(ideas, results_dir, skipped=None) -> list[str]
+        ideas: Dict[str, dict] — parsed ideas (id -> metadata with 'priority')
+        results_dir: Path — parent dir for experiment results
+        skipped: set | None — idea IDs to exclude
+        returns: idea IDs that have no results_dir/idea_id directory,
+                 sorted by priority (critical > high > medium > low) then ID
+
+    claim(idea_id, results_dir, gpu, lake=None) -> bool
+        idea_id: str
+        results_dir: Path
+        gpu: int — recorded in claim.json
+        lake: IdeaLake | None — if provided, sets status to 'running'
+        returns: True if mkdir succeeded (we got the lock), False if already claimed
+        side effects: creates results_dir/idea_id/ directory, writes claim.json
+
+    cleanup_orphans(results_dir, hours, lake=None) -> int
+        results_dir: Path
+        hours: float — max age of stale claims (0 disables cleanup)
+        lake: IdeaLake | None — if provided, resets cleaned ideas to 'queued'
+        returns: number of orphan directories removed
+        side effects: deletes results_dir/idea-*/  dirs that have claim.json but
+                      no metrics.json and no activity for > hours
+
+    _count_statuses(ideas, results_dir) -> dict
+        ideas: Dict[str, dict]
+        results_dir: Path
+        returns: {"QUEUED": n, "IN_PROGRESS": n, "COMPLETED": n, "FAILED": n, ...}
+
+    run_cleanup(results_dir, cfg) -> None
+        results_dir: Path
+        cfg: dict — uses 'cleanup' (patterns, script, timeout), 'gc' (enabled,
+                     checkpoints_dir, keep_top, keep_recent, min_free_gb), 'report', 'ideas_file'
+        side effects: deletes checkpoint dirs via GC, deletes files matching glob patterns
+                      in results dirs, runs custom cleanup script
+"""
 import os
 import re
 import shutil

@@ -1,3 +1,23 @@
+"""Filesystem utilities: locking, atomic writes, and helpers for shared/Lustre filesystems.
+
+CALLING SPEC:
+    _fs_lock(lock_dir: Path, stale_seconds: float = 600) -> bool
+        Acquire a filesystem lock via atomic mkdir. Returns True if acquired.
+        Auto-breaks stale locks by age or dead local PIDs.
+
+    _fs_unlock(lock_dir: Path) -> None
+        Release a filesystem lock (rmtree the lock dir). Silently ignores errors.
+
+    atomic_write(path: Path, content: str) -> None
+        Write content atomically via tmp+rename with fsync. Safe for Lustre
+        shared filesystems where multiple nodes may read concurrently.
+
+    deep_get(obj: dict, dotpath: str, default=None) -> Any
+        Get nested dict value by dot-separated path, e.g. 'a.b.c'.
+
+    tail_file(path: Path, n_bytes: int = 4096) -> str
+        Read the last n_bytes of a file. Returns '' on any error.
+"""
 import json
 import logging
 import os

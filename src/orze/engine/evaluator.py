@@ -1,3 +1,37 @@
+"""Post-training evaluation subprocess launcher and monitor.
+
+CALLING SPEC:
+    launch_eval(idea_id, gpu, results_dir, cfg) -> EvalProcess | None
+        idea_id: str — experiment identifier
+        gpu: int — CUDA device index (NOT set as CUDA_VISIBLE_DEVICES; eval script uses --gpu)
+        results_dir: Path — parent dir for experiment results
+        cfg: dict — requires 'eval_script'; optional 'eval_args', 'eval_timeout', 'eval_output',
+                     'python', 'train_extra_env'
+        returns: EvalProcess if launched, None if eval_script missing, already evaluated,
+                 or training status != COMPLETED
+        side effects: spawns subprocess, creates results_dir/idea_id/eval_output.log
+
+    check_active_evals(active_evals, results_dir, cfg) -> list[(idea_id, gpu)]
+        active_evals: Dict[int, EvalProcess] — gpu -> running eval; MUTATED in-place (finished entries removed)
+        results_dir: Path
+        cfg: dict — uses 'eval_output' (default "eval_report.json")
+        returns: list of (idea_id, gpu) tuples for evals that finished this cycle
+        side effects: kills timed-out evals, writes failure marker JSON if eval dies without output
+
+    run_eval(idea_id, gpu, results_dir, cfg) -> None
+        Blocking wrapper around launch_eval; waits for completion.
+        Used in --once mode. Writes failure marker on error/timeout.
+        side effects: same as launch_eval, but blocks until done
+
+    run_post_scripts(idea_id, gpu, results_dir, cfg) -> None
+        idea_id: str
+        gpu: int — set as CUDA_VISIBLE_DEVICES for post-scripts
+        results_dir: Path
+        cfg: dict — uses 'post_scripts' (list of {script, args, timeout, output, name}),
+                     'python', 'train_extra_env'
+        side effects: runs each post-script sequentially (blocking), skips if output file exists,
+                      skips entirely if training status != COMPLETED
+"""
 import json
 import logging
 import os

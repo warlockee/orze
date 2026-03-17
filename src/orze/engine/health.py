@@ -1,3 +1,32 @@
+"""Filesystem and process health checks for the orze engine.
+
+CALLING SPEC:
+    check_disk_space(path: Path, min_gb: float) -> bool
+        True if >= min_gb free at path. Always True if min_gb <= 0.
+
+    fs_startup_check(path: Path) -> bool
+        Write/read/delete probe at path. Returns True if filesystem is usable.
+        Creates path if missing. Use once at startup.
+
+    fs_check_writable(path: Path) -> bool
+        Quick probe-file write test. Returns True if writable, False on
+        EROFS/ENOSPC/EIO/ESTALE.
+
+    cleanup_stale_locks(results_dir: Path, hostname: str) -> int
+        Remove _*_lock dirs owned by hostname. Returns count removed.
+        Call at startup to recover from unclean shutdowns.
+
+    check_stalled(tp: TrainingProcess, stall_minutes: int) -> bool
+        True if tp's log file has not grown for stall_minutes.
+
+    detect_fatal_in_log(tp: TrainingProcess) -> Optional[str]
+        Returns traceback snippet if a fatal error is found near end of
+        tp's log while the process is still alive. None otherwise.
+
+    HealthMonitor(results_dir: Path, retry_delay: float = 30.0)
+        .check_before_write() -> bool   True if filesystem OK, False if should pause.
+        .healthy -> bool                True when no consecutive failures.
+"""
 import errno
 import json
 import logging

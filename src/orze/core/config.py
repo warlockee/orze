@@ -1,3 +1,28 @@
+"""Config loading, validation, merging, and sanitization for Orze projects.
+
+CALLING SPEC:
+    DEFAULT_CONFIG -> dict
+        Module-level dict with all default orze.yaml keys and their defaults.
+
+    load_project_config(path: Optional[str] = None) -> dict
+        Load orze.yaml (or path), merge with DEFAULT_CONFIG, auto-discover
+        research backends from env vars, load .env. Returns full config dict.
+
+    _validate_config(cfg: dict) -> tuple[list[str], list[str]]
+        Validate a loaded config. Returns (errors, warnings) where errors
+        are fatal and warnings are informational.
+
+    _sanitize_config(config: dict) -> dict
+        Deep-copy config and replace invalid non-numeric values in known
+        numeric fields (e.g. sequence_length, batch_size) with safe defaults.
+
+    find_dotenv(config_path: Optional[str] = None) -> Optional[Path]
+        Locate .env file next to config or in CWD. Returns path or None.
+
+    _load_dotenv(config_path: Optional[str] = None) -> int
+        Load .env into os.environ (only sets vars not already present).
+        Returns count of vars loaded.
+"""
 import os
 import logging
 import copy

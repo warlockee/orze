@@ -1,3 +1,36 @@
+"""Orchestrator state persistence and host heartbeat management.
+
+CALLING SPEC:
+    load_state(results_dir: Path) -> dict
+        Load per-host orchestrator state from checkpoint. Returns dict with
+        keys: iteration, failure_counts, roles. Handles legacy migration
+        and corrupt files gracefully.
+
+    save_state(results_dir: Path, state: dict) -> None
+        Atomically write orchestrator state for restart recovery. State is
+        per-host (filename includes hostname).
+
+    write_host_heartbeat(results_dir: Path, hostname: str, active, free_gpus: list) -> None
+        Write per-host heartbeat JSON with active processes, free GPUs, and
+        GPU details. 'active' is a dict of TrainingProcess objects keyed by
+        GPU id.
+
+    write_status_json(results_dir: Path, iteration: int,
+                      active: Dict[int, TrainingProcess], free_gpus: List[int],
+                      queue_depth: int, completed_count: int, failed_count: int,
+                      skipped_count: int, top_results: list, cfg: dict,
+                      role_states: Optional[dict] = None) -> None
+        Write machine-readable status.json merging heartbeats from all hosts.
+        Includes per-role status, disk info, and combined multi-machine view.
+
+    _read_all_heartbeats(results_dir: Path, stale_seconds: float = 900) -> list
+        Read _host_*.json heartbeat files, keep freshest per host, clean up
+        stale/superseded files. Returns list of heartbeat dicts.
+
+    check_heartbeat_versions(heartbeats: list) -> List[str]
+        Check version compatibility across cluster heartbeats. Returns list
+        of hostnames with incompatible (major version mismatch) orze versions.
+"""
 import os
 import json
 import logging

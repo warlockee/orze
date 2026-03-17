@@ -1,3 +1,12 @@
+"""Role process lifecycle management and ideas.md corruption guard.
+
+CALLING SPEC:
+    check_active_roles(active_roles: Dict[str, RoleProcess],
+                       ideas_file: str = "ideas.md") -> list[tuple[str, bool]]
+        Poll all running role processes. Kill any that exceed their timeout.
+        Returns list of (role_name, success) for roles that finished this call.
+        Releases filesystem locks and checks ideas.md integrity after each role.
+"""
 import logging
 import re
 import shutil
