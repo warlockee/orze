@@ -198,11 +198,23 @@ class NotificationProcessor:
         t_time = m.get("training_time") or None
         fmt_val = (f"{metric_val:.4f}"
                    if isinstance(metric_val, (int, float)) else metric_val)
+        rank = rank_lookup.get(idea_id, None)
+
+        # notify_top_n: only send "completed" notifications for top-N results.
+        # Default 0 = notify all (backward compat). Set in orze.yaml:
+        #   notifications:
+        #     notify_top_n: 20
+        top_n = (cfg.get("notifications") or {}).get("notify_top_n", 0)
+        if top_n > 0 and isinstance(rank, int) and rank > top_n:
+            logger.debug("Skipping notification for %s (rank %d > top %d)",
+                         idea_id, rank, top_n)
+            return
+
         notify("completed", {
             "idea_id": idea_id, "title": title,
             "metric_name": primary, "metric_value": fmt_val,
             "training_time": t_time,
-            "rank": rank_lookup.get(idea_id, "?"),
+            "rank": rank if rank is not None else "?",
             "leaderboard": leaderboard,
             "view_leaderboards": view_lbs,
         }, cfg)
