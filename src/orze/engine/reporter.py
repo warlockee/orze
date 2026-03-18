@@ -205,10 +205,7 @@ class NotificationProcessor:
         #   notifications:
         #     notify_top_n: 20
         top_n = (cfg.get("notifications") or {}).get("notify_top_n", 0)
-        if top_n > 0 and isinstance(rank, int) and rank > top_n:
-            logger.debug("Skipping notification for %s (rank %d > top %d)",
-                         idea_id, rank, top_n)
-            return
+        summary_only = (top_n > 0 and isinstance(rank, int) and rank > top_n)
 
         notify("completed", {
             "idea_id": idea_id, "title": title,
@@ -217,6 +214,7 @@ class NotificationProcessor:
             "rank": rank if rank is not None else "?",
             "leaderboard": leaderboard,
             "view_leaderboards": view_lbs,
+            "summary_only": summary_only,
         }, cfg)
 
     def _archive_to_lake(self, idea_id, status, ideas, cfg):

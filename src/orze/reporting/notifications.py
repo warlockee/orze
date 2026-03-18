@@ -150,7 +150,8 @@ def _format_slack(event: str, data: dict) -> dict:
                 f"{data.get('metric_name', '?')}: {data.get('metric_value', '?')}"
                 f" (rank #{data.get('rank', '?')})"
                 f"{t_str}")
-    text += _format_leaderboard(data, lambda s: f"*{s}*")
+    if not data.get("summary_only"):
+        text += _format_leaderboard(data, lambda s: f"*{s}*")
     return {"text": text}
 
 
@@ -213,7 +214,8 @@ def _format_discord(event: str, data: dict) -> dict:
                    f"{data.get('metric_name', '?')}: {data.get('metric_value', '?')}"
                    f" (rank #{data.get('rank', '?')})"
                    f"{t_str}")
-    content += _format_leaderboard(data, lambda s: f"**{s}**")
+    if not data.get("summary_only"):
+        content += _format_leaderboard(data, lambda s: f"**{s}**")
     return {"content": content}
 
 
@@ -329,7 +331,8 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
                 f"{metric}: {val}"
                 f" (rank #{rank})"
                 f"{t_str}")
-    text += _format_leaderboard(data, lambda s: f"<b>{s}</b>", escape_fn=esc)
+    if not data.get("summary_only"):
+        text += _format_leaderboard(data, lambda s: f"<b>{s}</b>", escape_fn=esc)
 
     return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 
