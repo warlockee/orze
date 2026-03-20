@@ -9,7 +9,17 @@ Orze runs the full research loop: **generate ideas → train → evaluate → le
 ## Install
 
 ```bash
+# One-line install (installs uv if needed, then orze):
 curl -sL https://orze.ai/setup.sh | bash
+
+# Or with a specific project path:
+curl -sL https://orze.ai/setup.sh | bash -s /path/to/shared/storage/project
+
+# Manual install with uv (recommended):
+uv tool install orze
+
+# Or with pip:
+pip install orze
 ```
 
 ## Quick Start

@@ -9,16 +9,16 @@ Read `ORZE-RULES.md` for the complete technical specification.
 
 ## What to do
 
-### 1. Understand the project (explore first, don't ask)
+### 1. Understand the project
 
-Explore the codebase silently. Find:
+Before asking questions, look around the codebase to understand:
 - What the project does (read README, docs, existing scripts)
-- What framework (PyTorch, JAX, etc.)
+- What framework is used (PyTorch, JAX, etc.)
 - Where the data lives
-- What training scripts exist
-- What Python environment (venv, conda, system)
-- How many GPUs: run `nvidia-smi --query-gpu=index --format=csv,noheader`
-- Where shared storage is mounted (check `df -h` — look for FSX, NFS, EFS mounts with >100GB)
+- What training scripts already exist
+- What Python environment is available (venv, conda, system)
+- How many GPUs are available: run `nvidia-smi --query-gpu=index --format=csv,noheader`
+- Where shared storage is mounted (check `df -h` for FSX, NFS, EFS mounts with >100GB)
 
 ### 2. Determine the research goal
 
