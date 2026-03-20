@@ -193,6 +193,22 @@ def run_role_step(role_name: str, role_cfg: dict, ctx: RoleContext) -> None:
     cooldown = role_cfg.get("cooldown", 300)
     elapsed = time.time() - role_state["last_run_time"]
 
+    # Hot-reload: if GOAL.md changed since last run, skip cooldown
+    goal_changed = False
+    goal_path = Path(ctx.cfg.get("goal_file", "GOAL.md"))
+    if goal_path.exists():
+        try:
+            mtime = goal_path.stat().st_mtime
+            prev = role_state.get("_goal_mtime", 0.0)
+            if mtime > prev:
+                if prev > 0:  # don't trigger on first read
+                    goal_changed = True
+                    logger.info("GOAL.md changed — triggering %s immediately",
+                                role_name)
+                role_state["_goal_mtime"] = mtime
+        except OSError:
+            pass
+
     # Adaptive cooldown: if queue is nearly empty, skip cooldown to
     # keep GPUs fed. Only applies to the research role.
     queue_starving = False
@@ -293,7 +309,7 @@ def run_role_step(role_name: str, role_cfg: dict, ctx: RoleContext) -> None:
         except Exception:
             pass
 
-    if elapsed < cooldown and not queue_starving:
+    if elapsed < cooldown and not queue_starving and not goal_changed:
         return
 
     timeout = role_cfg.get("timeout", 600)

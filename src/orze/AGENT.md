@@ -1,187 +1,135 @@
-# Orze — Auto-Research Agent
+# Orze — Setup Agent
 
-You are setting up **orze** — a system that automates the full research loop: generate ideas, train on GPUs, evaluate, learn from results, repeat.
+You are setting up **orze**, a system that automates the research loop: generate ideas → train on GPUs → evaluate → learn → repeat.
 
-Read `ORZE-RULES.md` for the complete technical specification.
+Your job: **get orze running with zero manual configuration from the user.** The user should not edit any files. You handle everything.
 
-> **Shortcut:** Run `orze --init /path/to/shared/storage/project` to scaffold everything, then jump to step 8.
-> If you omit the path, orze auto-detects shared storage (FSX, NFS, EFS) when root disk is small.
+## Step 1: Explore
 
-## What to do
+Silently read the codebase and environment. Do not ask the user anything yet.
 
-### 1. Understand the project
+- `nvidia-smi --query-gpu=index,name --format=csv,noheader` — how many GPUs, what kind
+- `df -h` — where is shared storage (FSx, NFS, EFS)
+- Read README, docs, existing training scripts, data directories
+- Check Python: `which python3`, venvs, conda envs
+- Check what framework: PyTorch, JAX, TensorFlow
+- Check if `orze.yaml` already exists (already set up?)
 
-Before asking questions, look around the codebase to understand:
-- What the project does (read README, docs, existing scripts)
-- What framework is used (PyTorch, JAX, etc.)
-- Where the data lives
-- What training scripts already exist
-- What Python environment is available (venv, conda, system)
-- How many GPUs are available: run `nvidia-smi --query-gpu=index --format=csv,noheader`
-- Where shared storage is mounted (check `df -h` for FSX, NFS, EFS mounts with >100GB)
+## Step 2: Write GOAL.md
 
-### 2. Determine the research goal
+This is the single most important file. It drives everything else.
 
-Check if `GOAL.md` exists at the project root.
-
-**If it exists:** read it and use it.
-
-**If it doesn't exist:** infer the goal from what you found in step 1, then create `GOAL.md`:
+**If the codebase has existing code**, infer the goal and write GOAL.md yourself:
 
 ```markdown
 # Research Goal
 
 ## Task
-[Inferred from codebase — e.g., "image classification on CIFAR-10"]
+[What you inferred — e.g., "Semantic segmentation of satellite imagery"]
 
 ## Dataset
-[Found at /path/to/data, N samples, format X]
+[Where the data lives, how many samples, format]
 
-## Evaluation
-[Primary metric — e.g., "test accuracy" or "AUC-ROC"]
+## Metric
+[Primary metric to optimize — e.g., "mIoU", "val_loss", "F1"]
 
-## Constraints
-[GPUs found, disk space, framework]
+## Current State
+[What exists: trained models, baselines, known results]
+
+## Directions
+[Promising approaches based on the codebase and domain]
 ```
 
 Then confirm with the user in **one sentence**:
-> "This looks like a [task] project. I'll set up auto-research optimizing for [metric] on [dataset]. OK?"
+> "This looks like [task] optimizing [metric]. I'll set up auto-research. OK?"
 
-If they say yes (or anything not a correction), proceed. If they correct you, update GOAL.md and proceed.
+If they correct you, update GOAL.md and continue.
 
-### 3. Create `RESEARCH_RULES.md`
+**If the repo is blank**, ask the user ONE question:
+> "What are you trying to optimize?"
 
-This controls what experiments get generated. Write it based on `GOAL.md` and what you learned from the codebase. Include:
+Use their answer to write GOAL.md, then continue.
 
-1. Research goal (from GOAL.md)
-2. Template vars for current state: `{cycle}`, `{completed}`, `{queued}`, `{results_dir}`, `{ideas_file}`
-3. Instructions to read `{results_dir}/report.md` for current results
-4. Domain-specific guidance (what approaches work for this task)
-5. Concrete directions to explore
-6. The exact idea format (from `RULES.md`)
-7. Rules: append-only, unique IDs, complete YAML configs
+## Step 3: Run `orze --init`
 
-**The user edits this file to change research direction.** Make that clear with a comment at the top.
-
-### 4. Create or adapt the training script
-
-Orze calls your training script with:
-```
-CUDA_VISIBLE_DEVICES=N python train.py --idea-id idea-001 --results-dir results --ideas-md ideas.md --config configs/base.yaml
+```bash
+orze --init .
 ```
 
-It must write `results/{idea_id}/metrics.json` with `{"status": "COMPLETED", ...}` when done.
+This creates: venv, orze.yaml, train.py (demo), ideas.md, configs/base.yaml, RESEARCH_RULES.md, and reference docs. If it's already been run, it skips existing files.
 
-If a training script already exists, **wrap it** — don't rewrite from scratch. Create a thin adapter that:
+## Step 4: Adapt train.py
+
+The generated train.py is a demo. Replace it with real training logic.
+
+**If a training script already exists in the repo**, wrap it — don't rewrite. Create a thin adapter:
 1. Parses `--ideas-md` to get the YAML config for `--idea-id`
 2. Loads `--config` as base, merges idea config on top
 3. Calls the existing training code
-4. Writes metrics.json
+4. Writes `results/{idea_id}/metrics.json` with `{"status": "COMPLETED", "<metric>": <value>}`
 
-If no training script exists, write one from scratch.
+**If no training script exists**, write one from scratch using the framework and task from GOAL.md.
 
-### 5. Create `configs/base.yaml`
-
-Infrastructure defaults only. Model config comes from each idea's YAML block.
-
-### 6. Write seed ideas in `ideas.md`
-
-3-5 baseline experiments. Start simple — the research agent will generate more.
-
-### 7. Create `orze.yaml`
-
-```yaml
-train_script: train.py          # your training script from step 4
-ideas_file: ideas.md
-base_config: configs/base.yaml
-results_dir: results
-python: /path/to/venv/bin/python3   # from step 1
-
-timeout: 3600
-poll: 30
-stall_minutes: 30
-max_idea_failures: 3
-max_fix_attempts: 2             # LLM auto-fix per failed idea (0 = disabled)
-min_disk_gb: 20
-
-roles:
-  research:
-    mode: claude
-    rules_file: RESEARCH_RULES.md
-    model: sonnet
-    cooldown: 300
-    timeout: 600
-    allowed_tools: "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch"
-
-  # Optional: add more research agents using other LLMs. Orze also
-  # auto-discovers GEMINI_API_KEY / OPENAI_API_KEY from the environment
-  # and creates agents automatically if no roles are configured.
-  # research_gemini:
-  #   mode: research
-  #   backend: gemini
-
-report:
-  title: "Research Report"
-  primary_metric: test_accuracy     # from GOAL.md
-  sort: descending
-  columns:
-    - {key: "test_accuracy", label: "Accuracy", fmt: ".4f"}
-    - {key: "test_loss", label: "Loss", fmt: ".4f"}
-    - {key: "training_time", label: "Time(s)", fmt: ".0f"}
+The orze contract:
+```
+CUDA_VISIBLE_DEVICES=N python train.py \
+    --idea-id idea-001 --results-dir results \
+    --ideas-md ideas.md --config configs/base.yaml
 ```
 
-### 8. Smoke test, then launch
+Must output: `results/{idea_id}/metrics.json`
+
+## Step 5: Configure orze.yaml
+
+Update the generated orze.yaml:
+- `python:` → path to venv with correct deps installed
+- `report.primary_metric:` → the metric from GOAL.md
+- `report.sort:` → ascending for loss, descending for accuracy/F1
+- `report.columns:` → match the keys in metrics.json
+- `timeout:` → appropriate for the task (quick experiments: 1800, heavy training: 7200)
+
+## Step 6: Write RESEARCH_RULES.md
+
+Generate from GOAL.md. Include:
+- The research goal and metric
+- Template vars: `{cycle}`, `{completed}`, `{queued}`, `{results_dir}`, `{ideas_file}`
+- Domain-specific guidance (what approaches work for this task)
+- Concrete directions to explore
+- The idea format from `ORZE-RULES.md`
+- Rules: append-only, unique IDs, complete YAML configs
+
+## Step 7: Write seed ideas
+
+Replace the demo ideas in ideas.md with 3-5 real experiments for this task. Start simple — the research agent generates more.
+
+## Step 8: Install dependencies
+
+Install whatever the training script needs into the project venv:
+```bash
+uv pip install --python venv/bin/python3 torch torchvision ...
+```
+
+## Step 9: Smoke test
 
 ```bash
-# Test one cycle
 orze -c orze.yaml --once --gpus 0
-
-# If it works, launch the full system
-nohup orze -c orze.yaml >> results/orze.log 2>&1 &
-nohup python -m orze.agents.bug_fixer -c orze.yaml >> results/bug_fixer.log 2>&1 &
 ```
 
-Run the smoke test first. If it fails, fix the issue and retry. Once it passes, launch all processes.
+If it fails, fix the issue and retry. Do not move on until this passes.
 
-## The bug-fixer agent
-
-The bug-fixer is a **lifetime companion process** to orze. It runs forever alongside the main orchestrator, continuously monitoring for issues and self-healing the system.
-
-### What it does
-
-Runs every 60 seconds (configurable) and checks for:
-- **Orze dead**: orchestrator process not running → auto-restarts it
-- **Orze stalled**: log not updating → spawns Claude to diagnose
-- **Zombie processes**: defunct python processes
-- **Stuck training/eval**: processes exceeding timeout with no CPU activity → auto-kills
-- **Stale claims**: ideas claimed but never completed (abandoned by crashed workers)
-- **Low disk space**: below threshold → alerts
-- **Orze errors**: scans log for errors → spawns Claude to fix
-
-### Always start both
-
-When launching orze, **always start the bug-fixer alongside the orchestrator**:
+## Step 10: Launch
 
 ```bash
 nohup orze -c orze.yaml >> results/orze.log 2>&1 &
-nohup python -m orze.agents.bug_fixer -c orze.yaml >> results/bug_fixer.log 2>&1 &
 ```
 
-If orze dies, the bug-fixer will detect it within 60 seconds and restart it.
+Tell the user:
+> "Orze is running on [N] GPUs. It will generate ideas, train, and learn automatically. Edit GOAL.md anytime to change direction — the system picks it up in ~30 seconds."
 
-## Files you create
+## Rules
 
-```
-project/
-├── GOAL.md                # Research target (edit to pivot)
-├── RESEARCH_RULES.md      # Idea generation strategy (edit to steer)
-├── orze.yaml              # Infrastructure config
-├── ideas.md               # Experiments (auto-grows)
-├── configs/base.yaml      # Training defaults
-├── train.py               # Training script
-└── results/               # Auto-generated
-    ├── orze.log            # Orchestrator log
-    └── bug_fixer.log       # Watchdog log
-```
-
-**To change research direction:** edit `GOAL.md` and/or `RESEARCH_RULES.md`.
+- **Do not ask the user to edit files.** You edit them.
+- **Do not explain what each file does.** Just set them up.
+- **Confirm once** (step 2), then execute everything silently.
+- **If something breaks, fix it.** Don't report errors back unless you can't solve them.
+- Read `ORZE-RULES.md` for the complete technical spec (idea format, metrics contract, lifecycle).
