@@ -233,8 +233,11 @@ def cmd_help(msg: Message, cfg: dict) -> str:
         "/ping — check if bot is alive\n"
         "/status — current system status\n"
         "/top — top 5 results\n"
+        "/approve — approve pending GOAL.md change\n"
+        "/reject — discard pending GOAL.md change\n"
         "/help — this message\n\n"
-        "Anything else is sent to the LLM agent as natural language."
+        "To steer research, just say what you want in plain text.\n"
+        "The bot will draft a GOAL.md update and ask for your approval."
     )
 
 
@@ -295,12 +298,42 @@ def cmd_top(msg: Message, cfg: dict) -> str:
     return "\n".join(lines)
 
 
+# Pending GOAL.md changes awaiting user confirmation
+# Key: chat_id, Value: {"content": str, "diff": str, "timestamp": float}
+_pending_goal: dict = {}
+
+
+def cmd_approve(msg: Message, cfg: dict) -> str:
+    """Approve a pending GOAL.md change."""
+    pending = _pending_goal.pop(msg.chat_id, None)
+    if not pending:
+        return "Nothing pending to approve."
+    goal_path = Path(cfg["_orze"].get("goal_file", "GOAL.md"))
+    try:
+        goal_path.write_text(pending["content"], encoding="utf-8")
+        return "GOAL.md updated. Research agent will pick this up in ~30s."
+    except Exception as e:
+        return f"Failed to write GOAL.md: {e}"
+
+
+def cmd_reject(msg: Message, cfg: dict) -> str:
+    """Reject a pending GOAL.md change."""
+    pending = _pending_goal.pop(msg.chat_id, None)
+    if not pending:
+        return "Nothing pending to reject."
+    return "Change discarded."
+
+
 BUILTIN_COMMANDS = {
     "/ping": cmd_ping,
     "/status": cmd_status,
     "/top": cmd_top,
     "/help": cmd_help,
     "/start": cmd_help,  # Telegram sends /start on first interaction
+    "/approve": cmd_approve,
+    "/reject": cmd_reject,
+    "/yes": cmd_approve,
+    "/no": cmd_reject,
 }
 
 
@@ -314,9 +347,12 @@ def _build_system_prompt(cfg: dict) -> str:
     results_dir = Path(orze_cfg.get("results_dir", "results"))
     ideas_file = orze_cfg.get("ideas_file", "ideas.md")
 
+    goal_file = orze_cfg.get("goal_file", "GOAL.md")
+
     return f"""You are the orze assistant, responding via Telegram chat.
 
 ## Available files
+- Goal: {goal_file} (research direction — the user's steering wheel)
 - Status: {results_dir / 'status.json'} (iteration, active jobs, GPUs, queue, disk, top results)
 - Report: {results_dir / 'report.md'} (full leaderboard)
 - Ideas: {ideas_file} (experiment definitions)
@@ -324,10 +360,27 @@ def _build_system_prompt(cfg: dict) -> str:
 
 ## What you can do
 - Read any file to answer questions about experiments, results, status
-- Append new experiment ideas to {ideas_file} (follow the existing format)
 - Analyze results and provide insights
 
+## Steering research direction
+When the user wants to change research direction (e.g., "try lower learning rates",
+"stop exploring transformers", "focus on augmentation"), you MUST:
+1. Read the current {goal_file}
+2. Draft the updated version
+3. Output it inside a ```goal``` code block (the bot will handle the rest)
+
+Example response:
+  "Here's my proposed update to GOAL.md:"
+  ```goal
+  # Research Goal
+  ... updated content ...
+  ```
+
+The bot will show the diff to the user for approval before writing.
+Do NOT use Write or Edit tools on {goal_file} — always use the ```goal``` block.
+
 ## What you must NOT do
+- Write or edit {goal_file} directly (use ```goal``` block instead)
 - Modify orze source code, bot.py, or orze.yaml
 - Delete any files
 - Push to git
@@ -475,6 +528,32 @@ class RateLimiter:
 # Message handler
 # ---------------------------------------------------------------------------
 
+def _extract_goal_block(response: str):
+    """Extract content from ```goal ... ``` block in LLM response.
+
+    Returns (text_before_block, goal_content) or (response, None).
+    """
+    import re
+    m = re.search(r"```goal\s*\n(.*?)```", response, re.DOTALL)
+    if not m:
+        return response, None
+    # Text before the code block (the LLM's explanation)
+    before = response[:m.start()].strip()
+    return before, m.group(1).strip() + "\n"
+
+
+def _make_diff(old: str, new: str) -> str:
+    """Create a simple line-level diff for Telegram display."""
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    import difflib
+    diff = difflib.unified_diff(old_lines, new_lines,
+                                fromfile="GOAL.md (current)",
+                                tofile="GOAL.md (proposed)",
+                                lineterm="")
+    return "".join(diff) or "(no visible changes)"
+
+
 def handle_message(msg: Message, adapter: TelegramAdapter,
                    cfg: dict, rate_limiter: RateLimiter):
     """Process a single incoming message."""
@@ -494,6 +573,20 @@ def handle_message(msg: Message, adapter: TelegramAdapter,
         adapter.reply(msg.chat_id, response)
         return
 
+    # Handle pending confirmation: bare "yes"/"no"/"ok" without slash
+    if msg.chat_id in _pending_goal:
+        lower = text.strip().lower()
+        if lower in ("yes", "y", "ok", "confirm", "approve", "lgtm"):
+            response = cmd_approve(msg, cfg)
+            adapter.reply(msg.chat_id, response)
+            return
+        elif lower in ("no", "n", "reject", "cancel", "discard"):
+            response = cmd_reject(msg, cfg)
+            adapter.reply(msg.chat_id, response)
+            return
+        # Any other text: discard pending and process as new message
+        _pending_goal.pop(msg.chat_id, None)
+
     # Rate limit for LLM calls
     if not rate_limiter.check():
         adapter.reply(msg.chat_id,
@@ -504,7 +597,35 @@ def handle_message(msg: Message, adapter: TelegramAdapter,
     logger.info("Message from %s: %s", msg.user, text[:100])
     adapter.send_typing(msg.chat_id)
     response = invoke_llm(text, cfg)
-    adapter.reply(msg.chat_id, response)
+
+    # Check if LLM proposed a GOAL.md change
+    explanation, goal_content = _extract_goal_block(response)
+    if goal_content is not None:
+        # Read current GOAL.md for diff
+        goal_path = Path(cfg["_orze"].get("goal_file", "GOAL.md"))
+        current = ""
+        if goal_path.exists():
+            try:
+                current = goal_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
+        diff = _make_diff(current, goal_content)
+
+        # Store pending change
+        _pending_goal[msg.chat_id] = {
+            "content": goal_content,
+            "diff": diff,
+            "timestamp": time.time(),
+        }
+
+        # Send explanation + diff + prompt for confirmation
+        if explanation:
+            adapter.reply(msg.chat_id, explanation)
+        adapter.reply(msg.chat_id, f"Proposed diff:\n\n{diff}")
+        adapter.reply(msg.chat_id, "Reply yes to apply, no to discard.")
+    else:
+        adapter.reply(msg.chat_id, response)
     logger.info("Replied (%d chars)", len(response))
 
 
