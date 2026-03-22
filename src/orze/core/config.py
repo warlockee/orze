@@ -24,6 +24,7 @@ CALLING SPEC:
         Returns count of vars loaded.
 """
 import os
+import re
 import logging
 import copy
 from typing import Optional
@@ -33,6 +34,22 @@ import yaml
 logger = logging.getLogger("orze")
 
 import sys
+
+_ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def _expand_env_vars(obj):
+    """Recursively expand ${VAR} references in string values using os.environ."""
+    if isinstance(obj, str):
+        def _replace(m):
+            return os.environ.get(m.group(1), m.group(0))
+        return _ENV_VAR_RE.sub(_replace, obj)
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(item) for item in obj]
+    return obj
+
 
 def find_dotenv(config_path: Optional[str] = None) -> Optional[Path]:
     """Find .env file: next to config or CWD. Returns path or None."""
@@ -157,6 +174,9 @@ def load_project_config(path: Optional[str] = None) -> dict:
     elif path:
         logger.warning("Config file %s not found, using defaults", path)
 
+    # Expand ${VAR} references in config values using os.environ
+    cfg = _expand_env_vars(cfg)
+
     # Migrate legacy research: into roles: dict
     if "research" in cfg and isinstance(cfg["research"], dict):
         logger.warning("Migrating legacy 'research:' config to 'roles: {research: ...}'. "
@@ -167,13 +187,11 @@ def load_project_config(path: Optional[str] = None) -> dict:
             cfg["roles"]["research"] = cfg["research"]
 
     # Auto-discover research backends from environment API keys.
-    # Only activates if no research roles are explicitly configured.
+    # Only activates if NO roles are explicitly configured at all.
+    # If the user defined any roles (even mode: script), respect that
+    # and don't inject auto-discovered backends alongside them.
     roles = cfg.get("roles") or {}
-    has_research_role = any(
-        isinstance(rc, dict) and rc.get("mode") in ("claude", "research")
-        for rc in roles.values()
-    )
-    if not has_research_role:
+    if not roles:
         _AUTO_BACKENDS = [
             ("GEMINI_API_KEY", "gemini", "gemini-2.5-flash"),
             ("OPENAI_API_KEY", "openai", "gpt-4o"),

@@ -354,6 +354,14 @@ def run_role_step(role_name: str, role_cfg: dict, ctx: RoleContext) -> None:
         env[k] = str(v)
     for k, v in (role_cfg.get("env") or {}).items():
         env[k] = str(v)
+    # Ensure orze package is importable by built-in agents (mode: research)
+    # even when cfg.python points to a different venv
+    if mode == "research":
+        orze_src = str(Path(__file__).parent.parent.parent)
+        existing = env.get("PYTHONPATH", "")
+        if orze_src not in existing.split(os.pathsep):
+            env["PYTHONPATH"] = (
+                f"{orze_src}{os.pathsep}{existing}" if existing else orze_src)
 
     # Per-role log directory
     log_dir_name = role_cfg.get("log_dir") or f"_{role_name}_logs"
