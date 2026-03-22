@@ -34,14 +34,14 @@ How it works:
 
 Key features:
 • Auto GPU detection — finds and claims free GPUs automatically
-• LLM research agents — Gemini, GPT-4, Claude, or local Ollama
+• LLM research agents — Gemini, OpenAI, Anthropic, or local Ollama
 • Multi-node clusters — just mount a shared filesystem
 • Admin dashboard — real-time web UI
 • Hyperparameter sweeps — grid
 • Notifications — Telegram, Slack, Discord, and more
 • Zero infrastructure — no Docker, no Kubernetes, pure Python
 
-We used it to run 800+ experiments autonomously for a Kaggle competition, discovering training strategies that we wouldn't have found manually.
+We used it for a Kaggle competition — it ran hundreds of experiments autonomously over a weekend and surfaced training strategies we hadn't considered.
 
 Open source (Apache 2.0). Free forever.
 ```

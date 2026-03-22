@@ -108,7 +108,7 @@ See [pro_features_spec.md](pro_features_spec.md) for Pro feature specifications.
 3. "From hypothesis to result, automatically"
 
 ### Elevator Pitch (30 seconds)
-> "Orze is an open-source GPU experiment orchestrator that runs the full ML research loop autonomously. You give it a research question and access to GPUs. It uses LLM agents to generate experiment ideas, trains them, evaluates results, learns what works, and generates better ideas. One YAML file, no Kubernetes, scales from one GPU to hundreds across machines."
+> "Orze is an open-source GPU experiment orchestrator that runs the full ML research loop autonomously. You give it a research question and access to GPUs. It uses LLM agents to generate experiment ideas, trains them, evaluates results, learns what works, and generates better ideas. One YAML file, no Kubernetes, works across multiple machines with a shared filesystem."
 
 ### By Audience
 

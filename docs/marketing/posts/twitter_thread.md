@@ -52,7 +52,7 @@ Your GPUs never sit idle.
 ```
 But the real power is the research loop.
 
-Add an LLM research agent (Gemini, GPT-4o, Claude, or local Ollama) and Orze closes the loop:
+Add an LLM research agent (Gemini, OpenAI, Anthropic, or local Ollama) and Orze closes the loop:
 
 Agent generates ideas → GPUs train them → Results update leaderboard → Agent reads results → Generates better ideas → Repeat
 
@@ -61,15 +61,15 @@ You can walk away.
 
 ### Tweet 5 (Proof — Kaggle story)
 ```
-I used it for a Kaggle competition.
+Real test: a Kaggle competition (Nexar collision prediction).
 
-Pointed it at 8 H100s on a Friday. By Monday it had:
+Left it running on 8 H100s over a weekend. Came back to:
 
-- Run 800+ experiments autonomously
-- Discovered a training strategy I wouldn't have tried
-- Achieved competitive results
+- Hundreds of experiments completed
+- A novel temporal weighting strategy the agent proposed
+- Results I wouldn't have reached manually in the same time
 
-The breakthrough idea came from the LLM agent analyzing patterns across hundreds of experiments.
+The agent found the insight by cross-referencing failure patterns.
 ```
 
 ### Tweet 6 (Architecture — for the technical crowd)
@@ -81,7 +81,7 @@ Architecture is deliberately simple:
 - Coordination: filesystem locks (no Redis, no K8s)
 - Multi-node: mount shared filesystem, run orze on each machine
 
-Works on any cluster with GPUs and NFS.
+Works on any Linux cluster with GPUs and a shared filesystem.
 ```
 
 ### Tweet 7 (Features — quick hits)

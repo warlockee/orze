@@ -12,7 +12,7 @@
 ## Title
 
 ```
-[P] Orze: Open-source GPU experiment orchestrator with autonomous LLM research agents — ran 800+ experiments for Kaggle competition
+[P] Orze: Open-source GPU experiment orchestrator with autonomous LLM research agents
 ```
 
 ## Body
@@ -61,11 +61,9 @@ This is different from Optuna/Ray Tune, which optimize parameters for a fixed mo
 I used Orze for the Nexar Dashcam Collision Prediction competition. Setup: 8 H100s, Gemini 2.5 Pro as the research agent, running continuously over a weekend.
 
 Results:
-- 800+ experiments completed autonomously
-- The LLM agent discovered "time-to-event matched training" — a strategy where training samples are weighted by temporal proximity to the collision event. This emerged from the agent analyzing failure patterns across hundreds of experiments.
-- Achieved local mAP of 0.907 (competitive with winning approaches)
-
-The time-to-event insight was not something I would have tried. The agent noticed that models consistently struggled with videos where the collision happened late in the clip, and proposed a fix.
+- Hundreds of experiments completed autonomously over the weekend
+- The LLM agent proposed "time-to-event matched training" — weighting samples by temporal proximity to the collision event. This emerged from analyzing failure patterns across completed runs.
+- The agent noticed models consistently struggled with late-occurring collisions and proposed temporal weighting as a fix — not an approach I had on my radar.
 
 **Limitations (honest assessment)**
 

@@ -67,7 +67,7 @@ orze
 
 **Does the local LLM actually generate good ideas?**
 
-Honestly, it depends on the model and the problem. With larger models (70B+, or cloud APIs like Gemini 2.5 Pro) the ideas are surprisingly good — in a Kaggle competition, the agent found a training strategy across 800 experiments that I wouldn't have tried manually.
+Honestly, it depends on the model and the problem. With larger models (70B+, or cloud APIs like Gemini 2.5 Pro) the ideas are surprisingly good — in a Kaggle competition, the agent surfaced a useful training strategy that I hadn't considered.
 
 With smaller local models (7-13B), the ideas are more hit-or-miss, but the cost of a bad idea is just one wasted training run. Over hundreds of experiments, even a noisy idea generator produces useful discoveries through sheer volume.
 

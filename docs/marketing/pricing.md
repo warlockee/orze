@@ -43,7 +43,7 @@ Per cluster. Unlimited users. Everything in Free, plus:
 - **Advanced Retrospection** — weekly automated reports summarizing what worked, what failed, and recommended next steps
 - **Cloud Templates** — pre-configured setups for AWS (EC2, ParallelCluster), GCP (Compute Engine), Lambda Labs, RunPod
 - **Priority Email Support** — 24-hour response time
-- **Private Docker Images** — production-ready containers with Orze pre-configured
+- **Setup Scripts** — pre-configured cloud deployment scripts for common providers
 
 Best for: research labs with 2-8 GPUs running continuous experiments.
 

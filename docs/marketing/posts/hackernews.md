@@ -25,7 +25,7 @@ Orze automates the full loop. You give it a training script, a YAML config, and 
 
 No Kubernetes, no Docker, no database server. It's filesystem-based — ideas live in a Markdown file, results in JSON files, coordination via filesystem locks. Multi-node is just "mount the same filesystem and run orze on each machine."
 
-I used it for a Kaggle competition (Nexar collision prediction). Over a weekend it ran 800+ experiments autonomously across 8 H100s. The LLM agent discovered a training strategy (time-to-event matching) that I wouldn't have tried manually — it noticed a pattern across hundreds of failed experiments.
+I tested it during a Kaggle competition (Nexar collision prediction) — left it running on 8 H100s over a weekend. It trained hundreds of experiments without intervention. The most interesting outcome: the LLM agent identified a temporal weighting strategy by correlating failure modes across experiments, something I hadn't considered.
 
 Technical details:
 - Pure Python, pip install

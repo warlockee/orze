@@ -31,7 +31,7 @@ It's a lightweight GPU experiment orchestrator that:
 
 The last part is key. An LLM research agent reads your completed results, analyzes what worked and what didn't, and generates new hypotheses. No human in the loop required.
 
-I used it for a Kaggle competition. Over a weekend, it ran 800+ experiments across 8 GPUs. The LLM agent discovered a training strategy that I wouldn't have tried manually — and it came from analyzing patterns across hundreds of previous experiments.
+I stress-tested it during a Kaggle competition. Left it running on a multi-GPU cluster over a weekend. By Monday, it had trained hundreds of experiments and surfaced a temporal weighting approach by analyzing correlations across previous runs — an insight that came from scale, not intuition.
 
 Technical choices that matter:
 • No Kubernetes or Docker required

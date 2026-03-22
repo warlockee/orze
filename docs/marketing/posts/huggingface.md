@@ -30,34 +30,48 @@ The "decide what to try next" step is where GPU hours go to waste. Your H100 doe
 
 ## How It Works with HuggingFace
 
-Your existing HF training script works as-is. Orze just needs it to save metrics to a JSON file:
+Orze passes experiment info via CLI flags: `--idea-id`, `--results-dir`, `--ideas-md`, `--config`. Your training script parses these, loads the idea config from ideas.md, trains, and writes metrics.json to the results directory:
 
 ```python
-# train.py — your existing HuggingFace training script
+# train.py — HuggingFace training script for Orze
+import argparse, json, yaml
+from pathlib import Path
 from transformers import Trainer, TrainingArguments
-import json, sys, yaml
 
-# Orze passes the experiment config as the first argument
-config = yaml.safe_load(open(sys.argv[1]))
+parser = argparse.ArgumentParser()
+parser.add_argument("--idea-id", required=True)
+parser.add_argument("--results-dir", required=True)
+parser.add_argument("--ideas-md", required=True)
+parser.add_argument("--config", required=True)
+args, _ = parser.parse_known_args()
+
+# Load base config and idea-specific overrides
+with open(args.config) as f:
+    base = yaml.safe_load(f)
+# (Orze parses ideas.md and writes idea config to results dir)
+
+out_dir = Path(args.results_dir) / args.idea_id
+out_dir.mkdir(parents=True, exist_ok=True)
 
 training_args = TrainingArguments(
-    output_dir=config.get("output_dir", "./output"),
-    num_train_epochs=config.get("epochs", 3),
-    learning_rate=config.get("learning_rate", 5e-5),
-    per_device_train_batch_size=config.get("batch_size", 16),
-    # ... your usual HF training args
+    output_dir=str(out_dir),
+    num_train_epochs=base.get("epochs", 3),
+    learning_rate=base.get("learning_rate", 5e-5),
+    per_device_train_batch_size=base.get("batch_size", 16),
 )
 
 trainer = Trainer(model=model, args=training_args, ...)
 result = trainer.train()
 
-# Save metrics for Orze
+# Save metrics for Orze (must be in results_dir/idea_id/metrics.json)
 metrics = {
     "eval_accuracy": result.metrics.get("eval_accuracy", 0),
     "eval_loss": result.metrics.get("eval_loss", 0),
     "training_time": result.metrics.get("train_runtime", 0),
+    "status": "COMPLETED",
 }
-json.dump(metrics, open("metrics.json", "w"))
+with open(out_dir / "metrics.json", "w") as f:
+    json.dump(metrics, f)
 ```
 
 Then in `ideas.md`, define your experiments:
