@@ -495,19 +495,40 @@ class OrzePhaseMixin:
                 uptime_str = f"{h}h{m:02d}m" if h else f"{m}m"
                 busy_set = set(self.active.keys()) | set(self.active_evals.keys())
                 n_free = len([g for g in self.gpu_ids if g not in busy_set])
+                # Best result for heartbeat
+                hb_best_id = None
+                hb_best_val = None
+                hb_best_title = None
+                if completed_rows:
+                    primary = cfg["report"].get("primary_metric",
+                                                "test_accuracy")
+                    top = completed_rows[0]
+                    hb_best_id = top.get("id", "?")
+                    hb_best_val = top.get("primary_val")
+                    hb_best_title = (top.get("title") or "")[:40]
+                    hb_best_metric = cfg["report"].get(
+                        "primary_metric", "score")
+
+                n_running = len(self.active) + len(self.active_evals)
                 notify("heartbeat", {
                     "host": socket.gethostname(),
                     "iteration": self.iteration,
                     "uptime": uptime_str,
                     "training": len(self.active),
                     "eval": len(self.active_evals),
+                    "running": n_running,
                     "free": n_free,
+                    "total_gpus": len(self.gpu_ids),
                     "completed": counts.get("COMPLETED", 0),
                     "queued": counts.get("QUEUED", 0),
                     "failed": counts.get("FAILED", 0),
                     "eval_backlog": len(backlog),
                     "rate": (f"{counts.get('COMPLETED', 0) - self._hb_completed_count}"
                              f" since last heartbeat"),
+                    "best_id": hb_best_id,
+                    "best_val": hb_best_val,
+                    "best_title": hb_best_title,
+                    "best_metric": hb_best_metric if completed_rows else None,
                 }, cfg)
                 self._last_heartbeat = now_hb
                 self._hb_completed_count = counts.get("COMPLETED", 0)

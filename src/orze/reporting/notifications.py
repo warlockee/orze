@@ -99,13 +99,27 @@ def _format_slack(event: str, data: dict) -> dict:
         return {"text": f"{icon} *Orze {event}* on `{host}`\n{data.get('message', '')}"}
     if event == "heartbeat":
         host = data.get("host", socket.gethostname())
-        return {"text": (f":green_heart: *Heartbeat* on `{host}` | "
-                         f"Iter {data.get('iteration', '?')} | "
-                         f"Up {data.get('uptime', '?')} | "
-                         f"{data.get('training', 0)}T/{data.get('eval', 0)}E/"
-                         f"{data.get('free', 0)}F GPUs | "
-                         f"Done {data.get('completed', 0)} | "
-                         f"Q {data.get('queued', 0)}")}
+        completed = data.get("completed", 0)
+        failed = data.get("failed", 0)
+        queued = data.get("queued", 0)
+        running = data.get("running", data.get("training", 0) + data.get("eval", 0))
+        total_gpus = data.get("total_gpus", running + data.get("free", 0))
+        active_gpus = total_gpus - data.get("free", 0)
+        lines = [
+            f":bar_chart: *Orze Status* — `{host}`",
+            (f":white_check_mark: {completed} completed | :x: {failed} failed | "
+             f":hourglass_flowing_sand: {queued} queued | :arrows_counterclockwise: {running} running"),
+        ]
+        best_val = data.get("best_val")
+        if best_val is not None:
+            metric = data.get("best_metric", "score")
+            best_id = data.get("best_id", "?")
+            val_str = f"{best_val:.4f}" if isinstance(best_val, float) else str(best_val)
+            lines.append(f":trophy: Best: {val_str} {metric} (`{best_id}`)")
+        lines.append(f":computer: GPUs: {active_gpus}/{total_gpus} active | Up {data.get('uptime', '?')}")
+        if data.get("rate"):
+            lines.append(f":chart_with_upwards_trend: {data['rate']}")
+        return {"text": "\n".join(lines)}
     if event == "milestone":
         return {"text": f":dart: *Milestone: {data.get('count', '?')} experiments completed!*"}
     if event == "disk_warning":
@@ -165,12 +179,27 @@ def _format_discord(event: str, data: dict) -> dict:
         return {"content": f"{icon} **Orze {event}** on `{host}`\n{data.get('message', '')}"}
     if event == "heartbeat":
         host = data.get("host", socket.gethostname())
-        return {"content": (f"\U0001f49a **Heartbeat** on `{host}` | "
-                            f"Iter {data.get('iteration', '?')} | "
-                            f"Up {data.get('uptime', '?')} | "
-                            f"{data.get('training', 0)}T/{data.get('eval', 0)}E/"
-                            f"{data.get('free', 0)}F GPUs | "
-                            f"Done {data.get('completed', 0)} | Q {data.get('queued', 0)}")}
+        completed = data.get("completed", 0)
+        failed = data.get("failed", 0)
+        queued = data.get("queued", 0)
+        running = data.get("running", data.get("training", 0) + data.get("eval", 0))
+        total_gpus = data.get("total_gpus", running + data.get("free", 0))
+        active_gpus = total_gpus - data.get("free", 0)
+        lines = [
+            f"\U0001f4ca **Orze Status** \u2014 `{host}`",
+            (f"\u2705 {completed} completed | \u274c {failed} failed | "
+             f"\u23f3 {queued} queued | \U0001f504 {running} running"),
+        ]
+        best_val = data.get("best_val")
+        if best_val is not None:
+            metric = data.get("best_metric", "score")
+            best_id = data.get("best_id", "?")
+            val_str = f"{best_val:.4f}" if isinstance(best_val, float) else str(best_val)
+            lines.append(f"\U0001f3c6 Best: {val_str} {metric} (`{best_id}`)")
+        lines.append(f"\U0001f4bb GPUs: {active_gpus}/{total_gpus} active | Up {data.get('uptime', '?')}")
+        if data.get("rate"):
+            lines.append(f"\U0001f4c8 {data['rate']}")
+        return {"content": "\n".join(lines)}
     if event == "milestone":
         return {"content": f"\U0001f3af **Milestone: {data.get('count', '?')} experiments completed!**"}
     if event == "disk_warning":
@@ -241,18 +270,32 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
 
     if event == "heartbeat":
         host = esc(data.get("host", socket.gethostname()))
-        lines = [f"\U0001f49a <b>Heartbeat</b> on <code>{host}</code>"]
-        lines.append(f"Iter {data.get('iteration', '?')} | "
-                      f"Up {esc(str(data.get('uptime', '?')))} | "
-                      f"GPUs {data.get('training', 0)}T/{data.get('eval', 0)}E/"
-                      f"{data.get('free', 0)}F")
-        lines.append(f"Completed {data.get('completed', 0)} | "
-                      f"Queued {data.get('queued', 0)} | "
-                      f"Failed {data.get('failed', 0)}")
-        if data.get("eval_backlog"):
-            lines.append(f"Eval backlog: {data['eval_backlog']}")
+        completed = data.get("completed", 0)
+        failed = data.get("failed", 0)
+        queued = data.get("queued", 0)
+        running = data.get("running", data.get("training", 0) + data.get("eval", 0))
+        total_gpus = data.get("total_gpus", running + data.get("free", 0))
+        active_gpus = total_gpus - data.get("free", 0)
+        lines = [
+            f"\U0001f4ca <b>Orze Status</b> — <code>{host}</code>",
+            (f"\u2705 {completed} completed | \u274c {failed} failed | "
+             f"\u23f3 {queued} queued | \U0001f504 {running} running"),
+        ]
+        best_val = data.get("best_val")
+        if best_val is not None:
+            metric = esc(str(data.get("best_metric", "score")))
+            best_id = esc(str(data.get("best_id", "?")))
+            if isinstance(best_val, float):
+                val_str = f"{best_val:.4f}"
+            else:
+                val_str = str(best_val)
+            lines.append(
+                f"\U0001f3c6 Best: {esc(val_str)} {metric} (<code>{best_id}</code>)")
+        lines.append(
+            f"\U0001f4bb GPUs: {active_gpus}/{total_gpus} active | "
+            f"Up {esc(str(data.get('uptime', '?')))}")
         if data.get("rate"):
-            lines.append(f"Rate: {data['rate']}")
+            lines.append(f"\U0001f4c8 {esc(str(data['rate']))}")
         return url, {"chat_id": chat_id, "text": "\n".join(lines),
                      "parse_mode": "HTML"}
 
