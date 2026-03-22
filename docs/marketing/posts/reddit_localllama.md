@@ -47,7 +47,7 @@ You can also use Gemini, OpenAI, Anthropic, or any OpenAI-compatible API — but
 **What Orze handles beyond the LLM stuff**
 
 - Auto-detects free GPUs, keeps them all busy
-- HP sweeps (grid, random, TPE/Bayesian)
+- HP sweeps (grid)
 - Multi-node clustering (shared filesystem, no setup)
 - Notifications (Telegram, Slack, Discord)
 - Admin dashboard (web UI)
@@ -73,7 +73,7 @@ With smaller local models (7-13B), the ideas are more hit-or-miss, but the cost 
 
 **Links**
 
-- GitHub: https://github.com/erikhenriksson/orze
+- GitHub: https://github.com/warlockee/orze
 - `pip install orze`
 - Apache 2.0
 

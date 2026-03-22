@@ -88,7 +88,7 @@ Works on any cluster with GPUs and NFS.
 ```
 Other things it does:
 
-- Hyperparameter sweeps (grid, random, TPE)
+- Hyperparameter sweeps (grid)
 - Telegram/Slack/Discord notifications
 - Admin dashboard
 - Watchdog auto-restart
@@ -101,7 +101,7 @@ Other things it does:
 ```
 Apache 2.0 licensed. pip install orze.
 
-GitHub: github.com/erikhenriksson/orze
+GitHub: github.com/warlockee/orze
 Docs: orze.ai
 
 If you have GPUs sitting idle between experiments, give it a try.
@@ -113,14 +113,14 @@ If you have GPUs sitting idle between experiments, give it a try.
 
 ### Standalone 1 — GPU utilization angle
 ```
-Most research labs use their GPUs less than 40% of the time.
+How much of the day are your GPUs actually training?
 
-Not because they don't have work — because the loop between "results came in" and "next experiment starts" has a human in it.
+The bottleneck isn't compute — it's the gap between "results came in" and "next experiment starts." That gap has a human in it.
 
 We built Orze to remove that bottleneck.
 
 pip install orze
-github.com/erikhenriksson/orze
+github.com/warlockee/orze
 ```
 
 ### Standalone 2 — LLM agent angle
@@ -135,7 +135,7 @@ What if your LLM research agent could:
 
 That's what Orze does. Open source.
 
-github.com/erikhenriksson/orze
+github.com/warlockee/orze
 ```
 
 ### Standalone 3 — Simplicity angle
@@ -165,5 +165,5 @@ pip install orze
 
 The LLM research agent generated [N]% of the ideas that beat the baseline.
 
-Open source: github.com/erikhenriksson/orze
+Open source: github.com/warlockee/orze
 ```

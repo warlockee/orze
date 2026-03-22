@@ -40,7 +40,7 @@ The key insight is that the bottleneck in most research workflows isn't training
 - Ideas stored as Markdown, results as JSON
 - Multi-node via shared filesystem + filesystem locks
 - SQLite for historical analysis (idea_lake.db)
-- Pure Python, ~5k LOC, `pip install orze`
+- Pure Python, `pip install orze`
 
 I deliberately avoided heavyweight infrastructure. The target is "researcher with SSH access to a GPU machine," not "DevOps team with a Kubernetes cluster."
 
@@ -76,7 +76,7 @@ The time-to-event insight was not something I would have tried. The agent notice
 
 **Links**
 
-- GitHub: https://github.com/erikhenriksson/orze
+- GitHub: https://github.com/warlockee/orze
 - PyPI: `pip install orze`
 - License: Apache 2.0
 

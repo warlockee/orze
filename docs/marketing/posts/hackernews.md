@@ -28,15 +28,15 @@ No Kubernetes, no Docker, no database server. It's filesystem-based — ideas li
 I used it for a Kaggle competition (Nexar collision prediction). Over a weekend it ran 800+ experiments autonomously across 8 H100s. The LLM agent discovered a training strategy (time-to-event matching) that I wouldn't have tried manually — it noticed a pattern across hundreds of failed experiments.
 
 Technical details:
-- Pure Python, ~5k LOC, pip install
+- Pure Python, pip install
 - Filesystem-based coordination (no message queue, no Redis)
-- Supports grid/random/TPE hyperparameter sweeps
+- Supports grid hyperparameter sweeps
 - Built-in admin UI (FastAPI)
 - Watchdog service for auto-restart
 - Notifications to Telegram/Slack/Discord
 - Apache 2.0 license
 
-GitHub: https://github.com/erikhenriksson/orze
+GitHub: https://github.com/warlockee/orze
 PyPI: pip install orze
 
 Happy to answer questions about the architecture or the research loop.

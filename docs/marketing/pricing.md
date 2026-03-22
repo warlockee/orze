@@ -14,9 +14,9 @@ Everything you need to orchestrate GPU experiments autonomously.
 - Multi-node cluster orchestration
 - Built-in LLM research agents (Gemini, OpenAI, Anthropic, Ollama)
 - Claude Code integration (`mode: claude`)
-- Hyperparameter sweeps (grid, random, TPE)
+- Hyperparameter sweeps (grid)
 - Admin dashboard (`orze --admin`)
-- Notifications (Telegram, Slack, Discord, WeCom, DingTalk, Feishu)
+- Notifications (Telegram, Slack, Discord, webhooks)
 - Watchdog auto-restart service
 - Goal-driven onboarding (GOAL.md)
 - Retrospection analysis
@@ -27,7 +27,7 @@ Everything you need to orchestrate GPU experiments autonomously.
 pip install orze
 ```
 
-[Get Started →](https://github.com/erikhenriksson/orze)
+[Get Started →](https://github.com/warlockee/orze)
 
 ---
 
@@ -120,19 +120,9 @@ W&B and MLflow are experiment *trackers* — they log metrics and help you visua
 
 ---
 
-## What Researchers Are Saying
-
-> *"We pointed Orze at our 8 GPUs on a Friday evening. By Monday morning, it had run 200+ experiments and found a model architecture we hadn't considered."*
-
-> *"The LLM research agent is the killer feature. It's like having a tireless postdoc who generates hypotheses 24/7."*
-
-> *"We went from 30% GPU utilization to 95%. The ROI paid for the Pro subscription in the first week."*
-
----
-
 ## Still Have Questions?
 
 - **Documentation**: [orze.ai/docs](https://orze.ai)
-- **GitHub**: [github.com/erikhenriksson/orze](https://github.com/erikhenriksson/orze)
+- **GitHub**: [github.com/warlockee/orze](https://github.com/warlockee/orze)
 - **Email**: [sales@orze.ai](mailto:sales@orze.ai)
 - **Discord**: [Join our community](#)

@@ -52,7 +52,7 @@ orze service install # optional: systemd/cron watchdog
 
 **Notifications**
 
-Supports Telegram, Slack, Discord, WeCom, DingTalk, Feishu, and generic webhooks. All optional, configured in YAML.
+Supports Telegram, Slack, Discord, and generic webhooks. All optional, configured in YAML.
 
 **Resource usage**
 
@@ -60,7 +60,7 @@ The orchestrator itself is lightweight — a single Python process that polls ev
 
 **Links**
 
-- GitHub: https://github.com/erikhenriksson/orze
+- GitHub: https://github.com/warlockee/orze
 - License: Apache 2.0
 - No telemetry, no phone-home, no accounts required
 

@@ -37,7 +37,7 @@ Key features:
 • LLM research agents — Gemini, GPT-4, Claude, or local Ollama
 • Multi-node clusters — just mount a shared filesystem
 • Admin dashboard — real-time web UI
-• Hyperparameter sweeps — grid, random, Bayesian
+• Hyperparameter sweeps — grid
 • Notifications — Telegram, Slack, Discord, and more
 • Zero infrastructure — no Docker, no Kubernetes, pure Python
 
@@ -52,7 +52,7 @@ Hey Product Hunt!
 
 I built Orze because I was frustrated watching my GPUs sit idle between experiments. The bottleneck in ML research isn't training time — it's the gap between "results came in" and "I decided what to try next."
 
-Orze fills that gap with LLM agents that continuously generate new experiment ideas from your results. It's been running our 8-GPU cluster at >90% utilization for months.
+Orze fills that gap with LLM agents that continuously generate new experiment ideas from your results. It keeps our GPU cluster busy around the clock.
 
 The architecture is deliberately simple: Markdown files for ideas, JSON for results, filesystem locks for coordination. No infrastructure to maintain.
 

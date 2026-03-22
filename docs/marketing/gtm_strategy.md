@@ -33,7 +33,7 @@ Orze is NOT an experiment tracker (W&B, MLflow, Neptune). It is an autonomous ex
 - **Acquisition**: content marketing, conferences, word-of-mouth
 
 ### Tier 3: Enterprise AI Teams (50+) — Future Revenue
-- **Pain**: GPU utilization below 40%, manual management, compliance
+- **Pain**: low GPU utilization, manual management, compliance
 - **Value**: "Maximize GPU ROI with autonomous orchestration"
 - **Acquisition**: outbound sales, cloud provider partnerships
 

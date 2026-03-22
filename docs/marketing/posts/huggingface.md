@@ -131,7 +131,7 @@ orze --init
 orze
 ```
 
-- **GitHub**: https://github.com/erikhenriksson/orze
+- **GitHub**: https://github.com/warlockee/orze
 - **License**: Apache 2.0
 - **Requirements**: Python 3.9+, GPUs, that's it
 ```

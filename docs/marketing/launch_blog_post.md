@@ -16,7 +16,7 @@ If you run ML experiments on GPUs, your workflow probably looks like this:
 6. Think about what to try next
 7. Repeat
 
-Most of the time, your GPUs are idle — waiting for you to wake up, finish lunch, or just notice that training finished. Even with 8 GPUs, you're probably utilizing them less than 40% of the time.
+Most of the time, your GPUs are idle — waiting for you to wake up, finish lunch, or just notice that training finished.
 
 We had the same problem. Eight H100s, and they spent most of their time doing nothing while we manually iterated on ideas.
 
@@ -114,9 +114,9 @@ Eight GPUs become sixteen. No setup, no configuration changes.
 ## Features at a Glance
 
 - **Auto GPU detection**: No manual assignment. Orze finds free GPUs and claims them.
-- **Hyperparameter sweeps**: Grid, random, or Bayesian (TPE) — expanded inline from ideas.md.
+- **Hyperparameter sweeps**: Grid sweeps expanded inline from ideas.md.
 - **Multi-backend research agents**: Gemini, OpenAI, Anthropic, Ollama, custom endpoints.
-- **Notifications**: Telegram, Slack, Discord, WeCom, DingTalk, Feishu, generic webhooks.
+- **Notifications**: Telegram, Slack, Discord, and generic webhooks.
 - **Admin dashboard**: Real-time web UI at `orze --admin`.
 - **Watchdog service**: Auto-restarts on crashes. Install with `orze service install`.
 - **Goal-driven onboarding**: Write a `GOAL.md` describing what you want to achieve. The research agent uses it as context.
@@ -148,7 +148,7 @@ Orze is Apache 2.0 licensed and fully open source. We're actively developing:
 
 We'd love your feedback. Try it out, file issues, or just star the repo if this sounds useful.
 
-**GitHub**: https://github.com/erikhenriksson/orze
+**GitHub**: https://github.com/warlockee/orze
 **PyPI**: https://pypi.org/project/orze/
 **Website**: https://orze.ai
 

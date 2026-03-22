@@ -15,7 +15,7 @@
 I built an open-source tool that keeps GPU clusters running experiments 24/7 — autonomously.
 
 Here's the problem:
-Most ML teams use their GPUs less than 40% of the time. Not because they lack work — because there's always a human bottleneck between "results came in" and "the next experiment starts."
+Most ML teams have significant GPU idle time. Not because they lack work — because there's always a human bottleneck between "results came in" and "the next experiment starts."
 
 Lunch breaks. Meetings. Sleep. Weekends.
 
@@ -42,9 +42,9 @@ Technical choices that matter:
 
 If your team has GPUs sitting idle between experiments, this might help.
 
-GitHub: github.com/erikhenriksson/orze
+GitHub: github.com/warlockee/orze
 
-#MachineLearning #GPUComputing #MLOps #OpenSource #Research
+#MachineLearning #GPU #MLOps #OpenSource #DeepLearning #AI
 ```
 
 ---
@@ -76,7 +76,7 @@ The 80/20 of ML research:
 
 Orze lets you try the 80% overnight.
 
-github.com/erikhenriksson/orze
+github.com/warlockee/orze
 
-#MachineLearning #AIResearch #GPUOptimization
+#MachineLearning #AI #DeepLearning #OpenSource
 ```
