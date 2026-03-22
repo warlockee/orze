@@ -1,2 +1,2 @@
 """orze — orze.ai."""
-__version__ = "2.14.1"
+__version__ = "2.15.0"
