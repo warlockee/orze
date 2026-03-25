@@ -187,6 +187,16 @@ def run_role_step(role_name: str, role_cfg: dict, ctx: RoleContext) -> None:
     if mode == "research" and not role_cfg.get("backend"):
         return
 
+    # Skip research roles if retrospection paused them
+    if role_name == "research" or role_cfg.get("pausable", False):
+        from orze.engine.retrospection import is_research_paused
+        if is_research_paused(ctx.results_dir):
+            if not ctx.role_states.get(role_name, {}).get("_pause_logged"):
+                logger.info("Role '%s' paused by retrospection (.pause_research sentinel)",
+                            role_name)
+                ctx.role_states.setdefault(role_name, {})["_pause_logged"] = True
+            return
+
     # Per-role cooldown (with adaptive producer-consumer matching)
     role_state = ctx.role_states.setdefault(
         role_name, {"cycles": 0, "last_run_time": 0.0})
