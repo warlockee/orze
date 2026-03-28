@@ -76,7 +76,12 @@ class Orze(OrzePhaseMixin):
         self.cfg = cfg
         self.once = once
         self.results_dir = Path(cfg["results_dir"])
-        self.active: Dict[int, TrainingProcess] = {}
+        # GPU slot manager: supports multiple jobs per GPU and multi-GPU jobs
+        from orze.engine.gpu_slots import GpuSlotManager
+        sched_cfg = cfg.get("gpu_scheduling", {})
+        slots = sched_cfg.get("slots_per_gpu", 1)
+        self.slot_mgr = GpuSlotManager(gpu_ids, slots_per_gpu=slots)
+        self.active = self.slot_mgr  # dict-compatible drop-in
         self.active_evals: Dict[int, EvalProcess] = {}
         self.active_roles: Dict[str, RoleProcess] = {}
         self.pending_evals: list = []

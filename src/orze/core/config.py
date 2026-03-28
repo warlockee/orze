@@ -102,6 +102,9 @@ DEFAULT_CONFIG = {
     "timeout": 3600,
     "poll": 30,
     "gpu_mem_threshold": 2000,
+    "gpu_scheduling": {
+        "slots_per_gpu": 1,  # multiple jobs per GPU (default: 1 for backward compat)
+    },
     "pre_script": None,
     "pre_args": [],
     "pre_timeout": 3600,

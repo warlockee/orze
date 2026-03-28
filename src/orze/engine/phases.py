@@ -308,10 +308,14 @@ class OrzePhaseMixin:
     def _launch_training(self, unclaimed, disk_ok, ideas):
         """Phase: launch training on free GPUs, enforce sweep limits, circuit breaker."""
         cfg = self.cfg
-        busy_gpus = set(self.active.keys()) | set(self.active_evals.keys())
-        free = [g for g in self.gpu_ids if g not in busy_gpus
-                and (get_gpu_memory_used(g) or 0)
-                <= cfg.get("gpu_mem_threshold", 2000)]
+        eval_gpus = set(self.active_evals.keys())
+        if hasattr(self, 'slot_mgr'):
+            free = self.slot_mgr.free_gpu_ids(exclude=eval_gpus)
+        else:
+            busy_gpus = set(self.active.keys()) | eval_gpus
+            free = [g for g in self.gpu_ids if g not in busy_gpus
+                    and (get_gpu_memory_used(g) or 0)
+                    <= cfg.get("gpu_mem_threshold", 2000)]
 
         # Limit concurrent sweep variants per base idea
         max_sweep_concurrent = cfg.get("sweep", {}).get(
@@ -348,7 +352,16 @@ class OrzePhaseMixin:
                     logger.warning("Emergency GC failed: %s", e)
 
         if unclaimed and free and disk_ok:
-            for gpu in free:
+            # With multi-slot scheduling, keep launching until all slots are full
+            max_launches = len(free) * getattr(getattr(self, 'slot_mgr', None), 'slots_per_gpu', 1)
+            launch_count = 0
+            while unclaimed and launch_count < max_launches:
+                # Re-check free GPUs each iteration (slots fill up)
+                if hasattr(self, 'slot_mgr'):
+                    free = self.slot_mgr.free_gpu_ids(exclude=set(self.active_evals.keys()))
+                if not free:
+                    break
+                gpu = free[0]  # least-loaded GPU (sorted by most free slots)
                 launched = False
                 while unclaimed:
                     idea_id = unclaimed.pop(0)
@@ -438,6 +451,7 @@ class OrzePhaseMixin:
                     if base_id != idea_id:
                         sweep_counts[base_id] = sweep_counts.get(base_id, 0) + 1
                     launched = True
+                    launch_count += 1
                     break
                 if not launched:
                     break
