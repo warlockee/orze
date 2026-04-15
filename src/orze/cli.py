@@ -30,7 +30,7 @@ from pathlib import Path
 from orze import __version__
 from orze.cli_pro import pro_activate, pro_status, pro_deactivate
 from orze.cli_setup import (
-    do_uninstall, stop_running_instance, do_upgrade,
+    do_uninstall, stop_running_instance, do_upgrade, do_reinstall,
     do_init, do_check,
 )
 from orze.cli_star import maybe_star
@@ -112,6 +112,20 @@ Examples:
                         help="Launch admin panel instead of farm loop")
     parser.add_argument("--upgrade", action="store_true",
                         help="Upgrade orze to the latest version from PyPI")
+    parser.add_argument("--reinstall", action="store_true",
+                        help="Deep clean + fresh install: uninstall from every "
+                             "reachable Python env, purge stale dist-info and "
+                             "__pycache__, reinstall, verify single clean version, "
+                             "restart. Fixes drift from partial upgrades.")
+    parser.add_argument("--reinstall-orze-version", type=str, default=None,
+                        metavar="VER", help="Pin orze version for --reinstall")
+    parser.add_argument("--reinstall-pro-version", type=str, default=None,
+                        metavar="VER", help="Pin orze-pro version for --reinstall")
+    parser.add_argument("--reinstall-extra-index-url", type=str, default=None,
+                        metavar="URL",
+                        help="Extra pip index URL for --reinstall (e.g. private PyPI)")
+    parser.add_argument("--no-restart", action="store_true",
+                        help="Skip restart after --reinstall")
     parser.add_argument("--check", action="store_true",
                         help="Validate config, check files, API keys, GPUs, .env — then exit")
     parser.add_argument("--uninstall", action="store_true",
@@ -461,6 +475,17 @@ Examples:
     # --upgrade: upgrade orze from PyPI (stops + restarts if running)
     if args.upgrade:
         do_upgrade(cfg)
+        return
+
+    # --reinstall: deep-clean reinstall (fixes partial-upgrade drift)
+    if args.reinstall:
+        do_reinstall(
+            cfg,
+            orze_version=args.reinstall_orze_version,
+            pro_version=args.reinstall_pro_version,
+            extra_index_url=args.reinstall_extra_index_url,
+            no_restart=args.no_restart,
+        )
         return
 
     # --uninstall: full cleanup, keep only research results

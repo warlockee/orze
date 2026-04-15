@@ -490,6 +490,203 @@ def do_upgrade(cfg: dict):
                                   "-c", str(cfg.get("_config_path", "orze.yaml"))])
 
 
+def do_reinstall(cfg: dict,
+                 orze_version: str = None,
+                 pro_version: str = None,
+                 extra_index_url: str = None,
+                 no_restart: bool = False) -> None:
+    """Deep clean + fresh install of orze (and orze-pro if installed).
+
+    Fixes drift from partial upgrades: stale ``*.dist-info`` dirs,
+    ``__pycache__`` from removed modules, user-site shadow installs,
+    orphaned CLI entry-point scripts. Unlike ``do_upgrade`` which is a
+    plain ``pip install --upgrade`` (and can leave stale dist-info),
+    this guarantees a single, clean version on disk.
+
+    Strategy:
+      1. Stop the running orze.cli process (so file handles release).
+      2. Uninstall orze + orze-pro from every Python environment we
+         can reach from here: ``sys.executable`` and (if different)
+         ``shutil.which("python3")``. Both system and user-site.
+      3. Rip any surviving ``orze``/``orze_pro`` dirs and
+         ``orze*.dist-info``/``orze_pro*.dist-info`` from every
+         site-packages the running interpreter knows about.
+      4. Hunt for stray ``orze`` console scripts in the Python ``bin/``
+         directories and remove them.
+      5. Fresh ``pip install --no-cache-dir`` of pinned or latest
+         versions.
+      6. Verify: exactly one dist-info per package, interpreter can
+         import both, no shadowing paths in ``sys.path``.
+      7. Restart the orze.cli process unless ``--no-restart``.
+    """
+    import site
+
+    results_dir = Path(cfg["results_dir"])
+
+    print("\n\033[1mOrze — Deep Clean Reinstall\033[0m")
+    print("-----------------------------")
+    print(f"Target orze    : {orze_version or 'latest'}")
+    print(f"Target orze-pro: {pro_version or 'latest (if present)'}")
+    print(f"Extra index    : {extra_index_url or '(none)'}")
+    print()
+
+    # --- 1. Stop running instance ------------------------------------
+    print("[1/7] Stopping running orze instance...")
+    was_running = stop_running_instance(results_dir)
+    if not was_running:
+        print("  (none running)")
+
+    # --- 2. Collect every Python we can reach ------------------------
+    pythons = [sys.executable]
+    alt = shutil.which("python3")
+    if alt and Path(alt).resolve() != Path(sys.executable).resolve():
+        pythons.append(alt)
+    alt = shutil.which("python")
+    if alt and Path(alt).resolve() not in {Path(p).resolve() for p in pythons}:
+        pythons.append(alt)
+
+    # --- 3. pip uninstall from each -----------------------------------
+    print(f"[2/7] Uninstalling from {len(pythons)} Python env(s)...")
+    for py in pythons:
+        print(f"  {py}")
+        for pkg in ("orze-pro", "orze"):
+            try:
+                subprocess.run(
+                    [py, "-m", "pip", "uninstall", "-y", pkg],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                pass
+
+    # --- 4. Purge stale files from every site-packages ---------------
+    print("[3/7] Purging stale package dirs and dist-info...")
+    site_dirs: set = set()
+    try:
+        site_dirs.update(site.getsitepackages())
+    except (AttributeError, OSError):
+        pass
+    try:
+        site_dirs.add(site.getusersitepackages())
+    except (AttributeError, OSError):
+        pass
+    # Also include what sys.path says is a site-packages dir
+    for p in sys.path:
+        if p.endswith("site-packages") and Path(p).is_dir():
+            site_dirs.add(p)
+
+    purged = 0
+    for sp in sorted(site_dirs):
+        sp_path = Path(sp)
+        if not sp_path.is_dir():
+            continue
+        for pattern in ("orze", "orze_pro",
+                        "orze-*.dist-info", "orze_pro-*.dist-info"):
+            for match in sp_path.glob(pattern):
+                try:
+                    if match.is_dir():
+                        shutil.rmtree(match)
+                    else:
+                        match.unlink()
+                    print(f"  rm {match}")
+                    purged += 1
+                except OSError as e:
+                    print(f"  WARN could not remove {match}: {e}")
+    if purged == 0:
+        print("  (nothing to purge)")
+
+    # --- 5. Remove stray console-script binaries ----------------------
+    print("[4/7] Removing stray orze/orze-pro binaries...")
+    bin_dirs = {Path(sys.executable).parent}  # current interpreter's bin
+    try:
+        bin_dirs.add(Path(site.getuserbase()) / "bin")
+    except (AttributeError, OSError):
+        pass
+    for bd in sorted(bin_dirs):
+        for name in ("orze", "orze-pro"):
+            p = bd / name
+            if p.exists() or p.is_symlink():
+                try:
+                    p.unlink()
+                    print(f"  rm {p}")
+                except OSError as e:
+                    print(f"  WARN {p}: {e}")
+
+    # --- 6. Fresh install --------------------------------------------
+    print("[5/7] Fresh install into current venv...")
+    orze_spec = f"orze=={orze_version}" if orze_version else "orze"
+    pip_cmd = [sys.executable, "-m", "pip", "install",
+               "--no-cache-dir", "--upgrade", orze_spec]
+    if extra_index_url:
+        pip_cmd += ["--extra-index-url", extra_index_url]
+    try:
+        subprocess.run(pip_cmd, check=True)
+    except subprocess.CalledProcessError:
+        print("\n\033[31mReinstall of orze failed.\033[0m")
+        return
+
+    # Also reinstall orze-pro if it was listed (or user asked for it)
+    if pro_version is not None or extra_index_url is not None:
+        pro_spec = f"orze-pro=={pro_version}" if pro_version else "orze-pro"
+        pip_cmd = [sys.executable, "-m", "pip", "install",
+                   "--no-cache-dir", "--upgrade", pro_spec]
+        if extra_index_url:
+            pip_cmd += ["--extra-index-url", extra_index_url]
+        try:
+            subprocess.run(pip_cmd, check=True)
+        except subprocess.CalledProcessError:
+            print("\n\033[33mWARN: orze-pro reinstall failed — continuing.\033[0m")
+
+    # --- 7. Verify ---------------------------------------------------
+    print("[6/7] Verifying single clean install...")
+    verify_code = (
+        "import sys, importlib, site\n"
+        "import orze\n"
+        "mods = {'orze': orze}\n"
+        "try:\n"
+        "    import orze_pro; mods['orze_pro'] = orze_pro\n"
+        "except ImportError:\n"
+        "    pass\n"
+        "for name, m in mods.items():\n"
+        "    ver = getattr(m, '__version__', '?')\n"
+        "    print(f'  {name:<10} {ver:<10}  @ {m.__file__}')\n"
+        "# Check single dist-info per package\n"
+        "from pathlib import Path\n"
+        "for sp in set(site.getsitepackages() + [site.getusersitepackages()]):\n"
+        "    sp = Path(sp)\n"
+        "    if not sp.is_dir():\n"
+        "        continue\n"
+        "    for pat in ('orze-*.dist-info', 'orze_pro-*.dist-info'):\n"
+        "        hits = list(sp.glob(pat))\n"
+        "        if len(hits) > 1:\n"
+        "            print(f'  ERROR: multiple dist-info in {sp}: {hits}')\n"
+        "            sys.exit(2)\n"
+    )
+    try:
+        subprocess.run([sys.executable, "-c", verify_code], check=True)
+    except subprocess.CalledProcessError:
+        print("\n\033[31mVerification failed — inspect the output above.\033[0m")
+        return
+
+    # --- 8. Restart --------------------------------------------------
+    print("[7/7] Restart...")
+    if no_restart:
+        print("  --no-restart set, skipping.")
+        print(f"  To restart manually:")
+        print(f"  {sys.executable} -m orze.cli -c "
+              f"{cfg.get('_config_path', 'orze.yaml')}")
+        return
+    if was_running:
+        print("  Restarting orze with clean install...")
+        os.execv(sys.executable, [sys.executable, "-m", "orze.cli",
+                                  "-c", str(cfg.get("_config_path", "orze.yaml"))])
+    else:
+        print("  (was not running — nothing to restart)")
+
+    print("\n\033[32mReinstall complete.\033[0m")
+
+
 # ---------------------------------------------------------------------------
 # Shared storage auto-detection
 # ---------------------------------------------------------------------------
