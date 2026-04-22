@@ -252,9 +252,9 @@ Examples:
         "list", help="List all SOPs (skills + validators + methods + portfolios)")
     sop_list_p.add_argument("--project-root", default=".",
                             help="Project root (default: cwd)")
-    sop_list_p.add_argument("--results-dir", default="results",
+    sop_list_p.add_argument("--results-dir", default="orze_results",
                             help="Results dir for Tier 2 YAML SOPs "
-                                 "(default: results)")
+                                 "(default: orze_results)")
     sop_check_p = sop_sub.add_parser(
         "check", help="Validate SOP wiring (requires/consumed_by/overrides)")
     sop_check_p.add_argument("--project-root", default=".")
@@ -262,7 +262,7 @@ Examples:
         "status",
         help="Show last-run execution evidence per SOP from receipts")
     sop_status_p.add_argument("--project-root", default=".")
-    sop_status_p.add_argument("--results-dir", default="results")
+    sop_status_p.add_argument("--results-dir", default="orze_results")
 
     # --- rebuild-state: rebuild best_idea_id from idea_lake.db ---
     rebuild_parser = subparsers.add_parser(
@@ -316,7 +316,7 @@ Examples:
     rl_parser = subparsers.add_parser(
         "rebuild-lake",
         help="Rebuild idea_lake.db from existing results directories")
-    rl_parser.add_argument("--results-dir", default="results")
+    rl_parser.add_argument("--results-dir", default="orze_results")
     rl_parser.add_argument("--db", default="idea_lake.db")
 
     # --- manual-notify (v4.0): send a manual report ---
@@ -400,7 +400,7 @@ Examples:
     if command == "rebuild-state":
         from orze.engine.rebuild_state import rebuild_state_file
         cfg = load_project_config(args.config_file)
-        results_dir = Path(args.results or cfg.get("results_dir", "results"))
+        results_dir = Path(args.results or cfg.get("results_dir", "orze_results"))
         summary = rebuild_state_file(results_dir, cfg,
                                      overwrite=args.overwrite,
                                      all_hosts=args.all_hosts)
@@ -444,7 +444,7 @@ Examples:
     if command == "reset":
         import sqlite3, shutil
         cfg = load_project_config(args.config_file)
-        db_path = Path(cfg.get("idea_lake_db") or Path(cfg.get("results_dir", "results")) / "idea_lake.db")
+        db_path = Path(cfg.get("idea_lake_db") or Path(cfg.get("results_dir", "orze_results")) / "idea_lake.db")
         if not db_path.exists():
             print("No idea_lake.db found.")
             return
@@ -481,7 +481,7 @@ Examples:
         conn.close()
 
         # Also clear pause sentinel — stale failures shouldn't block research
-        results_dir = Path(cfg.get("results_dir", "results"))
+        results_dir = Path(cfg.get("results_dir", "orze_results"))
         pause_file = results_dir / ".pause_research"
         if pause_file.exists():
             pause_file.unlink()
@@ -493,7 +493,7 @@ Examples:
         import json as _json
         action = getattr(args, "result_action", None)
         cfg = load_project_config(getattr(args, "config_file", None))
-        results_dir = Path(cfg.get("results_dir", "results"))
+        results_dir = Path(cfg.get("results_dir", "orze_results"))
         manual_path = results_dir / "_manual_results.json"
 
         if action == "add":

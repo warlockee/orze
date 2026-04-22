@@ -1105,7 +1105,7 @@ noise: 0.1
     _create("RESEARCH_RULES.md", RESEARCH_RULES_TEMPLATE, "RESEARCH_RULES.md")
 
     # 7. results directory
-    Path("results").mkdir(exist_ok=True)
+    Path("orze_results").mkdir(exist_ok=True)
 
     # =================================================================
     # Summary
@@ -1319,7 +1319,7 @@ def do_check(cfg: dict):
         else:
             print(f"      {warn_mark} no valid ideas found (may be empty if using idea_lake)")
 
-    rdir = cfg.get("results_dir", "results")
+    rdir = cfg.get("results_dir", "orze_results")
     print(f"    {ok if Path(rdir).is_dir() else warn_mark} results_dir: {rdir}")
 
     bc = cfg.get("base_config")

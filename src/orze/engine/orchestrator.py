@@ -281,29 +281,29 @@ class Orze(OrzePhaseMixin):
 
     def _load_config_hashes(self) -> dict:
         """Load the config hash -> idea_id mapping."""
-        return load_hashes(self.results_dir)
+        return load_hashes(self.results_dir, self.cfg)
 
     def _save_config_hash(self, idea_id: str, config: dict):
         """Store a completed idea's config hash."""
-        save_hash(self.results_dir, idea_id, config)
+        save_hash(self.results_dir, idea_id, config, self.cfg)
 
     def _rebuild_config_hashes(self):
         """Rebuild config hash cache from existing completed ideas' resolved configs."""
-        rebuild_hashes(self.results_dir)
+        rebuild_hashes(self.results_dir, self.cfg)
 
     def _startup_checks(self):
         self._health_monitor = startup_checks(
             self.results_dir, self.cfg, self._hostname, self._instance_uuid)
         # F3: migrate any stray ideas.md.corrupt.* files from cwd into
-        # results/_corrupt_ideas/ and prune to last 5.
+        # .orze/backups/corrupt/ and prune to last 5.
         try:
             from orze.engine.roles import cleanup_stale_corrupt_files
             ideas_path = Path(self.cfg.get("ideas_file", "ideas.md"))
-            moved = cleanup_stale_corrupt_files(ideas_path)
+            moved = cleanup_stale_corrupt_files(ideas_path, self.cfg)
             if moved:
                 logger.info(
                     "Archived %d stray ideas.md.corrupt.* files to "
-                    "_corrupt_ideas/ (kept last 5)", moved)
+                    ".orze/backups/corrupt/ (kept last 5)", moved)
         except Exception as e:
             logger.debug("cleanup_stale_corrupt_files: %s", e)
         # F6: relocate zero-byte stale DB files at CWD out of the way.

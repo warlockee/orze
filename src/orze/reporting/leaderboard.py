@@ -35,7 +35,7 @@ from typing import Dict, Optional
 from pathlib import Path
 from orze.core.fs import deep_get, atomic_write
 from orze.core.ideas import expand_sweeps
-from orze.core.config import DEFAULT_CONFIG
+from orze.core.config import DEFAULT_CONFIG, orze_path
 from orze.reporting.state import _read_all_heartbeats
 
 try:
@@ -775,8 +775,8 @@ def write_admin_cache(results_dir: Path, ideas: dict, cfg: dict):
         "alerts": {"alerts": alerts, "count": len(alerts)},
         "epoch": now,
     }
-    atomic_write(results_dir / "_admin_cache.json",
-                 json.dumps(cache, default=str))
+    admin_cache_path = orze_path(cfg, "state", "admin_cache.json")
+    atomic_write(admin_cache_path, json.dumps(cache, default=str))
 
 
 def format_report_text(data: dict) -> str:

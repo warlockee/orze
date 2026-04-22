@@ -45,6 +45,7 @@ _ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
 # don't have to restate every skill.
 CANONICAL_CLAUDE_SKILL_DEFAULTS: dict = {
     "professor": [
+        "@sop:file_layout",
         "@sop:professor_base",
         "@sop:professor_paper_lake",
         "@sop:professor_web_search",
@@ -57,6 +58,7 @@ CANONICAL_CLAUDE_SKILL_DEFAULTS: dict = {
         "@sop:professor_steering",
     ],
     "thinker": [
+        "@sop:file_layout",
         "@sop:thinker_synthesis",
         "@sop:thinker_base",
         "@sop:thinker_phase_a_reformulation",
@@ -68,6 +70,7 @@ CANONICAL_CLAUDE_SKILL_DEFAULTS: dict = {
         "@sop:thinker_phase_f_implementation",
     ],
     "data_analyst": [
+        "@sop:file_layout",
         "@sop:data_analyst_base",
         "@sop:data_analyst_error_analysis",
         "@sop:data_analyst_visualization",
@@ -75,6 +78,7 @@ CANONICAL_CLAUDE_SKILL_DEFAULTS: dict = {
         "@sop:data_analyst_anomaly_hypotheses",
     ],
     "engineer": [
+        "@sop:file_layout",
         "@sop:engineer_base",
         "@sop:engineer_implement",
         "@sop:engineer_fix_bugs",
@@ -137,9 +141,9 @@ def _load_dotenv(config_path: Optional[str] = None) -> int:
 
 DEFAULT_CONFIG = {
     "train_script": "train.py",
-    "ideas_file": "ideas.md",
+    "ideas_file": None,  # None = derive to {orze_dir}/ideas.md
     "base_config": "configs/base.yaml",
-    "results_dir": "results",
+    "results_dir": "orze_results",
     "python": sys.executable,
     "train_extra_args": [],
     "train_extra_env": {},
@@ -185,6 +189,7 @@ DEFAULT_CONFIG = {
     "plateau_threshold": 50,    # fire plateau notification after N completions w/o improvement
     "roles": {},
     "auto_upgrade": True,
+    "sweep_stray": True,        # sweep stray files to .orze/stray/ by default
     # Data boundary guardrails. When any prefix is declared here, orze
     # launches training via orze.data_boundaries.wrap, which monkey-patches
     # builtins.open() to abort on reads of forbidden paths (data leakage).
@@ -246,9 +251,32 @@ def load_project_config(path: Optional[str] = None) -> dict:
         elif "research" not in cfg["roles"]:
             cfg["roles"]["research"] = cfg["research"]
 
-    # Default idea_lake_db to results_dir/idea_lake.db if not set
+    # Compute project_root and orze_dir from results_dir
+    results_path = Path(cfg["results_dir"])
+    if not results_path.is_absolute():
+        results_path = Path.cwd() / results_path
+    project_root = results_path.parent
+    orze_dir = project_root / ".orze"
+    
+    cfg["_orze_dir"] = str(orze_dir)
+    cfg["_project_root"] = str(project_root)
+    
+    # Resolve ideas_file: None → .orze/ideas.md
+    if not cfg.get("ideas_file"):
+        cfg["ideas_file"] = str(orze_dir / "ideas.md")
+    
+    # Resolve idea_lake_db default → .orze/idea_lake.db (NOT results_dir)
     if not cfg.get("idea_lake_db"):
-        cfg["idea_lake_db"] = str(Path(cfg["results_dir"]) / "idea_lake.db")
+        cfg["idea_lake_db"] = str(orze_dir / "idea_lake.db")
+    
+    # Environment variable exposures for subprocess injection
+    cfg["_env_ORZE_DIR"] = str(orze_dir)
+    cfg["_env_ORZE_RESULTS_DIR"] = str(results_path)
+    cfg["_env_ORZE_IDEAS_FILE"] = cfg["ideas_file"]
+    cfg["_env_ORZE_RULES_DIR"] = str(orze_dir / "rules")
+    cfg["_env_ORZE_METHODS_DIR"] = str(results_path / "methods")
+    cfg["_env_ORZE_KNOWLEDGE_DIR"] = str(results_path / "knowledge")
+    cfg["_env_ORZE_FEEDBACK_DIR"] = str(orze_dir / "feedback")
 
     # Auto-discover research backends from environment API keys.
     # Only activates if NO roles are explicitly configured at all.
@@ -554,4 +582,40 @@ def _sanitize_config(config: dict) -> dict:
                 current[final_key] = sanitize_value(current[final_key], default)
 
     return config
+
+
+# Path helper for .orze/ and orze_results/ layout
+_ORZE_DIR_KINDS = {"logs", "receipts", "locks", "triggers", "mcp", "state", 
+                    "heartbeats", "backups", "feedback", "tmp", "stray", "rules"}
+_RESULTS_KINDS = {"methods", "knowledge"}
+
+
+def orze_path(cfg: dict, kind: str, name: str = "") -> Path:
+    """Return path for orze-internal or results subdirectories.
+    
+    Args:
+        cfg: Config dict (must have _orze_dir and _env_ORZE_RESULTS_DIR)
+        kind: One of: logs, receipts, locks, triggers, mcp, state, heartbeats,
+              backups, feedback, tmp, stray, rules (→ .orze/kind/)
+              OR methods, knowledge (→ orze_results/kind/)
+        name: Optional subdirectory or filename under kind/
+    
+    Returns:
+        Path object. Parent directory is created if it doesn't exist.
+    
+    Raises:
+        ValueError: If kind is not recognized.
+    """
+    if kind in _ORZE_DIR_KINDS:
+        base = Path(cfg["_orze_dir"]) / kind
+    elif kind in _RESULTS_KINDS:
+        base = Path(cfg["_env_ORZE_RESULTS_DIR"]) / kind
+    else:
+        raise ValueError(f"unknown orze_path kind: {kind}")
+    
+    base.mkdir(parents=True, exist_ok=True)
+    
+    if name:
+        return base / name
+    return base
 

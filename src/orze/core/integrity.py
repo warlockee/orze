@@ -215,8 +215,14 @@ def hash_config(config: dict) -> str:
     ).hexdigest()[:12]
 
 
-def load_hashes(results_dir: Path) -> dict:
-    cache_file = Path(results_dir) / CACHE_FILENAME
+def load_hashes(results_dir: Path, cfg: dict = None) -> dict:
+    """Load config hash cache from .orze/state/config_hashes.json."""
+    if cfg:
+        from orze.core.config import orze_path
+        cache_file = orze_path(cfg, "state", "config_hashes.json")
+    else:
+        # Fallback for legacy calls without cfg
+        cache_file = Path(results_dir) / CACHE_FILENAME
     if cache_file.exists():
         try:
             return json.loads(cache_file.read_text(encoding="utf-8"))
@@ -225,14 +231,22 @@ def load_hashes(results_dir: Path) -> dict:
     return {}
 
 
-def save_hash(results_dir: Path, idea_id: str, config: dict) -> None:
-    cache_file = Path(results_dir) / CACHE_FILENAME
-    hashes = load_hashes(results_dir)
+def save_hash(results_dir: Path, idea_id: str, config: dict, cfg: dict = None) -> None:
+    """Save config hash to .orze/state/config_hashes.json."""
+    if cfg:
+        from orze.core.config import orze_path
+        cache_file = orze_path(cfg, "state", "config_hashes.json")
+        hashes = load_hashes(results_dir, cfg)
+    else:
+        # Fallback for legacy calls
+        cache_file = Path(results_dir) / CACHE_FILENAME
+        hashes = load_hashes(results_dir)
     hashes[hash_config(config)] = idea_id
     cache_file.write_text(json.dumps(hashes, indent=2), encoding="utf-8")
 
 
-def rebuild_hashes(results_dir: Path) -> None:
+def rebuild_hashes(results_dir: Path, cfg: dict = None) -> None:
+    """Rebuild config hash cache from completed ideas."""
     results_dir = Path(results_dir)
     hashes = {}
     if not results_dir.exists():
@@ -248,11 +262,15 @@ def rebuild_hashes(results_dir: Path) -> None:
             m = json.loads(metrics_path.read_text(encoding="utf-8"))
             if m.get("status") != "COMPLETED":
                 continue
-            cfg = yaml.safe_load(resolved_path.read_text(encoding="utf-8")) or {}
-            hashes[hash_config(cfg)] = idea_dir.name
+            cfg_data = yaml.safe_load(resolved_path.read_text(encoding="utf-8")) or {}
+            hashes[hash_config(cfg_data)] = idea_dir.name
         except Exception:
             continue
-    cache_file = results_dir / CACHE_FILENAME
+    if cfg:
+        from orze.core.config import orze_path
+        cache_file = orze_path(cfg, "state", "config_hashes.json")
+    else:
+        cache_file = results_dir / CACHE_FILENAME
     cache_file.write_text(json.dumps(hashes, indent=2), encoding="utf-8")
     logger.info("Rebuilt config hash cache: %d completed ideas", len(hashes))
 

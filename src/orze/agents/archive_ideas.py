@@ -127,7 +127,7 @@ def load_metrics(results_dir: Path, idea_id: str,
 def main():
     parser = argparse.ArgumentParser(description="Archive ideas to SQLite")
     parser.add_argument("--ideas-md", default="ideas.md", help="Path to ideas.md")
-    parser.add_argument("--results-dir", default="results", help="Path to results dir")
+    parser.add_argument("--results-dir", default="orze_results", help="Path to results dir")
     parser.add_argument("--db", default=None, help="SQLite database path (default: from config or results_dir/idea_lake.db)")
     parser.add_argument("--config", default=None, help="Path to orze.yaml for report column config")
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing")

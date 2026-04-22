@@ -26,6 +26,8 @@ from typing import Any, Callable, Dict, List, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from orze.core.config import orze_path
+
 logger = logging.getLogger("orze.mcp")
 
 # MCP protocol version
@@ -158,9 +160,9 @@ def _tool_leaderboard(args: dict, cfg: dict) -> str:
 
 
 def _tool_queue(args: dict, cfg: dict) -> str:
-    results_dir = Path(cfg.get("results_dir", "results"))
+    results_dir = Path(cfg.get("results_dir", "orze_results"))
     limit = args.get("limit", 20)
-    cache = _read_json(results_dir / "_admin_cache.json")
+    cache = _read_json(orze_path(cfg, "state", "admin_cache.json"))
     if cache and cache.get("queue"):
         queue_data = cache["queue"]
         # queue can be a list or a dict with 'items' key

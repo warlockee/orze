@@ -278,14 +278,18 @@ def _prune_corrupt_archive(archive_dir: Path, basename: str,
 
 
 def cleanup_stale_corrupt_files(ideas_path: Path,
+                                cfg: dict = None,
                                 archive_dir=None,
                                 keep: int = 5) -> int:
-    """Move legacy ``ideas.md.corrupt.*`` files out of the project root
-    into a ``_corrupt_ideas/`` archive next to the ideas file and keep
-    only the ``keep`` most-recent. Returns the number moved. Idempotent;
-    safe to call on every startup.
+    """Move legacy ``ideas.md.corrupt.*`` files into .orze/backups/corrupt/
+    and keep only the ``keep`` most-recent. Returns the number moved.
+    Idempotent; safe to call on every startup.
     """
-    if archive_dir is None:
+    if archive_dir is None and cfg:
+        from orze.core.config import orze_path
+        archive_dir = orze_path(cfg, "backups") / "corrupt"
+    elif archive_dir is None:
+        # Fallback for legacy calls without cfg
         archive_dir = ideas_path.parent / "_corrupt_ideas"
     try:
         archive_dir.mkdir(parents=True, exist_ok=True)

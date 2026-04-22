@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from orze.core.fs import atomic_write
-from orze.core.config import load_project_config
+from orze.core.config import load_project_config, orze_path
 from orze.core.ideas import parse_ideas
 
 
@@ -210,7 +210,7 @@ async def get_status():
 
 def _read_admin_cache() -> Optional[dict]:
     """Read the pre-aggregated admin cache written by the orchestrator."""
-    return _read_json(_results_dir() / "_admin_cache.json")
+    return _read_json(orze_path(_cfg, "state", "admin_cache.json"))
 
 
 @app.get("/api/nodes")

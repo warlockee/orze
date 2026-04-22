@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from orze.core.ideas import parse_ideas
+from orze.core.config import load_project_config, orze_path
 from orze.idea_lake import IdeaLake
 from orze.reporting.leaderboard import update_report
 from orze.reporting.notifications import notify
@@ -21,12 +22,11 @@ def main():
     parser.add_argument("-c", "--config", default="orze.yaml", help="Path to orze.yaml")
     args = parser.parse_args()
 
-    with open(args.config, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_project_config(args.config)
 
     results_dir = Path(cfg["results_dir"])
     ideas_file = cfg.get("ideas_file", "ideas.md")
-    lake_path = Path(cfg.get("idea_lake_db") or (Path(cfg.get("results_dir", "results")) / "idea_lake.db"))
+    lake_path = Path(cfg.get("idea_lake_db"))
     lake = IdeaLake(str(lake_path)) if lake_path.exists() else None
     ideas = parse_ideas(ideas_file)
 
@@ -53,7 +53,7 @@ def main():
     active_count = 0
     admin_data = {}
     try:
-        with open(results_dir / "_admin_cache.json", encoding="utf-8") as f:
+        with open(orze_path(cfg, "state", "admin_cache.json"), encoding="utf-8") as f:
             admin_data = json.load(f)
             for hb in admin_data.get("nodes", {}).get("heartbeats", []):
                 if hb.get("status") == "online":
