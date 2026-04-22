@@ -470,7 +470,7 @@ class OrzePhaseMixin:
                 try:
                     from orze.agents.orze_gc import run_gc
                     report_cfg = cfg.get("report") or {}
-                    lake_path = Path(cfg.get("idea_lake_db") or Path(cfg.get("results_dir", "results")) / "idea_lake.db")
+                    lake_path = Path(cfg.get("idea_lake_db") or Path(cfg.get("results_dir", "orze_results")) / "idea_lake.db")
                     # Collect idea IDs from all currently running training
                     # and eval processes so GC never deletes their checkpoints.
                     running_ids = set()

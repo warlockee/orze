@@ -83,7 +83,7 @@ _cfg: Dict[str, Any] = {}
 
 
 def _results_dir() -> Path:
-    return Path(_cfg.get("results_dir", "results"))
+    return Path(_cfg.get("results_dir", "orze_results"))
 
 
 def _ideas_file() -> str:
@@ -661,7 +661,7 @@ def run_admin(cfg: dict, host: str = "0.0.0.0", port: int = 8787):
     import uvicorn
 
     logger.info("Starting Orze Admin Panel on %s:%d", host, port)
-    logger.info("  results_dir: %s", cfg.get("results_dir", "results"))
+    logger.info("  results_dir: %s", cfg.get("results_dir", "orze_results"))
     logger.info("  ideas_file:  %s", cfg.get("ideas_file", "ideas.md"))
 
     # Pre-warm: read admin cache once so first requests are instant

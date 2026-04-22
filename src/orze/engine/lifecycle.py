@@ -104,7 +104,7 @@ def reconcile_stale_running(cfg: dict) -> None:
     """
     import socket as _socket
     hostname = _socket.gethostname()
-    results_dir = Path(cfg.get("results_dir", "results"))
+    results_dir = Path(cfg.get("results_dir", "orze_results"))
     lake_path = Path(cfg.get("idea_lake_db") or results_dir / "idea_lake.db")
     if not lake_path.exists():
         return

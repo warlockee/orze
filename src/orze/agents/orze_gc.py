@@ -483,7 +483,7 @@ Examples:
     gc_cfg = cfg.get("gc") or {}
     report_cfg = cfg.get("report") or {}
 
-    results_dir = Path(cfg.get("results_dir", "results"))
+    results_dir = Path(cfg.get("results_dir", "orze_results"))
     ideas_path = Path(cfg.get("ideas_file", "ideas.md"))
     primary_metric = report_cfg.get("primary_metric", "")
 

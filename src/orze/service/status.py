@@ -96,7 +96,7 @@ def show_status():
         print(f"    {_ok('orze-watchdog.timer active') if timer_active else _no('orze-watchdog.timer not active')}")
 
     # 3. Orze process
-    results_dir = svc_cfg.get("results_dir", "results")
+    results_dir = svc_cfg.get("results_dir", "orze_results")
     print(f"\n  \033[1mOrze process:\033[0m")
     pid = _read_pid(results_dir, hostname)
     if pid:

@@ -493,7 +493,7 @@ def _validate_config(cfg: dict) -> tuple:
     # --- Multi-tenant hint ---
     ideas_val = cfg.get("ideas_file", "ideas.md")
     if ideas_val == "ideas.md" or (not Path(ideas_val).is_absolute()
-                                    and not ideas_val.startswith(cfg.get("results_dir", "results"))):
+                                    and not ideas_val.startswith(cfg.get("results_dir", "orze_results"))):
         logger.debug("ideas_file is '%s' (relative, not under results_dir). "
                       "Multi-instance setups should use distinct ideas_file paths.",
                       ideas_val)

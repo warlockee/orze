@@ -175,7 +175,7 @@ class Orze(OrzePhaseMixin):
             # Only warn about unmounted drive if results dir already has experiments
             # (indicating this is NOT a first run). On first run, lake doesn't exist yet.
             if not lake_path.exists():
-                res_dir = Path(cfg.get("results_dir", "results"))
+                res_dir = Path(cfg.get("results_dir", "orze_results"))
                 has_prior_results = (res_dir.exists() and
                     any(d.is_dir() and d.name.startswith("idea-") for d in res_dir.iterdir())
                     if res_dir.exists() else False)
@@ -195,7 +195,7 @@ class Orze(OrzePhaseMixin):
             # this may indicate a mount failure (e.g., FSX not mounted).
             min_expected = cfg.get("min_expected_results", 0)
             if min_expected > 0:
-                res_dir = Path(cfg.get("results_dir", "results"))
+                res_dir = Path(cfg.get("results_dir", "orze_results"))
                 if res_dir.exists():
                     n_results = len([d for d in res_dir.iterdir()
                                      if d.is_dir() and d.name.startswith("idea-")])
@@ -209,7 +209,7 @@ class Orze(OrzePhaseMixin):
             self.lake = None
             # Check if results already exist — if so, this is a serious
             # degradation (not a first run), so escalate to ERROR + notify.
-            res_dir = Path(cfg.get("results_dir", "results"))
+            res_dir = Path(cfg.get("results_dir", "orze_results"))
             has_results = (res_dir.exists() and
                 any(d.is_dir() and d.name.startswith("idea-")
                     for d in res_dir.iterdir())

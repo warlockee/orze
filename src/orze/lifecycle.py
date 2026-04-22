@@ -297,7 +297,7 @@ def do_start(cfg: dict, foreground: bool = False, config_path: str = None,
     hostname = socket.gethostname()
     config_path = config_path or cfg.get("_config_path", "orze.yaml")
     python = sys.executable
-    log_file = str(Path(cfg.get("results_dir", "results")) / "orze.log")
+    log_file = str(Path(cfg.get("results_dir", "orze_results")) / "orze.log")
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
     # 1. Check not already running

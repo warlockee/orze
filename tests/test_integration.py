@@ -33,11 +33,14 @@ class TestInit:
         assert result.returncode == 0, result.stderr
 
         expected = [
-            "train.py", "orze.yaml", "ideas.md",
-            "configs/base.yaml", "RESEARCH_RULES.md", "results",
+            "train.py", "orze.yaml",
+            "configs/base.yaml", "orze_results",
         ]
         for name in expected:
             assert (tmp_path / name).exists(), f"Missing: {name}"
+        # ideas.md and rules now live under .orze/
+        assert (tmp_path / ".orze" / "ideas.md").exists() or (tmp_path / "ideas.md").exists(), \
+            "Missing: ideas.md (expected at .orze/ideas.md or project root)"
 
     def test_init_idempotent(self, tmp_path):
         """Running --init twice does not overwrite existing files."""

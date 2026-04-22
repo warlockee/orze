@@ -126,7 +126,7 @@ def _read_json(path: Path) -> Optional[dict]:
 
 
 def _tool_status(args: dict, cfg: dict) -> str:
-    results_dir = Path(cfg.get("results_dir", "results"))
+    results_dir = Path(cfg.get("results_dir", "orze_results"))
     status = _read_json(results_dir / "status.json")
     if not status:
         return "No status.json found. Is orze running?"
@@ -144,7 +144,7 @@ def _tool_status(args: dict, cfg: dict) -> str:
 
 
 def _tool_leaderboard(args: dict, cfg: dict) -> str:
-    results_dir = Path(cfg.get("results_dir", "results"))
+    results_dir = Path(cfg.get("results_dir", "orze_results"))
     top_n = args.get("top_n", 10)
     lb = _read_json(results_dir / "_leaderboard.json")
     if not lb:
@@ -192,7 +192,7 @@ def _tool_run_detail(args: dict, cfg: dict) -> str:
     idea_id = args.get("idea_id", "")
     if not idea_id:
         return "Error: idea_id is required."
-    results_dir = Path(cfg.get("results_dir", "results"))
+    results_dir = Path(cfg.get("results_dir", "orze_results"))
     idea_dir = results_dir / idea_id
     if not idea_dir.is_dir():
         return f"No results found for {idea_id}."
@@ -215,7 +215,7 @@ def _tool_run_log(args: dict, cfg: dict) -> str:
     tail = args.get("tail", 100)
     if not idea_id:
         return "Error: idea_id is required."
-    results_dir = Path(cfg.get("results_dir", "results"))
+    results_dir = Path(cfg.get("results_dir", "orze_results"))
     log_path = results_dir / idea_id / "train_output.log"
     if not log_path.exists():
         return f"No training log found for {idea_id}."
@@ -266,7 +266,7 @@ def _tool_add_idea(args: dict, cfg: dict) -> str:
 
 
 def _tool_nodes(args: dict, cfg: dict) -> str:
-    results_dir = Path(cfg.get("results_dir", "results"))
+    results_dir = Path(cfg.get("results_dir", "orze_results"))
     nodes = []
     for p in sorted(results_dir.glob("_host_*.json")):
         data = _read_json(p)
