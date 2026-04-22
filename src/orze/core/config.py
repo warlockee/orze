@@ -586,8 +586,8 @@ def _sanitize_config(config: dict) -> dict:
 
 # Path helper for .orze/ and orze_results/ layout
 _ORZE_DIR_KINDS = {"logs", "receipts", "locks", "triggers", "mcp", "state", 
-                    "heartbeats", "backups", "feedback", "tmp", "stray", "rules"}
-_RESULTS_KINDS = {"methods", "knowledge"}
+                    "heartbeats", "backups", "feedback", "tmp", "rules"}
+_RESULTS_KINDS = {"methods", "knowledge", "stray"}
 
 
 def orze_path(cfg: dict, kind: str, name: str = "") -> Path:
@@ -611,7 +611,7 @@ def orze_path(cfg: dict, kind: str, name: str = "") -> Path:
     elif kind in _RESULTS_KINDS:
         base = Path(cfg["_env_ORZE_RESULTS_DIR"]) / kind
     else:
-        raise ValueError(f"unknown orze_path kind: {kind}")
+        raise ValueError(f"Unknown kind: {kind}")
     
     base.mkdir(parents=True, exist_ok=True)
     

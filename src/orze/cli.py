@@ -21,10 +21,13 @@ Extracted modules:
 """
 
 import argparse
+import importlib.util
 import logging
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from orze import __version__
@@ -352,6 +355,18 @@ Examples:
     init_parser.add_argument("path", nargs="?", default=None,
                              help="Project directory (default: current directory)")
 
+    # --- upgrade: one-liner to reinstall orze + orze-pro and restart daemon ---
+    upgrade_parser = subparsers.add_parser(
+        "upgrade",
+        help="Reinstall orze + orze-pro from source and restart daemon if running"
+    )
+    upgrade_parser.add_argument("-c", "--config-file", type=str, default=None,
+                                help="Path to orze.yaml")
+    upgrade_parser.add_argument("--no-reinstall", action="store_true",
+                                help="Skip pip reinstall (only restart daemon)")
+    upgrade_parser.add_argument("--no-restart", action="store_true",
+                                help="Skip daemon restart (only reinstall)")
+
     args = parser.parse_args()
 
     setup_logging(args.verbose)
@@ -485,6 +500,116 @@ Examples:
         print(f"  1. Edit orze.yaml (set train_script, base_config, etc.)")
         print(f"  2. Add ideas to .orze/ideas.md")
         print(f"  3. Run: orze start")
+        return 0
+
+    if command == "upgrade":
+        import importlib.util
+        import signal
+        import subprocess
+        import time
+        
+        # Load config to get orze_dir for daemon PID
+        cfg = load_project_config(args.config_file)
+        orze_dir = Path(cfg.get("_orze_dir", ".orze"))
+        
+        # Step 1: Reinstall packages
+        if not args.no_reinstall:
+            print("Reinstalling orze + orze-pro from source...")
+            
+            # Resolve orze package dir
+            spec = importlib.util.find_spec("orze")
+            if not spec or not spec.submodule_search_locations:
+                print("ERROR: Cannot locate orze package.")
+                return 1
+            orze_src_dir = Path(spec.submodule_search_locations[0])
+            orze_pkg_dir = orze_src_dir.parent  # /path/to/orze/src -> /path/to/orze
+            
+            # Resolve orze-pro package dir
+            pro_pkg_dir = None
+            try:
+                pro_spec = importlib.util.find_spec("orze_pro")
+                if pro_spec and pro_spec.submodule_search_locations:
+                    pro_src_dir = Path(pro_spec.submodule_search_locations[0])
+                    pro_pkg_dir = pro_src_dir.parent
+            except (ImportError, ModuleNotFoundError):
+                pass
+            
+            # Build pip command
+            cmd = ["pip3", "install", "--force-reinstall", "--no-deps", "-e", str(orze_pkg_dir)]
+            if pro_pkg_dir:
+                cmd.extend(["-e", str(pro_pkg_dir)])
+            else:
+                print("WARNING: orze-pro not installed or not found — skipping.")
+            
+            print(f"Running: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=False)
+            if result.returncode != 0:
+                print(f"ERROR: Reinstall failed with code {result.returncode}")
+                return result.returncode
+            print("Reinstall complete.")
+        
+        # Step 2: Daemon restart
+        if not args.no_restart:
+            daemon_pid_file = orze_dir / "state" / "daemon.pid"
+            daemon_was_running = False
+            
+            if daemon_pid_file.exists():
+                try:
+                    pid = int(daemon_pid_file.read_text().strip())
+                    # Check if alive
+                    try:
+                        os.kill(pid, 0)
+                        daemon_was_running = True
+                        print(f"Stopping daemon (PID {pid})...")
+                        
+                        # SIGTERM first
+                        os.kill(pid, signal.SIGTERM)
+                        
+                        # Wait up to 10s
+                        for _ in range(100):
+                            try:
+                                os.kill(pid, 0)
+                                time.sleep(0.1)
+                            except (ProcessLookupError, PermissionError):
+                                print("Daemon stopped gracefully.")
+                                break
+                        else:
+                            # Still alive — SIGKILL
+                            print("Daemon did not stop — sending SIGKILL...")
+                            try:
+                                os.kill(pid, signal.SIGKILL)
+                                time.sleep(0.5)
+                            except (ProcessLookupError, PermissionError):
+                                pass
+                        
+                        # Clean up PID file
+                        daemon_pid_file.unlink(missing_ok=True)
+                    except (ProcessLookupError, PermissionError):
+                        # Not running
+                        pass
+                except (ValueError, FileNotFoundError, OSError):
+                    pass
+            
+            if daemon_was_running:
+                # Relaunch daemon
+                print("Relaunching daemon...")
+                config_arg = f"--config-file={args.config_file}" if args.config_file else ""
+                # Use subprocess.Popen to detach
+                null_fd = os.open(os.devnull, os.O_RDWR)
+                subprocess.Popen(
+                    ["orze", "run"] + ([config_arg] if config_arg else []),
+                    stdin=null_fd,
+                    stdout=null_fd,
+                    stderr=null_fd,
+                    start_new_session=True,
+                    cwd=os.getcwd()
+                )
+                os.close(null_fd)
+                print("Daemon relaunched in background.")
+            else:
+                print("Daemon not running — migrations will run on next `orze run`.")
+        
+        print("\n✓ Upgrade complete.")
         return 0
 
     if command == "admin":

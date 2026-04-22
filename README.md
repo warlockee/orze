@@ -160,6 +160,40 @@ orze
 
 That's it. Orze auto-detects GPUs and starts running experiments from `ideas.md`.
 
+## File Layout
+
+Orze uses a hidden `.orze/` directory for runtime state and an `orze_results/` directory for research artifacts:
+
+```
+your-project/
+├── .orze/                    # Runtime state (gitignored)
+│   ├── ideas.md              # Research manifest
+│   ├── idea_lake.db          # Experiment history
+│   ├── logs/                 # Role logs (professor/, engineer/, etc.)
+│   ├── receipts/             # Execution evidence per cycle
+│   ├── state/                # Daemon PID, version.json, caches
+│   ├── rules/                # Custom agent rules (ENGINEER_RULES.md, etc.)
+│   ├── triggers/             # One-shot role triggers
+│   ├── heartbeats/           # Per-host liveness signals
+│   ├── backups/              # Timestamped ideas.md backups
+│   ├── feedback/             # Failure feedback summaries
+│   └── tmp/                  # Scratch space
+├── orze_results/             # Research outputs
+│   ├── methods/              # Generated code (per-role, per-cycle)
+│   ├── knowledge/            # Analysis insights, retrospection
+│   └── stray/                # Quarantined root-polluting files
+├── orze.yaml                 # Project config
+└── GOAL.md                   # High-level research objective
+```
+
+**Migration:**  
+Existing projects (pre-v4.1) should run `orze admin migrate` once to upgrade to the new layout. Migration is automatic on first `orze run` if not already applied.
+
+**One-liner upgrade:**
+```bash
+orze upgrade                  # Reinstall orze + orze-pro and restart daemon
+```
+
 ## Multi-node
 
 Start orze in the same shared folder (e.g. `/nfs/project-52h/`) on any machine — the node automatically joins the research pool. **Orze can auto-update across nodes.**

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **`.orze/` directory layout refactor** — Runtime state moved from `results/` to `.orze/` for cleaner git workflows
+  - `results/` → `orze_results/` (renamed to avoid `.gitignore` collisions)
+  - `results/_research_logs/` → `.orze/logs/`
+  - `results/_receipts/` → `.orze/receipts/`
+  - `results/idea_lake.db` → `.orze/idea_lake.db`
+  - `results/ideas.md` → `.orze/ideas.md`
+  - Per-role rules (e.g., `ENGINEER_RULES.md`) → `.orze/rules/`
+  - See README "File Layout" section for full mapping
+
+### Added
+- `orze admin migrate` — One-shot migration command for existing projects (auto-runs on first `orze run` if needed)
+- `orze upgrade` — One-liner to reinstall orze + orze-pro from source and restart daemon if running
+- `orze init` now creates `.orze/` structure with `version.json` for forward compatibility
+- `needs_intervention` notification event — Alerts for blocked conditions (HF gated models, missing API keys, disk full, OOM, etc.)
+- Stray file sweeper — Quarantines role-generated files at project root to `orze_results/stray/` (configurable via `sweep_stray: true`)
+- Intervention detection patterns for common blockers (HuggingFace gated models, missing tokens, GitHub auth, OpenAI/Anthropic keys, disk full, CUDA OOM, sudo prompts)
+
+### Fixed
+- Hardcoded `"results"` paths throughout codebase replaced with `orze_path(cfg, kind, name)` helper
+- Default `ideas_file` and `idea_lake_db` now resolve correctly to `.orze/` location
+
+
 ## 3.7.0 — Honest-eval + cleanup
 
 Fixes the one remaining fiction in the v3.6.2 self-evolving proof: the
