@@ -58,6 +58,13 @@ def _parse_version(v: str) -> Tuple[int, ...]:
         return (0,)
 
 
+def _heartbeats_dir(results_dir: Path) -> Path:
+    """Resolve .orze/heartbeats/ from results_dir (.orze/ sits next to orze_results/)."""
+    d = Path(results_dir).parent / ".orze" / "heartbeats"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def write_host_heartbeat(results_dir: Path, hostname: str,
                          active, free_gpus: list):
     """Write per-host heartbeat file with active processes and free GPUs."""
@@ -81,7 +88,7 @@ def write_host_heartbeat(results_dir: Path, hostname: str,
         "gpu_info": _query_gpu_details(),
         "os": f"{platform.system()} {platform.release()}",
     }
-    atomic_write(results_dir / f"_host_{hostname}_{pid}.json",
+    atomic_write(_heartbeats_dir(results_dir) / f"{hostname}_{pid}.json",
                  json.dumps(heartbeat, indent=2))
 
 
@@ -96,7 +103,11 @@ def _read_all_heartbeats(results_dir: Path,
     by_host: dict = {}  # host -> (epoch, hb_dict, hb_path)
     superseded_paths = []
     stale_paths = []
-    for hb_path in results_dir.glob("_host_*.json"):
+    hb_dir = _heartbeats_dir(results_dir)
+    # New layout: .orze/heartbeats/<host>_<pid>.json
+    # Legacy layout: results_dir/_host_<host>_<pid>.json (read-only fallback)
+    hb_paths = list(hb_dir.glob("*.json")) + list(results_dir.glob("_host_*.json"))
+    for hb_path in hb_paths:
         try:
             hb = json.loads(hb_path.read_text(encoding="utf-8"))
             age = now - hb.get("epoch", 0)

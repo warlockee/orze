@@ -57,7 +57,10 @@ def _is_heartbeat_stale(results_dir, hostname, threshold):
     """
     results_dir = Path(results_dir)
     best_epoch = 0
-    for hb_path in results_dir.glob(f"_host_{hostname}_*.json"):
+    hb_dir = results_dir.parent / ".orze" / "heartbeats"
+    candidates = list(hb_dir.glob(f"{hostname}_*.json")) + \
+        list(results_dir.glob(f"_host_{hostname}_*.json"))
+    for hb_path in candidates:
         try:
             hb = json.loads(hb_path.read_text(encoding="utf-8"))
             epoch = hb.get("epoch", 0)
