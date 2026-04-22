@@ -483,6 +483,8 @@ def _validate_config(cfg: dict) -> tuple:
     }
     known_keys = set(DEFAULT_CONFIG.keys()) | _KNOWN_EXTRAS
     for key in cfg:
+        if key.startswith("_"):
+            continue  # computed/internal keys (prefix _)
         if key not in known_keys:
             known_list = ", ".join(sorted(known_keys))
             warnings.append(
