@@ -214,9 +214,13 @@ Examples:
     reset_parser.add_argument("--all", action="store_true",
                               help="Purge ALL non-completed ideas (queued + failed + partial)")
     reset_parser.add_argument("--full", action="store_true",
-                              help="Wipe entire idea lake (backup created)")
+                              help="Snapshot .orze/ to .orze.bak-<ts>/ and wipe entire .orze/ directory")
+    reset_parser.add_argument("--scratch", action="store_true",
+                              help="Wipe .orze/ but preserve idea_lake.db (for fresh start with history)")
     reset_parser.add_argument("-y", "--yes", action="store_true",
                               help="Skip confirmation prompt")
+    reset_parser.add_argument("--force", action="store_true",
+                              help="Force reset even if daemon is running")
 
     # result — register external/manual experiment results
     result_parser = subparsers.add_parser(
@@ -333,6 +337,21 @@ Examples:
     hf_parser.add_argument("--min-downloads", type=int, default=50000)
     hf_parser.add_argument("--limit", type=int, default=20)
 
+    # --- admin: administrative utilities ---
+    admin_parser = subparsers.add_parser("admin", help="Administrative utilities")
+    admin_sub = admin_parser.add_subparsers(dest="admin_action")
+    
+    admin_migrate = admin_sub.add_parser("migrate", help="Migrate .orze/ layout to current version")
+    admin_migrate.add_argument("-c", "--config-file", type=str, default=None,
+                               help="Path to orze.yaml")
+    admin_migrate.add_argument("--dry-run", action="store_true",
+                               help="Show what would be migrated without applying changes")
+
+    # --- init: initialize new orze project ---
+    init_parser = subparsers.add_parser("init", help="Initialize a new orze project")
+    init_parser.add_argument("path", nargs="?", default=None,
+                             help="Project directory (default: current directory)")
+
     args = parser.parse_args()
 
     setup_logging(args.verbose)
@@ -397,6 +416,104 @@ Examples:
         print(_json.dumps(models, indent=2))
         return 0
 
+    if command == "init":
+        from orze.cli_setup import resolve_init_path, do_init as do_legacy_init
+        from orze.engine.migrate import CURRENT_LAYOUT, write_layout_version
+        
+        # Use legacy init logic but add .orze/ setup
+        init_path = args.path if args.path else "."
+        
+        # Run legacy init first (creates orze.yaml, train.py, venv, etc.)
+        do_legacy_init(init_path or "__ask__")
+        
+        # Now add .orze/ structure
+        project_dir = Path(init_path or ".").resolve()
+        orze_dir = project_dir / ".orze"
+        results_dir = project_dir / "orze_results"
+        
+        print("\nInitializing .orze/ structure...")
+        
+        # Create .orze/ subdirs
+        (orze_dir / "state").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "rules").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "logs").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "locks").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "receipts").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "triggers").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "heartbeats").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "mcp").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "backups").mkdir(parents=True, exist_ok=True)
+        (orze_dir / "feedback").mkdir(parents=True, exist_ok=True)
+        print(f"  \033[32mcreated\033[0m  .orze/ (directory structure)")
+        
+        # Write version.json
+        write_layout_version(orze_dir, CURRENT_LAYOUT)
+        print(f"  \033[32mcreated\033[0m  .orze/state/version.json")
+        
+        # Create minimal ideas.md if missing
+        ideas_file = orze_dir / "ideas.md"
+        if not ideas_file.exists():
+            ideas_file.write_text("# Ideas\n\nOrze research manifest. Add ideas as YAML blocks below.\n")
+            print(f"  \033[32mcreated\033[0m  .orze/ideas.md")
+        
+        # Create GOAL.md stub if missing (and README exists)
+        goal_file = project_dir / "GOAL.md"
+        readme_file = project_dir / "README.md"
+        if not goal_file.exists():
+            if readme_file.exists():
+                goal_file.write_text("# Goal\n\nAuto-generated placeholder. Edit this file to steer orze.\n")
+                print(f"  \033[32mcreated\033[0m  GOAL.md")
+        
+        # Create orze_results/.gitkeep
+        results_dir.mkdir(exist_ok=True)
+        (results_dir / ".gitkeep").touch()
+        print(f"  \033[32mcreated\033[0m  orze_results/")
+        
+        # Check if .orze/ in .gitignore, add if missing
+        gitignore = project_dir / ".gitignore"
+        if gitignore.exists():
+            content = gitignore.read_text()
+            if ".orze/" not in content.splitlines() and ".orze" not in content.splitlines():
+                if content and not content.endswith("\n"):
+                    content += "\n"
+                content += ".orze/\n"
+                gitignore.write_text(content)
+                print(f"  \033[32mupdated\033[0m  .gitignore (added .orze/)")
+        
+        print("\n\033[1m✓ Initialization complete!\033[0m")
+        print(f"\nNext steps:")
+        print(f"  1. Edit orze.yaml (set train_script, base_config, etc.)")
+        print(f"  2. Add ideas to .orze/ideas.md")
+        print(f"  3. Run: orze start")
+        return 0
+
+    if command == "admin":
+        from orze.engine.migrate import migrate_v0_to_v1, write_layout_version
+        action = getattr(args, "admin_action", None)
+        if action == "migrate":
+            cfg = load_project_config(args.config_file)
+            project_root = Path(cfg["_project_root"])
+            orze_dir = Path(cfg["_orze_dir"])
+            results_dir = Path(cfg["_env_ORZE_RESULTS_DIR"])
+            
+            actions = migrate_v0_to_v1(project_root, orze_dir, results_dir, dry_run=args.dry_run)
+            
+            if not actions:
+                print("No migration actions needed — layout is already current.")
+            else:
+                for action_msg in actions:
+                    print(action_msg)
+                print(f"\nTotal actions: {len(actions)}")
+                
+                if not args.dry_run:
+                    write_layout_version(orze_dir, 1)
+                    print(f"Migration complete. Layout version: 1")
+                else:
+                    print("\nDry-run complete. Use 'orze admin migrate' without --dry-run to apply.")
+            return 0
+        print("usage: orze admin {migrate} …")
+        return 2
+
     if command == "rebuild-state":
         from orze.engine.rebuild_state import rebuild_state_file
         cfg = load_project_config(args.config_file)
@@ -442,29 +559,113 @@ Examples:
         return
 
     if command == "reset":
-        import sqlite3, shutil
+        import sqlite3
+        import shutil
+        import tempfile
+        import glob as glob_module
+        
         cfg = load_project_config(args.config_file)
-        db_path = Path(cfg.get("idea_lake_db") or Path(cfg.get("results_dir", "orze_results")) / "idea_lake.db")
+        orze_dir = Path(cfg.get("_orze_dir", ".orze"))
+        results_dir = Path(cfg.get("results_dir", "orze_results"))
+        project_root = Path(cfg.get("_project_root", "."))
+        
+        # New behavior: db lives in .orze/ now (after migration)
+        db_path = orze_dir / "idea_lake.db"
+        # Fallback for legacy layout
+        if not db_path.exists():
+            db_path = Path(cfg.get("idea_lake_db") or results_dir / "idea_lake.db")
+        
+        # --full or --scratch: check for running daemon
+        if (args.full or args.scratch) and not args.force:
+            daemon_pid_file = orze_dir / "state" / "daemon.pid"
+            if daemon_pid_file.exists():
+                try:
+                    pid = int(daemon_pid_file.read_text().strip())
+                    # Check if process is alive
+                    try:
+                        os.kill(pid, 0)  # Signal 0 just checks liveness
+                        print(f"ERROR: Orze daemon (PID {pid}) is running.")
+                        print(f"       Stop the daemon first or use --force to override.")
+                        return 1
+                    except (ProcessLookupError, PermissionError):
+                        # Process doesn't exist or we can't check — proceed
+                        pass
+                except (ValueError, FileNotFoundError, OSError):
+                    pass
+        
+        if args.full:
+            # --full: snapshot .orze/ to .orze.bak-<ts>/, then wipe .orze/
+            if not orze_dir.exists():
+                print("No .orze/ directory to reset.")
+                return 0
+            
+            # Count what will be wiped
+            file_count = sum(1 for _ in orze_dir.rglob("*") if _.is_file())
+            
+            if not args.yes:
+                resp = input(f"Snapshot .orze/ ({file_count} files) to backup and wipe? [y/N] ")
+                if resp.lower() != "y":
+                    print("Aborted.")
+                    return 0
+            
+            # Create backup
+            ts = int(time.time())
+            backup_dir = project_root / f".orze.bak-{ts}"
+            shutil.copytree(orze_dir, backup_dir)
+            print(f"Backup created: {backup_dir}")
+            
+            # Remove older .orze.bak-* (keep only the most recent)
+            for old_bak in sorted(glob_module.glob(str(project_root / ".orze.bak-*")))[:-1]:
+                shutil.rmtree(old_bak, ignore_errors=True)
+                print(f"Removed old backup: {old_bak}")
+            
+            # Wipe .orze/
+            shutil.rmtree(orze_dir)
+            print(f"Wiped .orze/ ({file_count} files)")
+            print("\nReset complete. Run 'orze init' to reinitialize.")
+            return 0
+        
+        elif args.scratch:
+            # --scratch: wipe .orze/ but preserve idea_lake.db
+            if not orze_dir.exists():
+                print("No .orze/ directory to reset.")
+                return 0
+            
+            if not args.yes:
+                resp = input(f"Wipe .orze/ but preserve idea_lake.db? [y/N] ")
+                if resp.lower() != "y":
+                    print("Aborted.")
+                    return 0
+            
+            # Save idea_lake.db to temp
+            db_tmp = None
+            if db_path.exists():
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tf:
+                    db_tmp = Path(tf.name)
+                shutil.copy2(db_path, db_tmp)
+            
+            # Wipe .orze/
+            shutil.rmtree(orze_dir)
+            print(f"Wiped .orze/")
+            
+            # Restore db
+            if db_tmp:
+                orze_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(db_tmp), str(db_path))
+                print(f"Restored idea_lake.db")
+            
+            print("\nReset complete. .orze/ cleared, idea lake preserved.")
+            return 0
+        
+        # Legacy behavior: partial wipes of idea lake DB
         if not db_path.exists():
             print("No idea_lake.db found.")
-            return
+            return 0
 
         conn = sqlite3.connect(str(db_path))
         c = conn.cursor()
 
-        if args.full:
-            if not args.yes:
-                c.execute("SELECT COUNT(*) FROM ideas")
-                total = c.fetchone()[0]
-                resp = input(f"Wipe entire idea lake ({total} ideas)? Backup will be created. [y/N] ")
-                if resp.lower() != "y":
-                    print("Aborted.")
-                    return
-            backup = db_path.with_suffix(".db.bak")
-            shutil.copy2(db_path, backup)
-            c.execute("DELETE FROM ideas")
-            print(f"Wiped {c.rowcount} ideas. Backup: {backup}")
-        elif args.all:
+        if args.all:
             c.execute("DELETE FROM ideas WHERE status IN ('queued', 'failed', 'partial', 'running')")
             print(f"Purged {c.rowcount} non-completed ideas.")
         elif args.failed:
@@ -475,19 +676,18 @@ Examples:
             c.execute("SELECT status, COUNT(*) FROM ideas GROUP BY status")
             for row in c.fetchall():
                 print(f"  {row[0]}: {row[1]}")
-            print("\nUse --failed, --all, or --full to purge.")
+            print("\nUse --failed, --all, --full, or --scratch to reset.")
 
         conn.commit()
         conn.close()
 
         # Also clear pause sentinel — stale failures shouldn't block research
-        results_dir = Path(cfg.get("results_dir", "orze_results"))
         pause_file = results_dir / ".pause_research"
         if pause_file.exists():
             pause_file.unlink()
             print("Cleared .pause_research sentinel.")
 
-        return
+        return 0
 
     if command == "result":
         import json as _json
@@ -603,6 +803,19 @@ Examples:
     # Load project config, then apply CLI overrides
     cfg = load_project_config(args.config_file)
     cfg["_config_path"] = args.config_file or "orze.yaml"  # stored for mode: research
+
+    # Auto-migrate layout if needed (fast path via version check)
+    # Only run for subcommands that actually need it, skip for --help, --version, etc.
+    if command not in (None, "service"):
+        try:
+            from orze.engine.migrate import _ensure_migrated
+            _ensure_migrated(
+                cfg.get("_project_root"),
+                cfg.get("_orze_dir"),
+                cfg.get("_env_ORZE_RESULTS_DIR")
+            )
+        except Exception as e:
+            logger.warning("Auto-migration failed (non-fatal): %s", e)
 
     # --admin: launch web panel
     if args.admin:
