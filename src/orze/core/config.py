@@ -203,7 +203,7 @@ DEFAULT_CONFIG = {
     "auto_seal_eval": True,
     "notifications": {
         "enabled": False,
-        "on": ["completed", "failed", "new_best", "watchdog_restart", "plateau"],
+        "on": ["completed", "failed", "new_best", "watchdog_restart", "plateau", "needs_intervention"],
         "channels": [],
     },
     "retrospection": {

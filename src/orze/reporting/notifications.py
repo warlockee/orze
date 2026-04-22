@@ -5,7 +5,7 @@ CALLING SPEC:
         Send notifications for an event to all configured channels. Never
         raises. event is one of: completed, failed, new_best, report,
         started, shutdown, heartbeat, milestone, disk_warning, stall,
-        role_summary, upgrading, watchdog_restart, plateau.
+        role_summary, upgrading, watchdog_restart, plateau, needs_intervention.
         data is event-specific (e.g. idea_id, title, metric_value, rank,
         leaderboard). cfg must contain 'notifications' key with 'enabled',
         'on' (event filter list), and 'channels' (list of channel configs
@@ -143,6 +143,18 @@ def _format_slack(event: str, data: dict) -> dict:
         return {"text": f":dog: *Watchdog restarted orze* on `{host}` (reason: {reason})"}
     if event == "plateau":
         return {"text": f":warning: *Plateau detected*: {data.get('message', 'No improvement')}"}
+    if event == "needs_intervention":
+        role = data.get("role", "?")
+        reason = data.get("reason", "unknown")
+        evidence = str(data.get("evidence", ""))[:200]
+        log_tail = str(data.get("log_tail", ""))[:500]
+        host = data.get("host", socket.gethostname())
+        pid = data.get("pid", "?")
+        return {"text": (f":warning: *{role}* needs human intervention\n"
+                         f"*Reason:* {reason}\n"
+                         f"*Evidence:* {evidence}\n"
+                         f"*Log tail:*\n```\n{log_tail}\n```\n"
+                         f"*Host:* `{host}` (pid {pid})")}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         text = (f":trophy: *NEW BEST* `{data['idea_id']}`: {data['title']}\n"
@@ -223,6 +235,18 @@ def _format_discord(event: str, data: dict) -> dict:
         return {"content": f"\U0001f415 **Watchdog restarted orze** on `{host}` (reason: {reason})"}
     if event == "plateau":
         return {"content": f"\u26a0\ufe0f **Plateau detected**: {data.get('message', 'No improvement')}"}
+    if event == "needs_intervention":
+        role = data.get("role", "?")
+        reason = data.get("reason", "unknown")
+        evidence = str(data.get("evidence", ""))[:200]
+        log_tail = str(data.get("log_tail", ""))[:500]
+        host = data.get("host", socket.gethostname())
+        pid = data.get("pid", "?")
+        return {"content": (f"\u26a0\ufe0f **{role}** needs human intervention\n"
+                            f"**Reason:** {reason}\n"
+                            f"**Evidence:** {evidence}\n"
+                            f"**Log tail:**\n```\n{log_tail}\n```\n"
+                            f"**Host:** `{host}` (pid {pid})")}
     if event == "new_best":
         prev = data.get("prev_best_id", "none")
         content = (f"**NEW BEST** `{data['idea_id']}`: {data['title']}\n"
@@ -483,6 +507,20 @@ def _format_telegram(event: str, data: dict, channel_cfg: dict) -> tuple:
     if event == "plateau":
         msg = esc(str(data.get("message", "No improvement")))
         text = f"\u26a0\ufe0f <b>Plateau detected</b>: {msg}"
+        return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+
+    if event == "needs_intervention":
+        role = esc(str(data.get("role", "?")))
+        reason = esc(str(data.get("reason", "unknown")))
+        evidence = esc(str(data.get("evidence", ""))[:200])
+        log_tail = esc(str(data.get("log_tail", ""))[:500])
+        host = esc(data.get("host", socket.gethostname()))
+        pid = esc(str(data.get("pid", "?")))
+        text = (f"\u26a0\ufe0f <b>{role}</b> needs human intervention\n"
+                f"<b>Reason:</b> {reason}\n"
+                f"<b>Evidence:</b> <code>{evidence}</code>\n"
+                f"<b>Log tail:</b>\n<pre>{log_tail}</pre>\n"
+                f"<b>Host:</b> <code>{host}</code> (pid {pid})")
         return url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
 
     idea_id = esc(str(data.get("idea_id", "")))
